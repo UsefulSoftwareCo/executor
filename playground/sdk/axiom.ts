@@ -1,10 +1,8 @@
-/** Two configured Axiom apps, with separate OAuth accounts and the same code. */
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { Effect, FileSystem } from "effect";
 import { type AccountConnectionId, type Executor, type OwnerId } from "@executor-js/sdk";
 import apps from "apps/package.json" with { type: "json" };
 
-/** Create the two apps and begin their independent OAuth sign-ins. */
 export async function startAxiomSignIns(executor: Executor, owner: OwnerId) {
   const source = await Effect.runPromise(
     FileSystem.FileSystem.use((fs) =>
@@ -40,15 +38,9 @@ export async function startAxiomSignIns(executor: Executor, owner: OwnerId) {
     label: "Personal Axiom",
     redirectUri: "https://my-product.example/oauth/callback",
   });
-  // The product opens each authorizationUrl and retains the connection ID.
   return { work, personal, workConnection, personalConnection, workSignIn, personalSignIn };
 }
 
-/**
- * The product authorizes the target when creating the request. The callback
- * validates state/PKCE and saves the account; the product links it to the app in the same
- * transaction.
- */
 export async function finishAxiomSignIn(
   executor: Executor,
   connection: AccountConnectionId,

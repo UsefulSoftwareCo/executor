@@ -1,46 +1,37 @@
-/** Execute tool schemas, limits and discovery instructions. */
 import { CodeMode } from "@opencode-ai/codemode";
 import { Schema } from "effect";
 import { HttpServerRequest } from "effect/http";
-import { McpSchema, Tool as McpTool } from "effect/ai";
+import { McpSchema, McpServer, Tool as McpTool } from "effect/ai";
+import { executionResultContent } from "./media.ts";
 import { ApiErrorResponse, ElicitationResponse } from "apps/contracts";
 import { UserFacingError } from "@executor-js/utils/user-facing-error";
 import { InteractionId, PendingInteraction, ElicitationResponseInvalid } from "./interactions.ts";
 export * from "./interactions.ts";
 import { NativeElicitationFailed } from "./elicitation.ts";
+import { CallLog, ToolCallReference } from "./call-log.ts";
+export * from "./call-log.ts";
 
-/** Fixed interpreter input, live-program capacity and discovery fan-out and time bounds. */
 export const McpRuntimeLimits = Schema.Struct({
   maxCodeChars: Schema.Int.check(Schema.isGreaterThan(0)),
   maxExecutions: Schema.Int.check(Schema.isGreaterThan(0)),
   discoveryConcurrency: Schema.Int.check(Schema.isGreaterThan(0)),
-  /** How long discovery waits for the apps a program or search needs before giving up on any. */
   discoveryWaitMs: Schema.Int.check(Schema.isGreaterThan(0)),
-  /**
-   * After that wait, discovery gives up on the apps still listing once no listing in the
-   * execution has completed for this long. Listings share one app runtime, so a slow app is kept
-   * while others progress, and a stalled app is dropped soon after the others finish.
-   */
   discoveryIdleMs: Schema.Int.check(Schema.isGreaterThan(0)),
 });
 export type McpRuntimeLimits = typeof McpRuntimeLimits.Type;
-/** Existing runtime defaults; execution time and call budgets remain in McpLimits. */
 export const defaultMcpRuntimeLimits = McpRuntimeLimits.make({
   maxCodeChars: 65_536,
   maxExecutions: 64,
   discoveryConcurrency: 8,
-  // Together well inside the default 5 minute execution budget, which leaves the program time to run.
   discoveryWaitMs: 10_000,
   discoveryIdleMs: 5_000,
 });
 
-/** A product denied admission before a program started. The message is safe for the caller. */
 export class ExecutionRejected extends Schema.TaggedError<ExecutionRejected>()(
   "ExecutionRejected",
   { message: Schema.String },
 ) {}
 
-/** An app requirement has no account the caller linked, so the app exposes no tools. */
 export const AppAccountRequired = UserFacingError.define({
   tag: "AppAccountRequired",
   status: 409,
@@ -54,11 +45,6 @@ export const AppAccountRequired = UserFacingError.define({
   },
 });
 
-/**
- * An app was still listing its tools when discovery stopped waiting for it: a large or slow app,
- * or one whose server accepts connections and never answers. A listing that was running keeps
- * running in the background, so a slow but healthy app loads in a later execution.
- */
 export const AppDiscoveryTimedOut = UserFacingError.define({
   tag: "AppDiscoveryTimedOut",
   status: 504,
@@ -77,22 +63,10 @@ export const AppDiscoveryTimedOut = UserFacingError.define({
   }),
 });
 
-/**
- * Executor will not run an approved call, for a reason only its own state establishes. App code
- * asks for approval after it has already run, so the copy says what Executor did with the saved
- * call, never that the tool did not run. A call that ran and failed reports its own error instead.
- */
 export const ApprovalUnavailable = UserFacingError.define({
   tag: "ApprovalUnavailable",
   status: 409,
   fields: {
-    /**
-     * `expired`: the request passed its deadline. `context-changed`: Executor read the app
-     * version or accounts and they differ from the reviewed call.
-     * `context-unconfirmed`: Executor's storage failed while it read them, so it could not compare.
-     * `answered`: another answer already claimed it. `ended`: the execution ended before the
-     * request could be saved.
-     */
     reason: Schema.Literals([
       "expired",
       "context-changed",
@@ -163,18 +137,17 @@ export const ApprovalUnavailable = UserFacingError.define({
 });
 export type ApprovalUnavailable = typeof ApprovalUnavailable.Type;
 
-/**
- * Why a resume found no request it could answer. Executor's own record of the request decides it;
- * a request issued to another caller is indistinguishable from an unknown one.
- */
 export const ResumeUnavailableReason = Schema.Literals([
   "answered",
   "expired",
   "ended",
+  "lost",
+  "malformed",
   "not-found",
 ]);
 export type ResumeUnavailableReason = typeof ResumeUnavailableReason.Type;
-/** The guidance a resume returns with each reason. */
+export const issuedInteractionId =
+  /^(apr|elc)_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/iu;
 export const resumeUnavailableMessage = (reason: ResumeUnavailableReason): string => {
   const check =
     "Earlier calls in the program, and code a tool ran before asking for approval, may already have made changes: check current state with a safe read before starting a new execute, and never rerun the program automatically.";
@@ -185,65 +158,78 @@ export const resumeUnavailableMessage = (reason: ResumeUnavailableReason): strin
       return `This request expired before it was answered, so Executor will not resume its program. ${check}`;
     case "ended":
       return `The program that asked this ended before it was answered: it was cancelled, timed out, or stopped. Executor will not resume it. ${check}`;
+    case "lost":
+      return "Executor recorded issuing this request to this caller, but it is no longer waiting for an answer and Executor has no retained record of an answer or of how it ended, so it cannot continue and resuming again will not help. Most often the Executor host holding its program restarted, which loses the program; a record of how it ended can also be missing when Executor failed to store it. Executor cannot confirm what happened: the request may have been answered, and an earlier approved call, or code a tool ran before asking, may have completed and made changes. Never repeat the call or program automatically. Check current state with a safe read, tell the user what you found, and repeat a call that may change something only if the user explicitly decides to.";
+    case "malformed":
+      return `This requestId is not one Executor issues: request IDs are apr_ or elc_ followed by a UUID, so it was probably shortened, redacted or mistyped. Resume with the exact requestId from the approval-required or input-required result; pending lists this caller's open requests. ${check}`;
     case "not-found":
-      return `Executor has no pending request with this ID for this caller. It may belong to another grant, scoped connection or approval mode; it may have ended or been answered long enough ago that Executor no longer remembers it; or it was lost when Executor restarted. In model mode, a new MCP session on the same grant can still answer its requests. ${check}`;
+      return `Executor has no retained record of this request for this caller, so it cannot say whether it was issued or what became of it. It may belong to another user, grant, scoped connection or approval mode, or the ID may be mistyped. A record can also be missing after Executor restarted, after it pruned old requests, or when its storage was unavailable. pending lists this caller's open requests. In model mode, a new MCP session on the same grant can still answer its requests. ${check}`;
   }
 };
+export const OpenInteraction = Schema.Struct({
+  requestId: InteractionId,
+  status: Schema.Literals(["approval-required", "input-required"]),
+  app: Schema.String,
+  tool: Schema.String,
+  expiresAt: Schema.Number,
+});
+export type OpenInteraction = typeof OpenInteraction.Type;
+export type InteractionEnd = Extract<ResumeUnavailableReason, "answered" | "expired" | "ended">;
+export interface IssuedInteraction {
+  readonly caller: string;
+  readonly expiresAt: number;
+  readonly end?: InteractionEnd;
+}
+export interface InteractionRecords {
+  readonly issued: (id: InteractionId, caller: string, expiresAt: number) => void;
+  readonly ended: (id: InteractionId, end: InteractionEnd) => void;
+  readonly read: (id: InteractionId) => IssuedInteraction | undefined;
+}
 
-/** Generated code is bounded before it reaches the parser. */
 export const ExecuteInput = Schema.Struct({
   code: Schema.String.check(Schema.isMaxLength(defaultMcpRuntimeLimits.maxCodeChars)),
 });
-/**
- * Incomplete or failing apps stay visible as explicit discovery diagnostics. Absent fields are
- * omitted: execution results are MCP JSON, which has no undefined.
- */
 export const UnavailableApp = Schema.Struct({
   app: Schema.String,
   name: Schema.String,
   reason: Schema.String,
-  /** Only this router's tools are missing; the rest of the app loaded. */
   router: Schema.optionalKey(Schema.String),
 });
-/**
- * One admitted tool call in call order. `interrupted` calls were still running when the
- * execution ended; the upstream may or may not have applied them. `awaiting-approval` calls
- * were still waiting for approval when the execution ended; Executor did not resume the saved
- * call, though the tool may have had effects before it asked.
- */
 export const McpToolCall = Schema.Struct({
   name: Schema.String,
   outcome: Schema.Literals(["success", "failure", "interrupted", "awaiting-approval"]),
   durationMs: Schema.optionalKey(Schema.Number),
+  reference: Schema.optionalKey(ToolCallReference),
 });
 export type McpToolCall = typeof McpToolCall.Type;
-/**
- * A failed tool's curated explanation as an agent receives it; a program can read it from a
- * caught tool error. `retryable` means an unchanged repeat may help and is considered safe. It
- * does not guarantee success, and correcting the input, configuration or access may allow a new
- * attempt even when it is false.
- */
+export const McpFailurePhase = Schema.Literals(["evaluate", "discover", "call"]);
+export type McpFailurePhase = typeof McpFailurePhase.Type;
+export const FailureReference = Schema.String.check(Schema.isPattern(/^[0-9a-f]{32}$/u));
 export const McpErrorResponse = Schema.Struct({
   ...ApiErrorResponse.fields,
   retryable: Schema.Boolean,
+  phase: Schema.optionalKey(McpFailurePhase),
+  reference: Schema.optionalKey(FailureReference),
 });
 export type McpErrorResponse = typeof McpErrorResponse.Type;
-/** Program result plus apps that could not expose a live catalog during this execution. */
 export const ExecuteResult = Schema.Struct({
   execution: Schema.Union([
     Schema.Struct({ ...CodeMode.Success.fields, toolCalls: Schema.Array(McpToolCall) }),
     Schema.Struct({
       ...CodeMode.Failure.fields,
       error: Schema.Struct({
-        ...CodeMode.Diagnostic.fields,
+        kind: CodeMode.Diagnostic.fields.kind,
+        message: CodeMode.Diagnostic.fields.message,
+        location: CodeMode.Diagnostic.fields.location,
+        suggestions: CodeMode.Diagnostic.fields.suggestions,
         response: Schema.optionalKey(McpErrorResponse),
+        callLog: Schema.optionalKey(CallLog),
       }),
       toolCalls: Schema.Array(McpToolCall),
     }),
   ]),
   unavailableApps: Schema.Array(UnavailableApp),
 });
-/** MCP execution may return a live pause; completed program results retain the existing fields. */
 export const ExecutionOutcome = Schema.Union([
   Schema.Struct({ status: Schema.Literal("completed"), ...ExecuteResult.fields }),
   Schema.Struct({
@@ -251,44 +237,34 @@ export const ExecutionOutcome = Schema.Union([
     requestId: InteractionId,
     reason: ResumeUnavailableReason,
     message: Schema.String,
+    pending: Schema.Array(OpenInteraction),
   }),
   Schema.Struct({ status: Schema.Literal("busy"), requestId: InteractionId }),
   Schema.Struct({ status: Schema.Literal("capacity-exceeded") }),
 ]);
-/** Completed or pending outcomes share one contract in model and native delivery. */
 export const McpExecutionResult = Schema.Union([ExecutionOutcome, PendingInteraction]);
 export type McpExecutionResult = typeof McpExecutionResult.Type;
-/** MCP elicitation responses delivered by the agent; this does not send native or browser prompts. */
 export const ResumeInput = Schema.Struct({
   requestId: InteractionId,
   response: ElicitationResponse,
 });
-/**
- * Claude Code saves a text result over 50,000 characters to a file unless the tool raises that
- * threshold. Ask it to show execution results inline up to its 500,000-character ceiling; a larger
- * result still reaches it whole, saved to a file.
- */
 export const ExecutionResultMeta = { "anthropic/maxResultSizeChars": 500_000 };
 
-/** Continue an existing program after the agent has obtained the user's decision. Never restarts source. */
 export const ResumeTool = McpTool.make("resume", {
   description:
-    "Continue a paused execute program using its pending requestId and the user's MCP elicitation response: {action: 'accept', content: {...}}, {action: 'decline'}, or {action: 'cancel'}. Ask the user before approving. Return the user's form fields in content on accept. Returns the next pending interaction or the completed program result. An approved call that fails reports its own error. Unavailable carries a reason (answered, expired, ended or not-found) and what to do; do not rerun the whole program because earlier calls may have completed. Busy means another resume is advancing this program; wait for that response. Results are not replayed.",
+    "Continue a paused execute program using its pending requestId and the user's MCP elicitation response: {action: 'accept', content: {...}}, {action: 'decline'}, or {action: 'cancel'}. Ask the user before approving. Return the user's form fields in content on accept. Returns the next pending interaction or the completed program result. An approved call that fails reports its own error. Unavailable carries a reason (answered, expired, ended, lost, malformed or not-found), what to do and the caller's open requests in pending; do not rerun the whole program because earlier calls may have completed. Busy means another resume is advancing this program; wait for that response. Results are not replayed.",
   dependencies: [HttpServerRequest.HttpServerRequest],
   parameters: ResumeInput,
   success: McpExecutionResult,
   failure: ElicitationResponseInvalid,
-}).annotate(McpTool.Meta, ExecutionResultMeta);
+})
+  .annotate(McpTool.Meta, ExecutionResultMeta)
+  .annotate(McpServer.ResultContent, executionResultContent);
 
-/** Bounds that keep each tools.search item short. Pages are also bounded by bytes. */
 export const SearchLimits = Schema.Struct({
-  /** Items a page holds when the caller gives no limit. */
   defaultItems: Schema.Int.check(Schema.isGreaterThan(0)),
-  /** Characters kept from the first line of a tool's description. */
   descriptionChars: Schema.Int.check(Schema.isGreaterThan(0)),
-  /** Characters kept from a tool's single-line input type. A longer type is cut and marked. */
   inputChars: Schema.Int.check(Schema.isGreaterThan(0)),
-  /** Paths one tools.search.describe call accepts. */
   describePaths: Schema.Int.check(Schema.isGreaterThan(0)),
 });
 export type SearchLimits = typeof SearchLimits.Type;
@@ -299,7 +275,6 @@ export const defaultSearchLimits = SearchLimits.make({
   describePaths: 20,
 });
 
-/** Discovery accepts an empty query and supports paging through a large app catalog. */
 export const SearchInput = Schema.Struct({
   query: Schema.optionalKey(
     Schema.String.annotate({
@@ -319,35 +294,19 @@ export const SearchInput = Schema.Struct({
   ),
   offset: Schema.optionalKey(Schema.Int.check(Schema.isGreaterThanOrEqualTo(0))),
 });
-/**
- * A namespace that search items share, listed once per result rather than in every item: an app
- * with its linked accounts, or a titled router inside it.
- */
 export const SearchNamespace = Schema.Struct({
-  /** The callable prefix of every tool below it, such as tools.axiom. */
   path: Schema.String,
   app: Schema.String,
-  /** The linked accounts its calls use per requirement, with IDs, labels and descriptions. */
   accounts: Schema.optionalKey(Schema.String),
-  /** The title of the router that groups these tools. */
   router: Schema.optionalKey(Schema.String),
 });
 export type SearchNamespace = typeof SearchNamespace.Type;
-/** One tool, short enough that a page of them fits in an execute result. */
 export const SearchItem = Schema.Struct({
-  /** The exact callable path. */
   path: Schema.String,
-  /** The first line of the tool's description. */
   description: Schema.String,
-  /** The input type on one line, without documentation. */
   input: Schema.String,
-  /** The input type was cut; tools.search.describe returns it whole. */
   inputTruncated: Schema.optionalKey(Schema.Literal(true)),
 });
-/**
- * One page of ranked matches. `remaining` counts the matches after this page; `next` is the input
- * for the following page, or null when this page holds the last match.
- */
 export const SearchResult = Schema.Struct({
   items: Schema.Array(SearchItem),
   namespaces: Schema.Array(SearchNamespace),
@@ -359,17 +318,12 @@ export const SearchResult = Schema.Struct({
     }),
   ),
 });
-/** Exact paths, as search returns them, whose full detail the caller wants. */
 export const DescribeInput = Schema.Struct({
   paths: Schema.Array(Schema.String).check(
     Schema.isMinLength(1),
     Schema.isMaxLength(defaultSearchLimits.describePaths),
   ),
 });
-/**
- * Full detail for each path found: the whole description and the TypeScript signature with its
- * input and output types. A path that names no tool is in `missing`, with the closest paths.
- */
 export const DescribeResult = Schema.Struct({
   items: Schema.Array(
     Schema.Struct({ path: Schema.String, description: Schema.String, signature: Schema.String }),
@@ -379,23 +333,22 @@ export const DescribeResult = Schema.Struct({
     Schema.Struct({ path: Schema.String, matches: Schema.Array(Schema.String) }),
   ),
 });
-/** One direct tool call: an exact path from search and the tool's JSON input. */
 export const CallRequest = Schema.Struct({
   path: Schema.String.annotate({
     description: "An exact path from search, such as tools.github.issues.list.",
   }),
   input: Schema.Json.annotate({ description: "The tool's input, matching its input type." }),
 });
-/**
- * One call, or several independent calls that run concurrently. The union sits below the top
- * level because several MCP clients reject a tool input schema that is itself a union.
- */
 export const CallInput = Schema.Struct({
   calls: Schema.Union([CallRequest, Schema.Array(CallRequest).check(Schema.isMinLength(1))]),
 });
-/** How one direct call ended. A failed call does not stop the others in its batch. */
 export const CallOutcome = Schema.Union([
-  Schema.Struct({ path: Schema.String, ok: Schema.Literal(true), value: Schema.Json }),
+  Schema.Struct({
+    path: Schema.String,
+    ok: Schema.Literal(true),
+    value: Schema.Json,
+    callLog: Schema.optionalKey(CallLog),
+  }),
   Schema.Struct({
     path: Schema.String,
     ok: Schema.Literal(false),
@@ -404,59 +357,52 @@ export const CallOutcome = Schema.Union([
       message: Schema.String,
       response: Schema.optionalKey(McpErrorResponse),
     }),
-    /** The closest tool paths, when the path names no tool. */
     matches: Schema.optionalKey(Schema.Array(Schema.String)),
+    callLog: Schema.optionalKey(CallLog),
   }),
 ]);
 export type CallOutcome = typeof CallOutcome.Type;
-/** Search, describe and call read the catalog directly; a failure here is the caller's whole listing. */
 export class CatalogUnavailable extends Schema.TaggedError<CatalogUnavailable>()(
   "CatalogUnavailable",
   { message: Schema.String },
 ) {}
-/**
- * Server-controlled execution budgets; clients cannot override them. Executor sets no limit on the
- * size of a result: `execute` and `call` return the whole value, or fail with the platform's error.
- */
 export const McpLimits = Schema.Struct({
   timeoutMs: Schema.Int.check(Schema.isGreaterThan(0)),
   maxToolCalls: Schema.Int.check(Schema.isGreaterThan(0)),
 });
 export type McpLimits = typeof McpLimits.Type;
-/** Default interpreter budgets; each product may supply different limits. */
 export const defaultMcpLimits: McpLimits = {
   timeoutMs: 5 * 60_000,
   maxToolCalls: 100,
 };
-/** UTF-8 bytes of JSON one search page may hold; `next` continues past it. */
 export const searchPageBytes = 25_000;
 
-/** Execute programs over the host-provided app catalog. */
 export const ExecuteTool = McpTool.make("execute", {
   description:
-    "Run a JavaScript program over Executor apps, for work where one result feeds another call or a large result should be filtered before it reaches you; for one or a few independent calls, use call instead. Find tools with the search tool or tools.search inside the program, and full signatures with describe or tools.search.describe({ paths }). First read the Executor app's entry skill with skills({app:'executor',name:'executor'}). Never ask the user for secrets in chat; accounts connect through Executor's secure links. If approval-required or input-required is returned, show it to the user and call resume with their answer; never run the program's source again. External effects are not rolled back on error or cancellation. Send feedback with the Executor app's feedback.submit tool when Executor gets in your way or something works especially well.",
+    "Run a JavaScript program over Executor apps, for work where one result feeds another call or a large result should be filtered before it reaches you; for one or a few independent calls, use call instead. Find tools with the search tool or tools.search inside the program, and full signatures with describe or tools.search.describe({ paths }). The server instructions are the Executor app's entry skill; if your client did not show them, read it with skills({app:'executor',name:'executor'}). Never ask the user for secrets in chat; accounts connect through Executor's secure links. If approval-required or input-required is returned, show it to the user and call resume with their answer; never run the program's source again. External effects are not rolled back on error or cancellation. Send feedback with the Executor app's feedback.submit tool when Executor gets in your way or something works especially well.",
   dependencies: [HttpServerRequest.HttpServerRequest],
   parameters: ExecuteInput,
   success: McpExecutionResult,
   failure: ExecutionRejected,
-}).annotate(McpTool.Meta, ExecutionResultMeta);
+})
+  .annotate(McpTool.Meta, ExecutionResultMeta)
+  .annotate(McpServer.ResultContent, executionResultContent);
 
-/** Native-mode execution obtains policy decisions through server-initiated MCP requests. */
 export const NativeExecuteTool = McpTool.make("execute", {
   description:
-    "Run a JavaScript program over Executor apps, for work where one result feeds another call or a large result should be filtered before it reaches you; for one or a few independent calls, use call instead. Find tools with the search tool or tools.search inside the program, and full signatures with describe or tools.search.describe({ paths }). First read the Executor app's entry skill with skills({app:'executor',name:'executor'}). Never ask the user for secrets in chat; accounts connect through Executor's secure links. Approvals and tool input open the MCP client's own prompt, and execute continues the same program. Earlier tool calls may already have completed and are not rolled back; never rerun the program automatically after an error. Send feedback with the Executor app's feedback.submit tool when Executor gets in your way or something works especially well.",
+    "Run a JavaScript program over Executor apps, for work where one result feeds another call or a large result should be filtered before it reaches you; for one or a few independent calls, use call instead. Find tools with the search tool or tools.search inside the program, and full signatures with describe or tools.search.describe({ paths }). The server instructions are the Executor app's entry skill; if your client did not show them, read it with skills({app:'executor',name:'executor'}). Never ask the user for secrets in chat; accounts connect through Executor's secure links. Approvals and tool input open the MCP client's own prompt, and execute continues the same program. Earlier tool calls may already have completed and are not rolled back; never rerun the program automatically after an error. Send feedback with the Executor app's feedback.submit tool when Executor gets in your way or something works especially well.",
   dependencies: [HttpServerRequest.HttpServerRequest, McpSchema.McpRequestContext],
   parameters: ExecuteInput,
   success: McpExecutionResult,
   failure: Schema.Union([NativeElicitationFailed, ElicitationResponseInvalid, ExecutionRejected]),
-}).annotate(McpTool.Meta, ExecutionResultMeta);
+})
+  .annotate(McpTool.Meta, ExecutionResultMeta)
+  .annotate(McpServer.ResultContent, executionResultContent);
 
-/** Search reports the apps it could not load beside its matches, as execute results do. */
 export const SearchToolResult = Schema.Struct({
   ...SearchResult.fields,
   unavailableApps: Schema.Array(UnavailableApp),
 });
-/** The catalog search a program reaches as tools.search, as its own MCP tool. */
 export const SearchTool = McpTool.make("search", {
   description:
     "Find Executor app tools by words in their paths, descriptions and labels. Returns exact paths, one-line descriptions and input types, with each app and its linked accounts listed once. Pass a path to call or describe, or use it as tools.<path> inside execute. Omit query to list a namespace. To read the following page, call search again with the returned next object as the whole input; next is null on the last page.",
@@ -466,7 +412,6 @@ export const SearchTool = McpTool.make("search", {
 })
   .annotate(McpTool.Readonly, true)
   .annotate(McpTool.Destructive, false);
-/** Full signatures for exact paths, as tools.search.describe returns them in a program. */
 export const DescribeTool = McpTool.make("describe", {
   description:
     "Read the whole description and TypeScript signature, with input and output types, of tools at exact paths from search. Unknown paths are listed in missing with the closest paths.",
@@ -477,22 +422,17 @@ export const DescribeTool = McpTool.make("describe", {
   .annotate(McpTool.Readonly, true)
   .annotate(McpTool.Destructive, false);
 
-/** Shared by every delivery mode; each appends how pending interactions are answered. */
 export const callDescription =
   "Call Executor app tools directly by exact path from search. Pass one {path, input} as calls, or an array of independent calls to run them concurrently; results come back in the same order, each with ok and its value or error. Use execute instead when one call's output feeds another, or to filter a large result before it reaches you. Never ask the user for secrets in chat; accounts connect through Executor's secure links.";
-/** Call tools without a program. Pending interactions return as from execute. */
 export const CallTool = McpTool.make("call", {
   description: `${callDescription} If approval-required or input-required is returned, show it to the user and call resume with their answer; never repeat the call to continue it.`,
   dependencies: [HttpServerRequest.HttpServerRequest],
   parameters: CallInput,
   success: McpExecutionResult,
   failure: ExecutionRejected,
-}).annotate(McpTool.Meta, ExecutionResultMeta);
-/**
- * Native-mode calls. The tool is marked destructive and open-world, so the MCP client confirms each
- * call before it runs; that confirmation answers the apps' approval policies, which are not asked
- * again. Tool input still opens the client's own prompt.
- */
+})
+  .annotate(McpTool.Meta, ExecutionResultMeta)
+  .annotate(McpServer.ResultContent, executionResultContent);
 export const NativeCallTool = McpTool.make("call", {
   description: `${callDescription} Your MCP client confirms each call before it runs, so approvals do not ask again. Tool input opens the client's own prompt, and the call continues.`,
   dependencies: [HttpServerRequest.HttpServerRequest, McpSchema.McpRequestContext],
@@ -501,6 +441,7 @@ export const NativeCallTool = McpTool.make("call", {
   failure: Schema.Union([NativeElicitationFailed, ElicitationResponseInvalid, ExecutionRejected]),
 })
   .annotate(McpTool.Meta, ExecutionResultMeta)
+  .annotate(McpServer.ResultContent, executionResultContent)
   .annotate(McpTool.Readonly, false)
   .annotate(McpTool.Destructive, true)
   .annotate(McpTool.OpenWorld, true);

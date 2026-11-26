@@ -1,0 +1,69 @@
+{
+  "query": "/api/traces/2af894fe72f36e3c1d0d0ad4ec7a6f51/logs",
+  "status": 200,
+  "shape": {
+    "types": ["object"],
+    "fields": {
+      "data": {
+        "types": ["array"],
+        "items": {
+          "types": ["object"],
+          "fields": {
+            "id": {
+              "types": ["string"]
+            },
+            "timestamp": {
+              "types": ["string"]
+            },
+            "serviceName": {
+              "types": ["string"]
+            },
+            "severityText": {
+              "types": ["string"]
+            },
+            "body": {
+              "types": ["string"]
+            },
+            "traceId": {
+              "types": ["string"]
+            },
+            "spanId": {
+              "types": ["string"]
+            },
+            "scopeName": {
+              "types": ["string"]
+            },
+            "attributes": {
+              "types": ["object"],
+              "fields": {
+                "*": {
+                  "types": ["string"]
+                }
+              }
+            }
+          }
+        }
+      },
+      "meta": {
+        "types": ["object"],
+        "fields": {
+          "limit": {
+            "types": ["number"]
+          },
+          "lookback": {
+            "types": ["string"]
+          },
+          "returned": {
+            "types": ["number"]
+          },
+          "truncated": {
+            "types": ["boolean"]
+          },
+          "nextCursor": {
+            "types": ["string"]
+          }
+        }
+      }
+    }
+  }
+}

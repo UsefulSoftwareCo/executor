@@ -46,7 +46,6 @@ layer(HostedLive, { excludeTestServices: true })("App browsing", (it) => {
           })).status,
         ).toBe(200);
 
-        // Run history belongs to the member who started the run, so the browsing member starts it.
         const run = yield* api.request(actors.member, "POST", `${path}/workflow-runs`, {
           workflow: "report",
           input: {},

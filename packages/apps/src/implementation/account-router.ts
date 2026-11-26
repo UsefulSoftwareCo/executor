@@ -1,6 +1,6 @@
 import { accountProviderError } from "./provider-error.ts";
 /** Combine account-bound protocol operations without changing their upstream inputs. */
-import { Effect, Schema } from "effect";
+import { Effect, Result, Schema } from "effect";
 import { HostedTool, HostedToolSummary } from "../contracts/host.ts";
 import type { AppOperation } from "../contracts/operations.ts";
 import type { AppNode, AppRouter, DynamicRouter } from "../contracts/router.ts";
@@ -11,10 +11,23 @@ import {
   combineJsonSchemas,
   importedJsonSchema,
   once,
+  schemaIdentity,
+  schemaMemo,
   withLazyJsonSchemaDocument,
+  type SchemaMemo,
 } from "./schema.ts";
 
 type Selection = { readonly accountId: string; readonly input: unknown };
+
+/**
+ * Some accounts listed their tools and at least one could not: the tools the others listed, and
+ * the first failing account's error. A catalog read keeps the tools and reports the error on the
+ * router, so one broken account does not hide every other account's tools.
+ */
+export class PartialListing extends Schema.TaggedError<PartialListing>()("PartialListing", {
+  tools: Schema.Array(Schema.Unknown),
+  error: Schema.Unknown,
+}) {}
 
 const decoderDocument = (decoder: Schema.Decoder<unknown>) => {
   const imported = importedJsonSchema(decoder);
@@ -29,10 +42,13 @@ const decoderDocument = (decoder: Schema.Decoder<unknown>) => {
  * through many accounts would otherwise be described once per account. Branch definitions stay in
  * the root `$defs`, where a listing shares them among its tools.
  */
-const accountBranches = (variants: readonly (readonly [string, JsonObject])[]) => {
+const accountBranches = (
+  variants: readonly (readonly [string, JsonObject])[],
+  memo: SchemaMemo = schemaMemo(),
+): JsonObject => {
   const groups = new Map<string, { schema: JsonObject; first: string; rest: string[] }>();
   for (const [accountId, schema] of variants) {
-    const key = JSON.stringify(schema);
+    const key = variants.length === 1 ? "" : schemaIdentity(schema, memo);
     const group = groups.get(key);
     if (group === undefined) groups.set(key, { schema, first: accountId, rest: [] });
     else group.rest.push(accountId);
@@ -41,6 +57,7 @@ const accountBranches = (variants: readonly (readonly [string, JsonObject])[]) =
   const { $defs, schemas } = combineJsonSchemas(
     branches.map(({ schema }) => schema),
     (index) => `#/anyOf/${index}/properties/input`,
+    memo,
   );
   return {
     type: "object",
@@ -63,11 +80,15 @@ const accountBranches = (variants: readonly (readonly [string, JsonObject])[]) =
 };
 
 /** Each distinct output schema once: a value matches the union whichever account returned it. */
-const outputBranches = (outputs: readonly JsonObject[]) => {
-  const { $defs, schemas } = combineJsonSchemas(
-    [...new Map(outputs.map((output) => [JSON.stringify(output), output])).values()],
-    (index) => `#/anyOf/${index}`,
-  );
+const outputBranches = (
+  outputs: readonly JsonObject[],
+  memo: SchemaMemo = schemaMemo(),
+): JsonObject => {
+  const distinct =
+    outputs.length === 1
+      ? outputs
+      : [...new Map(outputs.map((output) => [schemaIdentity(output, memo), output])).values()];
+  const { $defs, schemas } = combineJsonSchemas(distinct, (index) => `#/anyOf/${index}`, memo);
   return { ...($defs === undefined ? {} : { $defs }), anyOf: schemas };
 };
 
@@ -83,9 +104,14 @@ const outputDocument = (operation: AppOperation) =>
 
 /**
  * One operation whose input selects the account whose variant runs. It is a query only when every
- * account's variant is, matching how the merged tool is listed.
+ * account's variant is, matching how the merged tool is listed. An account in `failed` could not
+ * resolve the tool: selecting it fails with that account's error before anything runs, rather than
+ * as input naming an unknown account. It is not described and does not decide the kind.
  */
-const combineOperation = (accounts: ReadonlyMap<string, AppOperation>): AppOperation => {
+const combineOperation = (
+  accounts: ReadonlyMap<string, AppOperation>,
+  failed: ReadonlyMap<string, unknown> = new Map(),
+): AppOperation => {
   const variants = [...accounts.values()];
   const first = variants[0];
   if (first === undefined) throw new Error("An account operation must have at least one account");
@@ -96,12 +122,14 @@ const combineOperation = (accounts: ReadonlyMap<string, AppOperation>): AppOpera
       throw new Error("Account selection must be decoded before execution");
     return operation;
   };
-  const input = Schema.Union(
-    [...accounts].map(([accountId, operation]) =>
+  const input = Schema.Union([
+    ...[...accounts].map(([accountId, operation]) =>
       Schema.Struct({ accountId: Schema.Literal(accountId), input: operation.input }),
     ),
-  );
-  // Combined schemas are built when a tool is described, not on every evaluation for a call.
+    ...[...failed.keys()].map((accountId) =>
+      Schema.Struct({ accountId: Schema.Literal(accountId), input: Schema.Unknown }),
+    ),
+  ]);
   const inputSchema = () =>
     accountBranches(
       [...accounts].map(([accountId, operation]) => [accountId, decoderDocument(operation.input)]),
@@ -122,12 +150,15 @@ const combineOperation = (accounts: ReadonlyMap<string, AppOperation>): AppOpera
       : { _meta: first._meta }),
     input: withLazyJsonSchemaDocument(input, inputSchema),
     approval: (context) => {
+      if (failed.has(context.toolInput.accountId)) return Effect.succeed("approved" as const);
       const operation = select(context.toolInput);
       return operation.approval === undefined
         ? Effect.succeed("approved" as const)
         : operation.approval({ ...context, toolInput: context.toolInput.input });
     },
     run: (context, input: Selection) => {
+      if (failed.has(input.accountId))
+        return Effect.fail(accountProviderError(failed.get(input.accountId), input.accountId));
       const operation = select(input);
       return operation.run(context, input.input).pipe(
         Effect.mapError((error) => accountProviderError(error, input.accountId)),
@@ -185,37 +216,92 @@ const mergeSummary = (
   });
 };
 
+/**
+ * A merged tool with its schemas read as objects of entries. Their values are checked by a catalog
+ * read, which checks every tool's schemas in one pass (`DescribedTools`) and so walks a definition
+ * many tools share once. Checking them for each merged tool walked those definitions once per tool,
+ * as did writing each tool's schemas to compare its accounts': for Stripe's description that cost
+ * seconds of CPU for every account a listing merges.
+ */
+const Entries = Schema.Record(Schema.String, Schema.Unknown);
+const MergedTool = HostedTool.mapFields((fields) => ({
+  ...fields,
+  inputSchema: Entries,
+  outputSchema: Schema.optionalKey(Entries),
+  _meta: Schema.optionalKey(Entries),
+}));
+
 /** Calls take { accountId, input }, so each distinct account schema is one branch of the union. */
-const merge = (name: string, variants: readonly (readonly [string, HostedTool])[]) =>
-  Schema.decodeUnknownSync(HostedTool)({
+const merge = (
+  name: string,
+  variants: readonly (readonly [string, HostedTool])[],
+  memo: SchemaMemo,
+): HostedTool => {
+  const outputs = variants.flatMap(([, tool]) =>
+    tool.outputSchema === undefined ? [] : [tool.outputSchema],
+  );
+  const merged: HostedTool = {
     ...mergeSummary(name, variants),
     inputSchema: accountBranches(
       variants.map(([accountId, tool]) => [accountId, tool.inputSchema]),
+      memo,
     ),
-    ...(variants.every(([, tool]) => tool.outputSchema !== undefined)
-      ? {
-          outputSchema: outputBranches(
-            variants.flatMap(([, tool]) =>
-              tool.outputSchema === undefined ? [] : [tool.outputSchema],
-            ),
-          ),
-        }
-      : {}),
+    ...(outputs.length === variants.length ? { outputSchema: outputBranches(outputs, memo) } : {}),
     ...sameAcross("_meta", variants),
+  };
+  Schema.decodeUnknownSync(MergedTool)(merged);
+  return merged;
+};
+
+/** Accounts whose sources are read at once. Each read may reach its account's upstream service. */
+const accountConcurrency = 8;
+
+/**
+ * Read every account's source, each on its own: one account's failure does not stop the others.
+ * Reads run together; values and failures are kept in account order, each failure attributed to
+ * its account.
+ */
+const eachAccount = <A>(
+  sources: ReadonlyMap<string, DynamicRouter>,
+  read: (source: DynamicRouter) => Effect.Effect<A, unknown>,
+) =>
+  Effect.gen(function* () {
+    const results = yield* Effect.forEach(
+      sources,
+      ([accountId, source]) =>
+        Effect.result(
+          read(source).pipe(Effect.mapError((error) => accountProviderError(error, accountId))),
+        ).pipe(Effect.map((result) => [accountId, result] as const)),
+      { concurrency: accountConcurrency },
+    );
+    const values = new Map<string, A>();
+    const failed = new Map<string, unknown>();
+    for (const [accountId, result] of results)
+      if (Result.isSuccess(result)) values.set(accountId, result.success);
+      else failed.set(accountId, result.failure);
+    return { values, failed };
   });
+
+/** The first account's failure. A source no account could read fails with it, as one account would. */
+const firstFailure = (failed: ReadonlyMap<string, unknown>) => [...failed.values()][0];
 
 /** One dynamic router over every account's source; each tool's variants are merged by name. */
 const combineDynamic = (sources: ReadonlyMap<string, DynamicRouter>): DynamicRouter => {
   const first = [...sources.values()][0];
-  const grouped = <T extends HostedToolSummary>(
+  /**
+   * Every account's tools grouped by name. When some accounts fail and others list, it fails with
+   * `PartialListing`, which carries the others' tools; when every account fails, with the first
+   * account's error.
+   */
+  const grouped = <T extends HostedToolSummary, R>(
     read: (source: DynamicRouter) => Effect.Effect<readonly T[], unknown>,
+    merged: (name: string, variants: readonly (readonly [string, T])[]) => R,
   ) =>
     Effect.gen(function* () {
+      const { values: listed, failed } = yield* eachAccount(sources, read);
+      if (listed.size === 0 && failed.size > 0) return yield* Effect.fail(firstFailure(failed));
       const groups = new Map<string, [string, T][]>();
-      for (const [accountId, source] of sources) {
-        const tools = yield* read(source).pipe(
-          Effect.mapError((error) => accountProviderError(error, accountId)),
-        );
+      for (const [accountId, tools] of listed)
         for (const tool of tools) {
           const variants = groups.get(tool.name) ?? [];
           if (variants.some(([id]) => id === accountId))
@@ -223,48 +309,69 @@ const combineDynamic = (sources: ReadonlyMap<string, DynamicRouter>): DynamicRou
           variants.push([accountId, tool]);
           groups.set(tool.name, variants);
         }
-      }
-      return groups;
+      const tools = [...groups].map(([name, variants]) => merged(name, variants));
+      if (failed.size === 0) return tools;
+      return yield* new PartialListing({ tools, error: firstFailure(failed) });
     });
   return {
     kind: "dynamic",
-    // Accounts share one source, so the first account describes the router.
-    ...(first?.meta === undefined ? {} : { meta: first.meta }),
+    ...(first?.meta === undefined
+      ? {}
+      : {
+          meta: () =>
+            Effect.gen(function* () {
+              const failures: unknown[] = [];
+              for (const source of sources.values()) {
+                if (source.meta === undefined) continue;
+                const result = yield* Effect.result(source.meta());
+                if (Result.isSuccess(result)) return result.success;
+                failures.push(result.failure);
+              }
+              return yield* Effect.fail(failures[0]);
+            }),
+        }),
     ...(first?.overrides === undefined ? {} : { overrides: first.overrides }),
     list: () =>
-      grouped((source) => source.list()).pipe(
-        Effect.map((groups) => [...groups].map(([name, variants]) => merge(name, variants))),
-      ),
+      Effect.suspend(() => {
+        const memo = schemaMemo();
+        return grouped(
+          (source) => source.list(),
+          (name, variants) => merge(name, variants, memo),
+        );
+      }),
     summaries: () =>
-      grouped((source) =>
-        source.summaries === undefined ? source.list() : source.summaries(),
-      ).pipe(
-        Effect.map((groups) => [...groups].map(([name, variants]) => mergeSummary(name, variants))),
+      grouped(
+        (source) => (source.summaries === undefined ? source.list() : source.summaries()),
+        mergeSummary,
       ),
     describe: (name: string) =>
-      Effect.gen(function* () {
-        const variants: [string, HostedTool][] = [];
-        for (const [accountId, source] of sources) {
-          const tool = yield* (
-            source.describe === undefined
-              ? source.list().pipe(Effect.map((tools) => tools.find((tool) => tool.name === name)))
-              : source.describe(name)
-          ).pipe(Effect.mapError((error) => accountProviderError(error, accountId)));
-          if (tool !== undefined) variants.push([accountId, tool]);
-        }
-        return variants.length === 0 ? undefined : merge(name, variants);
-      }),
+      eachAccount(sources, (source) =>
+        source.describe === undefined
+          ? source.list().pipe(Effect.map((tools) => tools.find((tool) => tool.name === name)))
+          : source.describe(name),
+      ).pipe(
+        Effect.flatMap(({ values, failed }) => {
+          const variants = [...values].flatMap(([accountId, tool]) =>
+            tool === undefined ? [] : [[accountId, tool] as const],
+          );
+          if (variants.length === 0)
+            return failed.size > 0 ? Effect.fail(firstFailure(failed)) : Effect.succeed(undefined);
+          return Effect.succeed(merge(name, variants, schemaMemo()));
+        }),
+      ),
     resolve: (name: string) =>
-      Effect.gen(function* () {
-        const operations = new Map<string, AppOperation>();
-        for (const [accountId, source] of sources) {
-          const operation = yield* source
-            .resolve(name)
-            .pipe(Effect.mapError((error) => accountProviderError(error, accountId)));
-          if (operation !== undefined) operations.set(accountId, operation);
-        }
-        return operations.size === 0 ? undefined : combineOperation(operations);
-      }),
+      eachAccount(sources, (source) => source.resolve(name)).pipe(
+        Effect.flatMap(({ values, failed }) => {
+          const operations = new Map(
+            [...values].flatMap(([accountId, operation]) =>
+              operation === undefined ? [] : [[accountId, operation] as const],
+            ),
+          );
+          if (operations.size === 0)
+            return failed.size > 0 ? Effect.fail(firstFailure(failed)) : Effect.succeed(undefined);
+          return Effect.succeed(combineOperation(operations, failed));
+        }),
+      ),
   };
 };
 
@@ -323,6 +430,8 @@ const narrow = <T extends AppNode>(
  * Discover each selected account's router and combine matching names.
  * Calls take { accountId, input }; each branch retains its account's input schema,
  * credentials, approval and output validation. Empty selections expose no operations.
+ * An account whose source fails does not hide the others' tools; its error is reported on the
+ * router, and a call that selects it fails with that error.
  * Discovery is sequential and cancellation follows the caller's signal. `discover` may return the
  * router or a Promise of it, and the combined router keeps its operations' handler contexts.
  */

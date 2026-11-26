@@ -1,0 +1,237 @@
+import { Effect, FileSystem, Path, Schema, Stream } from "effect";
+import { ChildProcess, ChildProcessSpawner } from "effect/process";
+
+export type Reader =
+  | { readonly mode: "head"; readonly bytes: number }
+  | { readonly mode: "stalled"; readonly origin: string }
+  | {
+      readonly mode: "late";
+      readonly origin?: string;
+      readonly stream: "stdout" | "stderr";
+      readonly gate?: string;
+      readonly holdMs: number;
+    };
+
+const reader = `import { execFileSync, spawn } from "node:child_process";
+import { writeFileSync } from "node:fs";
+const [spec, command, ...args] = process.argv.slice(2);
+const reader = JSON.parse(spec);
+const report = (fields) => console.log(JSON.stringify(fields));
+const wait = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
+if (reader.mode === "head") {
+  const child = spawn(command, args, { stdio: ["ignore", "pipe", "pipe"] });
+  let read = 0, closedAt, stderr = "";
+  child.stderr.setEncoding("utf8").on("data", (text) => (stderr += text));
+  child.stdout.on("data", (chunk) => {
+    read += chunk.length;
+    if (read < reader.bytes || closedAt !== undefined) return;
+    closedAt = performance.now();
+    child.stdout.destroy();
+  });
+  child.on("close", (code, signal) =>
+    report({ code, signal, read, stderr, millisecondsAfterClose: performance.now() - (closedAt ?? NaN) }),
+  );
+} else {
+  let child, stderr = "", signalledAt, hung, reported = false, answeredAfterClose, stoppedAfterExit, startedProcesses;
+  let pipeFullAtSignal;
+  let origin = reader.origin;
+  // What the report waits for once the command exits.
+  let afterExit = Promise.resolve();
+  const cleanup = [];
+  const start = (output) => {
+    child = spawn(command, args, {
+      stdio: ["ignore", "pipe", output, "pipe"],
+      env: { ...process.env, EXECUTOR_TEST_STOP_FD: "3" },
+    });
+    child.stderr?.setEncoding("utf8").on("data", (text) => (stderr += text));
+    // A request to a server that has already exited fails; its exit is what gets reported.
+    child.stdio[3].on("error", () => {});
+    child.on("exit", (code, signal) => {
+      const exitedAt = performance.now();
+      clearTimeout(hung);
+      for (const other of cleanup) other.kill("SIGKILL");
+      // A process the command left running can hold stderr open, so stop waiting for it soon.
+      const done = () => {
+        if (reported) return;
+        reported = true;
+        for (const pipe of [child.stdout, child.stderr, child.stdio[3]]) pipe?.destroy();
+        afterExit.then(() =>
+          report({
+            code,
+            signal,
+            stderr,
+            answeredAfterClose,
+            stoppedAfterExit,
+            startedProcesses,
+            pipeFullAtSignal,
+            millisecondsAfterSignal: exitedAt - (signalledAt ?? NaN),
+          }),
+        );
+      };
+      const settled = setTimeout(done, 2_000);
+      (child.stderr ?? child.stdout).on("close", () => (clearTimeout(settled), done()));
+    });
+  };
+  const request = () => child.stdio[3].write("stop");
+  const running = () => child.exitCode === null && child.signalCode === null;
+  const stop = (how) => {
+    if (!running()) return;
+    signalledAt = performance.now();
+    how();
+    hung = setTimeout(() => child.kill("SIGKILL"), 20_000);
+  };
+  // A starting server answers 503 until its product is composed; only a ready one answers 200.
+  // A request the starting server accepted may never be answered.
+  const isReady = () =>
+    fetch(new URL("/api/service", origin), { signal: AbortSignal.timeout(2_000) }).then(
+      async (response) => response.status === 200 && (await response.json()).status === "ready",
+      () => false,
+    );
+  // The processes the command started, read from the process table. Its server is told apart by
+  // these, not by its port: once free, the port can be handed to another server, which answers.
+  const descendants = () => {
+    const rows = execFileSync("ps", ["-A", "-o", "pid=,ppid="], { encoding: "utf8" })
+      .trim()
+      .split("\\n")
+      .map((row) => row.trim().split(/\\s+/).map(Number));
+    const below = new Set([child.pid]);
+    for (let size = 0; size !== below.size; ) {
+      size = below.size;
+      for (const [pid, parent] of rows) if (below.has(parent)) below.add(pid);
+    }
+    below.delete(child.pid);
+    return [...below];
+  };
+  const exists = (pid) => {
+    try {
+      process.kill(pid, 0);
+      return true;
+    } catch (error) {
+      return error.code === "EPERM";
+    }
+  };
+  const deadline = Date.now() + 120_000;
+  const ready = async () => {
+    while (running() && Date.now() < deadline) {
+      if (await isReady()) return true;
+      await wait(200);
+    }
+    return false;
+  };
+  // Resolves once the server prints its connection link; without an origin, the server's is known
+  // only then.
+  const linked = () => {
+    let printed = "";
+    return new Promise((resolve) =>
+      child.stdout.setEncoding("utf8").on("data", (text) => {
+        printed += text;
+        origin ??= /^Executor: (\\S+)$/mu.exec(printed)?.[1];
+        if (/#pair=/u.test(printed)) resolve();
+      }),
+    );
+  };
+  if (reader.mode === "stalled") {
+    // One process holds the pipe's read end and never reads; another fills the pipe and waits
+    // there while it is full, so none of the command's writes to it can complete. This program
+    // never writes to the pipe, since a command that makes it blocking would block this program too.
+    const idle = ["-e", "setInterval(() => {}, 1 << 30)"];
+    const holder = spawn(process.execPath, idle, { stdio: ["pipe", "ignore", "ignore"] });
+    const filler = spawn(process.execPath, ["-e", "process.stdout.write(Buffer.alloc(1 << 20))"], {
+      stdio: ["ignore", holder.stdin, "ignore"],
+    });
+    cleanup.push(holder, filler);
+    filler.on("spawn", () => {
+      start(holder.stdin);
+      linked()
+        .then(ready)
+        .then((answered) => {
+          if (!answered) return child.kill("SIGKILL");
+          // The filler is still waiting to write, so the pipe is still full.
+          pipeFullAtSignal = filler.exitCode === null && filler.signalCode === null;
+          stop(process.platform === "win32" ? request : () => child.kill("SIGTERM"));
+        });
+    });
+  } else {
+    start("pipe");
+    linked()
+      .then(ready)
+      .then(async (answered) => {
+        if (!answered) return child.kill("SIGKILL");
+        child[reader.stream].destroy();
+        if (reader.gate !== undefined) writeFileSync(reader.gate, "");
+        await wait(reader.holdMs);
+        answeredAfterClose = running() && (await isReady());
+        // A server in another process, as \`--standalone\` runs, stops with the command: every
+        // process the command had started exits within 15 seconds of the command's exit.
+        if (running() && process.platform !== "win32") {
+          const started = descendants();
+          startedProcesses = started.length;
+          afterExit = new Promise((resolve) => child.once("exit", resolve)).then(async () => {
+            const until = Date.now() + 15_000;
+            while (Date.now() < until) {
+              if (!started.some(exists)) return void (stoppedAfterExit = true);
+              await wait(200);
+            }
+            stoppedAfterExit = false;
+          });
+        }
+        stop(request);
+      });
+  }
+}
+`;
+
+const Observed = Schema.fromJsonString(
+  Schema.Struct({
+    code: Schema.NullOr(Schema.Number),
+    signal: Schema.NullOr(Schema.String),
+    stderr: Schema.String,
+    read: Schema.optional(Schema.Number),
+    millisecondsAfterClose: Schema.optional(Schema.NullOr(Schema.Number)),
+    millisecondsAfterSignal: Schema.optional(Schema.NullOr(Schema.Number)),
+    answeredAfterClose: Schema.optional(Schema.Boolean),
+    stoppedAfterExit: Schema.optional(Schema.Boolean),
+    startedProcesses: Schema.optional(Schema.Number),
+    pipeFullAtSignal: Schema.optional(Schema.Boolean),
+  }),
+);
+
+export const throughPipe = (
+  spec: Reader,
+  command: { readonly command: string; readonly args: ReadonlyArray<string> },
+  env: Readonly<Record<string, string>>,
+) =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem,
+        path = yield* Path.Path,
+        processes = yield* ChildProcessSpawner.ChildProcessSpawner;
+      const directory = yield* fs.makeTempDirectoryScoped({ prefix: "executor-pipe-reader-" });
+      const script = path.join(directory, "reader.mjs");
+      yield* fs.writeFileString(script, reader);
+      const child = yield* processes.spawn(
+        ChildProcess.make(
+          "node",
+          [script, JSON.stringify(spec), command.command, ...command.args],
+          {
+            extendEnv: false,
+            env: { PATH: process.env.PATH ?? "", ...env },
+            stdout: "pipe",
+            stderr: "pipe",
+            forceKillAfter: "3 seconds",
+          },
+        ),
+      );
+      const [, printed, failed] = yield* Effect.all(
+        [
+          child.exitCode,
+          child.stdout.pipe(Stream.decodeText(), Stream.mkString),
+          child.stderr.pipe(Stream.decodeText(), Stream.mkString),
+        ],
+        { concurrency: 3 },
+      ).pipe(Effect.timeout("3 minutes"));
+      return yield* Schema.decodeUnknownEffect(Observed)(printed).pipe(
+        Effect.catch(() => Effect.die(`The pipe reader printed no result: ${failed}`)),
+      );
+    }),
+  );

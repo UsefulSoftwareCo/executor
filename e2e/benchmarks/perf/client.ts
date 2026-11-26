@@ -1,16 +1,15 @@
-/** Timed product clients: every request carries a sampled traceparent and records Server-Timing. */
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { Effect, Schema } from "effect";
 import { HttpClient, HttpClientRequest } from "effect/http";
 import { randomBytes } from "node:crypto";
+import { roleHost } from "../../support/role-hosts.ts";
 
 export class PerfRequestFailed extends Schema.TaggedError<PerfRequestFailed>()(
   "PerfRequestFailed",
   { operation: Schema.String, status: Schema.optional(Schema.Number), detail: Schema.String },
 ) {}
 
-/** One measured exchange. `serverMs` is the handler duration the product reports. */
 export interface Timed {
   readonly status: number;
   readonly body: unknown;
@@ -19,7 +18,6 @@ export interface Timed {
   readonly traceId: string;
 }
 
-/** Parse `executor;dur=N` and `executor-trace;desc="..."` from Server-Timing. */
 export const serverTiming = (header: string | null | undefined) => {
   if (!header) return { serverMs: undefined, traceId: undefined };
   const dur = /(?:^|,)\s*executor;dur=([\d.]+)/.exec(header)?.[1];
@@ -32,16 +30,15 @@ export const newTrace = () => {
   return { traceId, traceparent: `00-${traceId}-${randomBytes(8).toString("hex")}-01` };
 };
 
-/** Cookie header for a synthetic fixture session. */
 export const cookieHeader = (cookies: readonly { name: string; value: string }[]) =>
   cookies.map((cookie) => `${cookie.name}=${cookie.value}`).join("; ");
 
 export type Method = "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
 
-/** Product HTTP client bound to one origin and one actor's cookies. */
-export const productClient = (origin: string, cookies: string) =>
+export const productClient = (deployment: string, cookies: string) =>
   Effect.gen(function* () {
     const http = yield* HttpClient.HttpClient;
+    const origin = roleHost(deployment, "app");
     const request = (method: Method, path: string, data?: unknown) =>
       Effect.gen(function* () {
         const url = new URL(path, origin);
@@ -87,7 +84,6 @@ export const productClient = (origin: string, cookies: string) =>
   });
 export type ProductClient = Effect.Success<ReturnType<typeof productClient>>;
 
-/** One MCP HTTP exchange as observed by the protocol client. */
 export interface McpExchange {
   readonly method: string;
   readonly httpMethod: string;
@@ -97,10 +93,6 @@ export interface McpExchange {
   readonly traceId: string;
 }
 
-/**
- * Official MCP client whose fetch records every exchange. Headers are never logged; the PAT stays
- * in memory. `exchanges` is appended to as requests complete.
- */
 export const mcpSession = (origin: string, token: string, organization: string) =>
   Effect.gen(function* () {
     const exchanges: McpExchange[] = [];
@@ -133,7 +125,6 @@ export const mcpSession = (origin: string, token: string, organization: string) 
               serverMs: timing.serverMs,
               traceId: timing.traceId ?? trace.traceId,
             });
-          // Streamed responses complete when their body ends; record at that point.
           if (response.body === null) {
             record(performance.now() - started);
             return response;
@@ -194,7 +185,6 @@ export const mcpSession = (origin: string, token: string, organization: string) 
         });
         return { result, clientMs: performance.now() - at, exchanges: exchanges.slice(before) };
       });
-    /** The product answered 404 for this session; spec clients must initialize a new one. */
     const lost = () => exchanges.at(-1)?.status === 404;
     return { openMs, close, callTool, exchanges, lost, sessionId: () => transport.sessionId };
   });

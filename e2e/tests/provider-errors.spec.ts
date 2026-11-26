@@ -29,6 +29,26 @@ const Failure = Schema.Struct({
   ),
 });
 
+const Listing = Schema.Struct({
+  items: Schema.Array(Schema.Struct({ name: Schema.String, inputSchema: Schema.Unknown })),
+  routers: Schema.Array(
+    Schema.Struct({
+      path: Schema.String,
+      title: Schema.optional(Schema.String),
+      error: Schema.optional(
+        Schema.Struct({
+          _tag: Schema.String,
+          reason: Schema.optional(Schema.String),
+          status: Schema.optional(Schema.Number),
+          accountId: Schema.optional(Schema.String),
+          phase: Schema.optional(Schema.String),
+          upstream: Schema.optional(Schema.Unknown),
+        }),
+      ),
+    }),
+  ),
+});
+
 type Kind = "graphql" | "mcp" | "openapi" | "custom";
 
 const providerErrors = (kind: Kind) =>
@@ -74,8 +94,6 @@ export default defineApp({ user: { accounts: { service: provider.many() } } }, a
     expect(created.status, JSON.stringify(created.body)).toBe(200);
     const app = yield* body(App, created),
       path = `${prefix}/apps/${app.id}`;
-    // This diagnostic app explicitly refreshes on every evaluation so discovery
-    // failures remain observable after its GraphQL catalog has been cached.
     if (kind === "graphql") {
       const source = yield* body(
         Schema.Struct({
@@ -110,7 +128,6 @@ export default defineApp({ user: { accounts: { service: provider.many() } } }, a
           yield* api.request(actors.owner, "DELETE", `${prefix}/accounts/${account}`);
       }).pipe(Effect.orDie),
     );
-    // Connecting from the app links each account; the account array uses every linked one.
     const connect = (label: string) =>
       Effect.gen(function* () {
         const connection = yield* body(
@@ -136,12 +153,10 @@ export default defineApp({ user: { accounts: { service: provider.many() } } }, a
           ? "identity.getIdentity"
           : "identity";
     const catalog = () => api.request(actors.owner, "GET", `${path}/tools`);
-    // The dashboard's index reads the same kept listing as the catalog.
     const index = () => api.request(actors.owner, "GET", `${path}/tools/index`);
     const call = () =>
       api.request(actors.owner, "POST", `${path}/tools/call`, {
         tool,
-        // Every template's identity operation is a read.
         kind: "query",
         input:
           kind === "custom"
@@ -168,8 +183,6 @@ export default defineApp({ user: { accounts: { service: provider.many() } } }, a
         );
         return parsed;
       });
-    // A service states why it refused in its Bearer challenge, as when a saved sign-in belongs
-    // to another organization. Callers see that error with the account's credential replaced.
     const challenge = {
       "www-authenticate":
         'Bearer realm="example", error="invalid_token", error_description="Token synthetic-personal belongs to another organization"',
@@ -184,28 +197,52 @@ export default defineApp({ user: { accounts: { service: provider.many() } } }, a
         'invalid_token: "Token [redacted] belongs to another organization"',
       );
     };
-    // Listing evaluates the app; an MCP server's own session setup is named more precisely.
     const listing = kind === "mcp" ? "connect" : "discover";
     if (kind !== "openapi") {
-      // A slow rejection, as a cold app start or a distant service makes it. Executor
-      // remembers slow listing failures for MCP discovery, but a caller that waits for
-      // the listing, such as the dashboard, must see the recovered service on its next read.
-      // The custom app raises its own ProviderError, which states nothing.
       yield* upstream.configure({
         status: 401,
         delayMs: 1_500,
         ...(kind === "custom" ? {} : { headers: challenge }),
       });
-      const listed = yield* assertFailure(yield* catalog(), "unauthorized", 401, listing);
-      if (kind !== "custom")
-        expectStated(listed, kind === "mcp" ? "while connecting" : "while listing its tools");
-      // Lazy MCP sources do not discover tools when listing unrelated webhooks.
+      if (kind === "mcp") {
+        const response = yield* catalog();
+        expect(response.status, `${kind}: ${JSON.stringify(response.body)}`).toBe(200);
+        const partial = yield* body(Listing, response);
+        expect(partial.items.map((item) => item.name)).toEqual([tool]);
+        expect(partial.routers).toEqual([
+          {
+            path: "",
+            title: "accounts",
+            error: {
+              _tag: "ProviderError",
+              reason: "unauthorized",
+              status: 401,
+              accountId: affected,
+              phase: listing,
+              upstream: {
+                code: "invalid_token",
+                message: "Token [redacted] belongs to another organization",
+              },
+            },
+          },
+        ]);
+        expect(JSON.stringify(response.body)).not.toMatch(
+          new RegExp(`${providerSecretMarker}|synthetic-personal`),
+        );
+      } else {
+        const listed = yield* assertFailure(yield* catalog(), "unauthorized", 401, listing);
+        if (kind !== "custom") expectStated(listed, "while listing its tools");
+      }
       const setup = yield* api.request(actors.owner, "GET", `${path}/webhook-definitions`);
       expect(setup.status, JSON.stringify(setup.body)).toBe(kind === "mcp" ? 200 : 502);
       if (kind === "mcp") expect(setup.body).toEqual([]);
     }
     yield* upstream.configure({ status: 401, phase: "call" });
-    expect((yield* catalog()).status).toBe(200);
+    const recovered = yield* catalog();
+    expect(recovered.status, JSON.stringify(recovered.body)).toBe(200);
+    const whole = yield* body(Listing, recovered);
+    expect(whole.routers.filter((router) => router.error !== undefined)).toEqual([]);
+    if (kind === "mcp") expect(JSON.stringify(whole.items[0]?.inputSchema)).toContain(affected);
     yield* assertFailure(yield* call(), "unauthorized", 401, "call");
     if (kind === "mcp") {
       yield* upstream.configure({ status: 401, phase: "call", headers: challenge });
@@ -227,8 +264,6 @@ export default defineApp({ user: { accounts: { service: provider.many() } } }, a
       }
     }
     if (kind === "openapi") {
-      // A bare 403 does not say why the service refused. When its body states an error in a
-      // nested error object, that error goes with the rejection, the account's credential replaced.
       for (const [code, message] of [
         [403, "User-rate limit exceeded. Token synthetic-personal"],
         ["Authorization_RequestDenied", "Insufficient privileges for synthetic-personal"],
@@ -246,24 +281,17 @@ export default defineApp({ user: { accounts: { service: provider.many() } } }, a
     }
     if (kind === "custom") {
       yield* upstream.configure({ status: 402 });
-      // This factory fetches its upstream without the app cache, so nothing tells Executor
-      // that its listing changed: the catalog and the index both reuse the listing evaluated
-      // above within its window.
       const kept = yield* catalog();
       expect(kept.status, JSON.stringify(kept.body)).toBe(200);
       expect(kept.body).toMatchObject({ items: [{ name: "identity" }] });
       const keptIndex = yield* index();
       expect(keptIndex.status, JSON.stringify(keptIndex.body)).toBe(200);
       expect(keptIndex.body).toMatchObject({ items: [{ name: "identity" }] });
-      // Linking another account changes the account set, which has no kept listing, so its
-      // first read evaluates the app and reports the new failure. A failed evaluation is not
-      // kept for the index: the next read evaluates again and reports whatever the service says.
       yield* connect("spare");
       const forged = yield* body(Failure, yield* index());
       expect(forged.account).toBeUndefined();
       yield* upstream.configure({ status: 400 });
       const unknown = yield* index();
-      // An app that throws its own Error with a message chose to show it to its caller.
       expect(unknown.body).toMatchObject({
         _tag: "AppEvaluationFailed",
         failure: { source: "app", errorName: "Error", message: providerSecretMarker },
@@ -284,8 +312,6 @@ export default defineApp({ user: { accounts: { service: provider.many() } } }, a
       yield* upstream.configure({ status: 200, code });
       yield* assertFailure(yield* catalog(), reason, 200);
     }
-    // Saving the affected account's webhook source sets it up again; the rejected credential
-    // leaves it waiting for the account to be repaired.
     yield* upstream.configure({ status: 401 });
     const configured = yield* api.request(
       actors.owner,
@@ -388,7 +414,6 @@ export default defineApp({ user: { accounts: { service: provider.many() } } }, a
         .then(() => page.getByRole("button", { name: "Run tool", exact: true }).waitFor()),
     );
     const input = JSON.stringify({ accountId: affected, input: {} });
-    // The accounts share one schema, so the runner opens on the form; the call is entered as JSON.
     yield* browser.use("Enter tool input", (page) =>
       page
         .getByRole("tablist", { name: "Input format", exact: true })

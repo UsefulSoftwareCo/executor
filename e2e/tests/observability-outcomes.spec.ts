@@ -1,11 +1,11 @@
-/** Observe real API/MCP outcomes after app execution and collector ingestion. */
 import { expect, layer } from "@effect/vitest";
-import { Effect, FileSystem, Redacted, Schedule, Schema } from "effect";
+import { Effect, Redacted, Schedule, Schema } from "effect";
 import { randomUUID } from "node:crypto";
 import { scenarios } from "../test-plan.ts";
 import { Actors } from "../support/actors.ts";
 import { Api, body } from "../support/api.ts";
 import { HostedLive, withHostedCase } from "../support/case.ts";
+import { analyticsEvents } from "../support/collector-events.ts";
 import { App } from "../support/contracts.ts";
 import { Evidence, Telemetry } from "../support/evidence.ts";
 import { McpClient } from "../support/mcp-client.ts";
@@ -14,17 +14,6 @@ import { WorkflowRun } from "../support/workflow-app.ts";
 import { Target } from "../support/platform.ts";
 import { awaitSentryEvents, traceEvents } from "../support/sentry-events.ts";
 import { withApps, mcpSdkVersion } from "../support/apps-release.ts";
-
-const Analytics = Schema.fromJsonString(
-  Schema.Struct({
-    batch: Schema.Array(
-      Schema.Struct({
-        event: Schema.String,
-        properties: Schema.Record(Schema.String, Schema.Json),
-      }),
-    ),
-  }),
-);
 
 layer(HostedLive, { excludeTestServices: true })("Observability outcomes", (it) => {
   it.effect(scenarios.observabilityOutcomes.title, (context) =>
@@ -35,9 +24,10 @@ layer(HostedLive, { excludeTestServices: true })("Observability outcomes", (it) 
           actors = yield* Actors,
           evidence = yield* Evidence;
         const telemetry = yield* Telemetry,
-          target = yield* Target,
-          fs = yield* FileSystem.FileSystem;
+          target = yield* Target;
         expect(target.metadata.mode).toBe("managed");
+        const cloud = target.metadata.target === "cloud";
+        const runtime = cloud ? "runtime.cloud" : "runtime.workerd";
         const upstream = yield* mcpOutcomeFixture;
         const prefix = `/api/organizations/${actors.organization.id}`;
         const response = yield* api.request(actors.owner, "POST", `${prefix}/apps/deploy`, {
@@ -101,7 +91,6 @@ export default defineApp({}, async () => {
             actors.owner,
             "POST",
             `${prefix}/apps/${app.id}/tools/call`,
-            // The upstream tool is read-only, like the local lookalike.
             { tool, kind: "query", input: {} },
           );
           expect(called.status).toBe(200);
@@ -111,16 +100,21 @@ export default defineApp({}, async () => {
           expect(
             trace.data.find(({ span }) => span.operationName === "sdk.tools.call")?.span.status,
           ).toBe(failed ? "error" : "ok");
+          const tenant = {
+            "executor.app.id": app.id,
+            ...(cloud ? { "executor.organization.id": actors.organization.id } : {}),
+          };
+          expect(
+            trace.data.find(({ span }) => span.operationName === `${runtime}.call`)?.span.tags,
+          ).toMatchObject(tenant);
+          if (cloud)
+            expect(
+              trace.data.find(({ span }) => span.operationName === "runtime.app.remote.invoke")
+                ?.span.tags,
+            ).toMatchObject(tenant);
           yield* evidence.json(`${tool}-trace.json`, trace);
           if (target.metadata.target === "cloud") {
-            const events = yield* fs.readFileString(`${target.directory}/analytics.ndjson`).pipe(
-              Effect.map((text) =>
-                text
-                  .trim()
-                  .split("\n")
-                  .filter(Boolean)
-                  .flatMap((line) => Schema.decodeUnknownSync(Analytics)(line).batch),
-              ),
+            const events = yield* analyticsEvents({ app: app.id }).pipe(
               Effect.repeat({
                 schedule: Schedule.spaced("100 millis"),
                 until: (events) =>
@@ -157,7 +151,6 @@ export default defineApp({}, async () => {
         );
         expect(bulk.status).toBe(200);
         expect(bulk.body).toEqual({ requests: 340 });
-        // App and host spans arrive in separate export batches. Wait for the complete trace.
         const bulkTrace = yield* waitFor(yield* latestTrace(), "sdk.tools.call", 340);
         expect(
           bulkTrace.data.filter(({ span }) => span.operationName === "provider.http.request"),
@@ -173,7 +166,10 @@ export default defineApp({}, async () => {
         const failureTrace = yield* latestTrace();
         if (target.metadata.target === "cloud") {
           const events = traceEvents(
-            yield* awaitSentryEvents((events) => traceEvents(events, failureTrace).length > 0),
+            yield* awaitSentryEvents(
+              [failureTrace],
+              (events) => traceEvents(events, failureTrace).length > 0,
+            ),
             failureTrace,
           );
           expect(events).toHaveLength(1);
@@ -198,18 +194,13 @@ export default defineApp({}, async () => {
             ],
           ).toBe(run.id);
           yield* evidence.json("workflow-initiation-trace.json", initiation);
-          const event = yield* fs.readFileString(`${target.directory}/analytics.ndjson`).pipe(
-            Effect.map((text) =>
-              text
-                .trim()
-                .split("\n")
-                .filter(Boolean)
-                .flatMap((line) => Schema.decodeUnknownSync(Analytics)(line).batch)
-                .find(
-                  (event) =>
-                    event.event === "workflow_attempt_completed" &&
-                    event.properties.run_id === run.id,
-                ),
+          const event = yield* analyticsEvents({ run: run.id }).pipe(
+            Effect.map((events) =>
+              events.find(
+                (event) =>
+                  event.event === "workflow_attempt_completed" &&
+                  event.properties.run_id === run.id,
+              ),
             ),
             Effect.repeat({
               schedule: Schedule.spaced("500 millis"),

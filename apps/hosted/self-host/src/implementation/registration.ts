@@ -1,4 +1,3 @@
-/** Atomic setup and invitation redemption over Better Auth's transaction adapter. */
 import {
   defineRequestState,
   getCurrentAdapter,
@@ -11,6 +10,7 @@ import type {
 } from "@better-auth/core";
 import { APIError, createAuthEndpoint, isAPIError } from "better-auth/api";
 import { setSessionCookie } from "better-auth/cookies";
+import { inviterMayInvite } from "@executor-js/hosted-server";
 import { SsoRefusal } from "@executor-js/hosted-self-host-web/sso";
 import { Cause, Effect, Exit, Schema } from "effect";
 import { z } from "zod";
@@ -28,6 +28,7 @@ const Invitation = Schema.Struct({
   id: Schema.String,
   email: Schema.String,
   organizationId: Schema.String,
+  inviterId: Schema.String,
   role: Schema.Literals(["admin", "member"]),
   status: Schema.String,
   expiresAt: Schema.Date,
@@ -63,7 +64,6 @@ const decode = <S extends Schema.Top>(schema: S, value: unknown) =>
     ),
   );
 const deny = (message: string) => Effect.fail(new APIError("FORBIDDEN", { message }));
-/** Better Auth returns a coded refusal of its callback to the login page, which explains it. */
 const refuseSso = (code: (typeof SsoRefusal)[keyof typeof SsoRefusal], message: string) =>
   Effect.fail(new APIError("FORBIDDEN", { code, message }));
 const adapterFor = (ctx: GenericEndpointContext) =>
@@ -84,7 +84,6 @@ const instanceOrganization = (ctx: GenericEndpointContext) =>
     return yield* decode(Organization, organizations[0]);
   });
 
-/** Reject non-SSO user creation; only verified, allowlisted OIDC users can join automatically. */
 export const selfHostUserHooks = (settings: Effect.Success<typeof selfHostAuthSettings>) =>
   ({
     user: {
@@ -95,7 +94,6 @@ export const selfHostUserHooks = (settings: Effect.Success<typeof selfHostAuthSe
               if (ctx?.path === "/self-host/setup" || ctx?.path === "/self-host/register") return;
               if (!ctx || !isSsoCallback(ctx) || settings.sso === null)
                 return yield* deny("Create the first account through setup, or use an invitation.");
-              // Only an address the provider vouches for joins; an absent claim is not a yes.
               if (!user.emailVerified)
                 return yield* refuseSso(
                   SsoRefusal.emailUnverified,
@@ -131,7 +129,6 @@ export const selfHostUserHooks = (settings: Effect.Success<typeof selfHostAuthSe
                 }),
               );
               if (member === null) {
-                // Re-check the policy on every SSO login; no email/password login can auto-join.
                 if (!isSsoCallback(ctx) || settings.sso === null)
                   return yield* deny("Your account is not a member of this instance.");
                 if (!(yield* call(() => admittedSsoUser.get())))
@@ -186,8 +183,6 @@ const register = (
         await runWithTransaction(ctx.context.adapter, () =>
           run(
             Effect.gen(function* () {
-              // PGlite reserves its only connection for this whole transaction. Concurrent
-              // first-run requests therefore cannot both observe an empty user table.
               const adapter = yield* adapterFor(ctx);
               const email = input.email.toLowerCase();
               let organizationId: string;
@@ -228,6 +223,10 @@ const register = (
                   return yield* deny(
                     "This invitation is invalid, expired, or for a different email.",
                   );
+                if (!(yield* call(() => inviterMayInvite(adapter, invitation))))
+                  return yield* deny(
+                    "The person who sent this invitation can no longer invite members. Ask an administrator for a new invitation.",
+                  );
                 organizationId = org.id;
                 role = invitation.role;
                 yield* call(() =>
@@ -243,7 +242,6 @@ const register = (
               );
               const user = yield* Effect.gen(function* () {
                 if (existing) {
-                  // A new invitation can readmit a removed member, but cannot replace their password.
                   const account = existing.accounts.find(
                     (account) => account.providerId === "credential",
                   );
@@ -296,7 +294,6 @@ const register = (
     ),
   );
 
-/** Public capability discovery contains no users, emails, or SSO credentials. */
 export const selfHostRegistration = (settings: Effect.Success<typeof selfHostAuthSettings>) =>
   ({
     id: "executor-self-host-registration",
@@ -328,4 +325,11 @@ export const selfHostRegistration = (settings: Effect.Success<typeof selfHostAut
         (ctx) => register(ctx, ctx.body, { invitation: ctx.body.invitation }),
       ),
     },
+    rateLimit: [
+      {
+        pathMatcher: (path) => path === "/self-host/setup" || path === "/self-host/register",
+        window: 10,
+        max: 3,
+      },
+    ],
   }) satisfies BetterAuthPlugin;

@@ -1,5 +1,5 @@
 diff --git a/dist/codemode.d.ts b/dist/codemode.d.ts
-index 7e9424edcc57ed3c533ac1a55da8f6f0b6a1c8a4..961b4f9e4dfad063a5b7640e5392ef38c7dde651 100644
+index 7e9424e..47295db 100644
 --- a/dist/codemode.d.ts
 +++ b/dist/codemode.d.ts
 @@ -1,8 +1,8 @@
@@ -25,7 +25,16 @@ index 7e9424edcc57ed3c533ac1a55da8f6f0b6a1c8a4..961b4f9e4dfad063a5b7640e5392ef38
  };
  /** A JSON value that can cross the confined interpreter boundary. */
  export type DataValue = Schema.Json;
-@@ -141,6 +146,8 @@ export type Result = typeof Result.Type;
+@@ -58,6 +63,8 @@ export declare const Diagnostic: Schema.Struct<{
+         readonly column: Schema.Number;
+     }>>;
+     readonly suggestions: Schema.optionalKey<Schema.$Array<Schema.String>>;
++    /** The properties a failed tool's error carries (`ToolError`), for an uncaught `ToolFailure`. */
++    readonly properties: Schema.optionalKey<Schema.$Record<Schema.String, Schema.String>>;
+ }>;
+ /** A normalized program diagnostic safe to return across an agent tool boundary. */
+ export type Diagnostic = typeof Diagnostic.Type;
+@@ -141,6 +148,8 @@ export type Result = typeof Result.Type;
  export type Runtime<R = never> = {
      readonly catalog: () => ReadonlyArray<ToolDescription>;
      readonly execute: (code: string) => Effect.Effect<Result, never, R>;
@@ -35,10 +44,19 @@ index 7e9424edcc57ed3c533ac1a55da8f6f0b6a1c8a4..961b4f9e4dfad063a5b7640e5392ef38
  /** Executes one Effect-native CodeMode program without constructing a reusable runtime. */
  export declare const execute: <const Provided extends Record<string, unknown>>(options: ExecuteOptions<Provided>) => Effect.Effect<Result, never, Services<Provided>>;
 diff --git a/dist/codemode.js b/dist/codemode.js
-index e94b56b920a396f6bae79fb51cd60bd07b83d591..4f73e846180e65455d7abe4750b611ab9a340f9c 100644
+index e94b56b..8064157 100644
 --- a/dist/codemode.js
 +++ b/dist/codemode.js
-@@ -65,6 +65,7 @@ export const make = (options = {}) => {
+@@ -23,6 +23,8 @@ export const Diagnostic = Schema.Struct({
+     message: Schema.String,
+     location: Schema.optionalKey(Schema.Struct({ line: Schema.Number, column: Schema.Number })),
+     suggestions: Schema.optionalKey(Schema.Array(Schema.String)),
++    /** The properties a failed tool's error carries (`ToolError`), for an uncaught `ToolFailure`. */
++    properties: Schema.optionalKey(Schema.Record(Schema.String, Schema.String)),
+ });
+ const ToolCallSchema = Schema.Struct({ name: Schema.String });
+ export const Success = Schema.Struct({
+@@ -65,6 +67,7 @@ export const make = (options = {}) => {
      const prepared = ToolRuntime.prepare(tools);
      return {
          catalog: () => prepared.catalog,
@@ -47,8 +65,42 @@ index e94b56b920a396f6bae79fb51cd60bd07b83d591..4f73e846180e65455d7abe4750b611ab
 +        signaturesRendered: prepared.signaturesRendered,
      };
  };
+diff --git a/dist/interpreter/errors.js b/dist/interpreter/errors.js
+index 78e59e5..078dab7 100644
+--- a/dist/interpreter/errors.js
++++ b/dist/interpreter/errors.js
+@@ -22,7 +22,11 @@ export const normalizeError = (error) => {
+         };
+     }
+     if (error instanceof ToolError) {
+-        return { kind: "ToolFailure", message: error.message };
++        return {
++            kind: "ToolFailure",
++            message: error.message,
++            ...(error.properties === undefined ? {} : { properties: error.properties }),
++        };
+     }
+     if (error instanceof ProgramThrow) {
+         const value = error.value;
+@@ -72,7 +76,15 @@ export const caughtErrorValue = (thrown) => {
+     if (thrown instanceof InterpreterRuntimeError)
+         return createErrorValue(thrown.errorName, thrown.message);
+     const name = thrown instanceof Error && errorConstructors.has(thrown.name) ? thrown.name : "Error";
+-    return createErrorValue(name, normalizeError(thrown).message);
++    const value = createErrorValue(name, normalizeError(thrown).message);
++    // A tool's properties sit beside the message; they never replace the name or message.
++    if (thrown instanceof ToolError && thrown.properties !== undefined) {
++        for (const [key, property] of Object.entries(thrown.properties)) {
++            if (key !== "name" && key !== "message" && key !== "__proto__")
++                value[key] = property;
++        }
++    }
++    return value;
+ };
+ export const constructErrorValue = (name, args) => createErrorValue(name, args[0] === undefined ? "" : coerceToString(args[0]));
+ export const constructAggregateErrorValue = (runner, args, node) => Effect.gen(function* () {
 diff --git a/dist/interpreter/execute.d.ts b/dist/interpreter/execute.d.ts
-index e17d5849420a0266e37bf14b7f0fc257ebce2818..aeb177171d6c924b02c4174edb767bc70aa232b4 100644
+index e17d584..aeb1771 100644
 --- a/dist/interpreter/execute.d.ts
 +++ b/dist/interpreter/execute.d.ts
 @@ -1,4 +1,4 @@
@@ -58,7 +110,7 @@ index e17d5849420a0266e37bf14b7f0fc257ebce2818..aeb177171d6c924b02c4174edb767bc7
 -export declare const executeWithLimits: <const Provided extends Record<string, unknown>>(options: ExecuteOptions<Provided>, limits: ResolvedExecutionLimits, searchIndex: ToolRuntime.DiscoveryPlan["searchIndex"]) => Effect.Effect<Result, never, Services<Provided>>;
 +export declare const executeWithLimits: <const Provided extends Record<string, unknown>>(options: ExecuteOptions<Provided>, limits: ResolvedExecutionLimits, searchIndex: ToolRuntime.DiscoveryPlan["searchIndexOnUse"]) => Effect.Effect<Result, never, Services<Provided>>;
 diff --git a/dist/interpreter/execute.js b/dist/interpreter/execute.js
-index 3d7f507ef37117b1d3ca12a3fa1d9754abca4031..41edd0ae6527780c0c8d431b0965468d3ebc7799 100644
+index 3d7f507..41edd0a 100644
 --- a/dist/interpreter/execute.js
 +++ b/dist/interpreter/execute.js
 @@ -21,7 +21,7 @@ export const executeWithLimits = (options, limits, searchIndex) => {
@@ -104,7 +156,7 @@ index 3d7f507ef37117b1d3ca12a3fa1d9754abca4031..41edd0ae6527780c0c8d431b0965468d
          const timeoutMs = limits.timeoutMs;
          const operation = timeoutMs === undefined
 diff --git a/dist/interpreter/methods.d.ts b/dist/interpreter/methods.d.ts
-index db276e322e6eb9108c09dff9b5218bc4e29df616..d5b7dfca9c0020d63c828d776e044061411ec2d1 100644
+index db276e3..d5b7dfc 100644
 --- a/dist/interpreter/methods.d.ts
 +++ b/dist/interpreter/methods.d.ts
 @@ -6,6 +6,8 @@ export type CallbackRunner<R> = {
@@ -117,7 +169,7 @@ index db276e322e6eb9108c09dff9b5218bc4e29df616..d5b7dfca9c0020d63c828d776e044061
  export type SupportedCallback = CodeModeFunction | CoercionFunction | UriFunction | PromiseCapabilityFunction | GlobalMethodReference | JsonMethodReference | IntrinsicReference | ErrorConstructorReference | GlobalNamespace | PromiseNamespace;
  export declare const isSupportedCallback: (value: unknown) => value is SupportedCallback;
 diff --git a/dist/interpreter/promises.d.ts b/dist/interpreter/promises.d.ts
-index 3c4016c3d1e0d7c2b2bf29382489e2957fe7cce2..51e241995cdbf2598a0283161b8db99dc8d0f6d2 100644
+index 3c4016c..51e2419 100644
 --- a/dist/interpreter/promises.d.ts
 +++ b/dist/interpreter/promises.d.ts
 @@ -1,21 +1,44 @@
@@ -169,7 +221,7 @@ index 3c4016c3d1e0d7c2b2bf29382489e2957fe7cce2..51e241995cdbf2598a0283161b8db99d
      interrupt(): Effect.Effect<Array<Diagnostic>>;
  }
 diff --git a/dist/interpreter/promises.js b/dist/interpreter/promises.js
-index 996f9a5090879de5104b8ecb439ee15fecee6f40..55843d5d6d27b370a235d66e1a242ab274b03770 100644
+index 996f9a5..55843d5 100644
 --- a/dist/interpreter/promises.js
 +++ b/dist/interpreter/promises.js
 @@ -5,9 +5,212 @@ import { applyCollectionCallback, isSupportedCallback } from "./methods.js";
@@ -542,7 +594,7 @@ index 996f9a5090879de5104b8ecb439ee15fecee6f40..55843d5d6d27b370a235d66e1a242ab2
      const box = {};
      const body = Effect.gen(function* () {
 diff --git a/dist/interpreter/runtime.d.ts b/dist/interpreter/runtime.d.ts
-index bd1bc708017c1a30b0c81d37639b55ff12a2e3bc..3ad5894d77df91678f8c219bf913799a868e939f 100644
+index bd1bc70..3ad5894 100644
 --- a/dist/interpreter/runtime.d.ts
 +++ b/dist/interpreter/runtime.d.ts
 @@ -11,11 +11,12 @@ export declare class Interpreter<R> {
@@ -560,7 +612,7 @@ index bd1bc708017c1a30b0c81d37639b55ff12a2e3bc..3ad5894d77df91678f8c219bf913799a
      private evaluateBlock;
      private createFunction;
 diff --git a/dist/interpreter/runtime.js b/dist/interpreter/runtime.js
-index 8c1b549d3da8c2287e330e63d7370cd3838e57df..3575409543fcdd2227e03decae2aa71a9ba58ceb 100644
+index 8c1b549..3575409 100644
 --- a/dist/interpreter/runtime.js
 +++ b/dist/interpreter/runtime.js
 @@ -154,6 +154,8 @@ export class Interpreter {
@@ -793,7 +845,7 @@ index 8c1b549d3da8c2287e330e63d7370cd3838e57df..3575409543fcdd2227e03decae2aa71a
      dequeueGeneratorRequest(state) {
          const request = state.pending[state.pendingIndex];
 diff --git a/dist/namespace.d.ts b/dist/namespace.d.ts
-index e4640762c1139d5a864f966035446f5d890040f0..220d15700f5e0f2d4dbee3f5500875ccbf3cb86d 100644
+index e464076..220d157 100644
 --- a/dist/namespace.d.ts
 +++ b/dist/namespace.d.ts
 @@ -1,9 +1,21 @@
@@ -825,7 +877,7 @@ index e4640762c1139d5a864f966035446f5d890040f0..220d15700f5e0f2d4dbee3f5500875cc
 +/** Declares a namespace whose tools are loaded when a program first reaches it. */
 +export declare const lazy: <R = never>(options: LazyOptions<R>) => Namespace<R>;
 diff --git a/dist/namespace.js b/dist/namespace.js
-index 93db2408fe35817f6d53add795822e91dadcedfd..e0e44b0e8c823133cc390d3a12d7b87873006236 100644
+index 93db240..e0e44b0 100644
 --- a/dist/namespace.js
 +++ b/dist/namespace.js
 @@ -5,3 +5,10 @@ export const make = (options) => ({
@@ -840,7 +892,7 @@ index 93db2408fe35817f6d53add795822e91dadcedfd..e0e44b0e8c823133cc390d3a12d7b878
 +    load: options.load,
 +});
 diff --git a/dist/openapi/index.js b/dist/openapi/index.js
-index 1702476510e1019a2a2b6b7e14423c84a350e8c9..2425925a7bd394917d57f36b84e6f0fa29e5f79e 100644
+index 1702476..2425925 100644
 --- a/dist/openapi/index.js
 +++ b/dist/openapi/index.js
 @@ -1,4 +1,4 @@
@@ -850,7 +902,7 @@ index 1702476510e1019a2a2b6b7e14423c84a350e8c9..2425925a7bd394917d57f36b84e6f0fa
  import { invoke } from "./runtime.js";
  import { componentDefinitions, hasDirectionalSchemas, inputSchema, isRecord, methods, nonEmptyString, operationInput, operationOutput, operationPath, operationSecurityRequirements, securityRequirements, securitySchemes, specServerUrl, validateBaseUrl, } from "./spec.js";
 diff --git a/dist/openapi/runtime.d.ts b/dist/openapi/runtime.d.ts
-index 86ae0c3d2183e89bc3d83c1548d860bc8d69c78b..2da6eeb1b50263f69bc593a4fe0eb0cc4cc3a1d3 100644
+index 86ae0c3..2da6eeb 100644
 --- a/dist/openapi/runtime.d.ts
 +++ b/dist/openapi/runtime.d.ts
 @@ -1,4 +1,4 @@
@@ -860,7 +912,7 @@ index 86ae0c3d2183e89bc3d83c1548d860bc8d69c78b..2da6eeb1b50263f69bc593a4fe0eb0cc
  import type { Plan } from "./types.js";
  export declare const invoke: (plan: Plan, input: unknown) => Effect.Effect<unknown, unknown, HttpClient.HttpClient>;
 diff --git a/dist/openapi/runtime.js b/dist/openapi/runtime.js
-index 0fa6088d164442dfc9c41fff6ab71357f7386317..4e2d042f4f2b20b800bd26cd270014eee6b8dac6 100644
+index 0fa6088..4e2d042 100644
 --- a/dist/openapi/runtime.js
 +++ b/dist/openapi/runtime.js
 @@ -1,5 +1,5 @@
@@ -871,7 +923,7 @@ index 0fa6088d164442dfc9c41fff6ab71357f7386317..4e2d042f4f2b20b800bd26cd270014ee
  import { isRecord, own } from "./spec.js";
  const decodeJson = Schema.decodeUnknownOption(Schema.fromJsonString(Schema.Unknown));
 diff --git a/dist/openapi/types.d.ts b/dist/openapi/types.d.ts
-index 52d2cb7dbb75f6998a9dd2a4ad4e8a780ba9ceb0..80e1db35c82b1434144608a797077030f2c386b1 100644
+index 52d2cb7..80e1db3 100644
 --- a/dist/openapi/types.d.ts
 +++ b/dist/openapi/types.d.ts
 @@ -1,5 +1,5 @@
@@ -882,15 +934,56 @@ index 52d2cb7dbb75f6998a9dd2a4ad4e8a780ba9ceb0..80e1db35c82b1434144608a797077030
  /** A parsed OpenAPI 3.x document. YAML must be parsed by the host. */
  export type Document = Record<string, unknown>;
 diff --git a/dist/openapi/types.js b/dist/openapi/types.js
-index bc386d2cd78bffa1bd1f76bf98509183f61c57d1..483cc3fd953ab434bf0209462d9a88ddce404fb0 100644
+index bc386d2..483cc3f 100644
 --- a/dist/openapi/types.js
 +++ b/dist/openapi/types.js
 @@ -1,2 +1,2 @@
  import { Effect } from "effect";
 -import { HttpClient } from "effect/unstable/http";
 +import { HttpClient } from "effect/http";
+diff --git a/dist/tool-error.d.ts b/dist/tool-error.d.ts
+index 1adc0b7..9489b77 100644
+--- a/dist/tool-error.d.ts
++++ b/dist/tool-error.d.ts
+@@ -2,10 +2,11 @@ import { Schema } from "effect";
+ declare const ToolError_base: Schema.Class<ToolError, Schema.TaggedStruct<"ToolError", {
+     readonly message: Schema.String;
+     readonly cause: Schema.optionalKey<Schema.Defect>;
++    readonly properties: Schema.optionalKey<Schema.$Record<Schema.String, Schema.String>>;
+ }>, import("effect/Cause").YieldableError>;
+ /** Tool failure reported as `ToolFailure`. */
+ export declare class ToolError extends ToolError_base {
+ }
+-/** Creates a tool failure with an optional underlying cause. */
+-export declare const toolError: (message: string, cause?: unknown) => ToolError;
++/** Creates a tool failure with an optional underlying cause and properties. */
++export declare const toolError: (message: string, cause?: unknown, properties?: Readonly<Record<string, string>>) => ToolError;
+ export {};
+diff --git a/dist/tool-error.js b/dist/tool-error.js
+index 6a8d1d2..492ad48 100644
+--- a/dist/tool-error.js
++++ b/dist/tool-error.js
+@@ -3,7 +3,16 @@ import { Schema } from "effect";
+ export class ToolError extends Schema.TaggedError()("ToolError", {
+     message: Schema.String,
+     cause: Schema.optionalKey(Schema.Defect()),
++    /**
++     * String properties the program's caught error carries beside its message, and the
++     * diagnostic of an uncaught one. The message is unchanged.
++     */
++    properties: Schema.optionalKey(Schema.Record(Schema.String, Schema.String)),
+ }) {
+ }
+-/** Creates a tool failure with an optional underlying cause. */
+-export const toolError = (message, cause) => new ToolError({ message, ...(cause === undefined ? {} : { cause }) });
++/** Creates a tool failure with an optional underlying cause and properties. */
++export const toolError = (message, cause, properties) => new ToolError({
++    message,
++    ...(cause === undefined ? {} : { cause }),
++    ...(properties === undefined ? {} : { properties }),
++});
 diff --git a/dist/tool-runtime.d.ts b/dist/tool-runtime.d.ts
-index 7b04d8e485966e56e673286c9ac9415ac5f60a7f..98c08f773aeb548386a0b6d48ff26c72445d543c 100644
+index 7b04d8e..98c08f7 100644
 --- a/dist/tool-runtime.d.ts
 +++ b/dist/tool-runtime.d.ts
 @@ -4,7 +4,12 @@ export type Services<T> = ServicesOf<T, []>;
@@ -954,9 +1047,17 @@ index 7b04d8e485966e56e673286c9ac9415ac5f60a7f..98c08f773aeb548386a0b6d48ff26c72
 +export declare const make: <R>(tools: Tools<R>, maxToolCalls: number | undefined, searchIndex: () => ReadonlyArray<SearchEntry>, hooks?: ToolCallHooks<R>, search?: Search<R>) => ToolRuntime<R>;
  export * as ToolRuntime from "./tool-runtime.js";
 diff --git a/dist/tool-runtime.js b/dist/tool-runtime.js
-index f649a9a04eea271c852510a4deef6efa7b6252bc..3c24460cc7d5252af46590da8de9105c64b3f7ea 100644
+index f649a9a..8ccc826 100644
 --- a/dist/tool-runtime.js
 +++ b/dist/tool-runtime.js
+@@ -1,5 +1,5 @@
+-import { Cause, Effect, Exit, Formatter, Schema } from "effect";
+-import { toolError } from "./tool-error.js";
++import { Cause, Effect, Exit, Formatter, Option, Schema } from "effect";
++import { ToolError, toolError } from "./tool-error.js";
+ import { decodeInput as decodeToolInput, decodeOutput as decodeToolOutput, identifierSegment, inputProperties, inputTypeScript, isEmptyInput, outputTypeScript, } from "./tool-schema.js";
+ import { isNamespace } from "./namespace.js";
+ import { isTool } from "./tool.js";
 @@ -172,29 +172,32 @@ export const copyOut = (value, mode) => {
      }
      return value;
@@ -1160,7 +1261,23 @@ index f649a9a04eea271c852510a4deef6efa7b6252bc..3c24460cc7d5252af46590da8de9105c
      const observeEnd = (effect, call) => {
          const onEnd = hooks?.onToolCallEnd;
          if (onEnd === undefined)
-@@ -383,7 +443,7 @@ export const make = (tools, maxToolCalls, searchIndex, hooks) => {
+@@ -365,9 +425,14 @@ export const make = (tools, maxToolCalls, searchIndex, hooks) => {
+             const raw = yield* Effect.suspend(() => tool.execute(input)).pipe(Effect.catchCause((cause) => {
+                 if (Cause.hasInterruptsOnly(cause))
+                     return Effect.interrupt;
++                // The tool's own ToolError keeps its properties beside the message.
++                const failed = Cause.findErrorOption(cause);
++                const properties = Option.isSome(failed) && failed.value instanceof ToolError
++                    ? failed.value.properties
++                    : undefined;
+                 return Effect.fail(toolError(Cause.prettyErrors(cause)
+                     .map((error) => (error.cause ? Formatter.format(error) : error.message || error.name))
+-                    .join("\n")));
++                    .join("\n"), undefined, properties));
+             }));
+             return yield* Effect.try({
+                 try: () => copyIn(decodeToolOutput(tool, raw), `Result from tool '${name}'`),
+@@ -383,7 +448,7 @@ export const make = (tools, maxToolCalls, searchIndex, hooks) => {
          execute: (path, args) => Effect.gen(function* () {
              const name = canonicalSegments(path).join(".");
              const externalArgs = args.map((arg) => copyOut(copyIn(arg, `Arguments for tool '${name}'`), "json"));

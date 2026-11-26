@@ -1,6 +1,6 @@
-/** Native invocation totals include background cleanup; they are not response latency. */
 import { Effect, Option, Schema } from "effect";
 import { providerFailureCode } from "./provider-failure.ts";
+import { invocationSurface } from "./invocation-surface.ts";
 import {
   TraceContext,
   externalTrace,
@@ -13,6 +13,7 @@ import {
   InvocationPhase,
   InvocationRpc,
 } from "../contracts/invocation-telemetry.ts";
+import type { CloudHosts } from "../infrastructure/stage.ts";
 
 const phase = Schema.decodeUnknownOption(
   Schema.Union([InvocationPhase, Schema.fromJsonString(InvocationPhase)]),
@@ -38,8 +39,7 @@ const phaseAttribute = {
   "alchemy.do.response": "executor.do_response_ready_ms",
 };
 
-/** Produce an explicit, credential-free projection for one platform callback. */
-export const invocationSummary = (input: unknown) =>
+export const invocationSummary = (hosts: Option.Option<CloudHosts>, input: unknown) =>
   Schema.decodeUnknownEffect(CloudInvocation)(input).pipe(
     Effect.map((event) => {
       const attributes: Record<string, string | number | boolean> = {
@@ -69,7 +69,6 @@ export const invocationSummary = (input: unknown) =>
             attributes[phaseAttribute[timing.value.name]] = timing.value.durationMs;
             if (timing.value.name === "alchemy.runtime.initialize")
               attributes["executor.initialization_observed"] = true;
-            // The object was constructed in this invocation, after it was evicted or hibernated.
             if (timing.value.name === "alchemy.do.initialize")
               attributes["executor.do_initialization_observed"] = true;
           }
@@ -88,6 +87,13 @@ export const invocationSummary = (input: unknown) =>
       const http = Schema.decodeUnknownOption(InvocationHttp)(event.event);
       if (Option.isSome(http)) {
         attributes["http.request.method"] = http.value.request.method;
+        Object.assign(
+          attributes,
+          invocationSurface(hosts, {
+            url: http.value.request.url,
+            userAgent: http.value.request.headers["user-agent"],
+          }),
+        );
         if (http.value.response !== undefined)
           attributes["http.response.status_code"] = http.value.response.status;
         const ray = http.value.request.headers["cf-ray"];
@@ -112,8 +118,10 @@ export const invocationSummary = (input: unknown) =>
     }),
   );
 
-/** Keep valid events if a future platform payload fails to decode; never log that raw payload. */
-export const recordInvocations = (events: ReadonlyArray<unknown>) =>
+export const recordInvocations = (
+  hosts: Option.Option<CloudHosts>,
+  events: ReadonlyArray<unknown>,
+) =>
   Effect.forEach(
     events,
     (event) =>
@@ -126,7 +134,7 @@ export const recordInvocations = (events: ReadonlyArray<unknown>) =>
             event.wallTime,
           ),
         ),
-        Effect.flatMap(invocationSummary),
+        Effect.flatMap((event) => invocationSummary(hosts, event)),
         Effect.flatMap((attributes) =>
           Effect.logInfo("cloudflare.invocation").pipe(
             Effect.annotateLogs(attributes),

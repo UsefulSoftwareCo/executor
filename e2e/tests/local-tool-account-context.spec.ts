@@ -50,7 +50,6 @@ layer(TestLive, { excludeTestServices: true })("Local tool account context", (it
           }),
           response,
         );
-        // Saved accounts by label.
         const accounts = new Map<string, string>();
         yield* Effect.addFinalizer(() =>
           Effect.gen(function* () {
@@ -59,7 +58,6 @@ layer(TestLive, { excludeTestServices: true })("Local tool account context", (it
               yield* session.send("DELETE", `/v1/accounts/${account}`, undefined, headers);
           }).pipe(Effect.orDie),
         );
-        // Accounts connect for the app's many-account requirement, which links them to it.
         const add = (label: string, token: string) =>
           Effect.gen(function* () {
             const account = yield* connectLocalAccount(
@@ -114,8 +112,7 @@ layer(TestLive, { excludeTestServices: true })("Local tool account context", (it
           work,
           personal,
           catalogs: [`/dashboard/api/live/apps/${app.id}/tools`],
-          // The many() requirement uses every linked account. Choosing accounts links exactly
-          // those; the unlinked ones stay saved.
+          renderedCatalog: true,
           select: (ids) =>
             Effect.gen(function* () {
               const current = yield* localLinks(agent, app.id);

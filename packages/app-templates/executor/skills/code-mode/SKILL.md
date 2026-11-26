@@ -13,9 +13,11 @@ your context.
 The interpreter has no imports, `fetch`, `process` or filesystem, no timers
 (`setTimeout`, `setInterval`, `queueMicrotask`), and no `btoa`, `atob`,
 `TextEncoder`, `TextDecoder` or `globalThis`. A tool
-call is its only way out. Use `await` and `Promise.all` for independent calls.
-As in JavaScript, code between two awaits runs without interruption, so
-concurrent async functions can update shared variables. `console.log` output
+call is its only way out. Use `await`, and `Promise.allSettled` for independent
+calls: one failed call then does not end the program, and the other results are
+kept; each entry has `status` and `value` or `reason`. Use `Promise.all` only
+when every call must succeed. As in JavaScript, code between two awaits runs
+without interruption, so concurrent async functions can update shared variables. `console.log` output
 comes back in `logs`. Write JavaScript; TypeScript syntax is not portable across
 Executor hosts.
 
@@ -106,7 +108,8 @@ arguments or source, and never search their files for tokens. The Executor app
   it. Hosted
   management calls need the organization: call `context.get({})` first and pass
   its `organization` as `path.organization`. For an OAuth sign-in,
-  `accounts.oauthSetup` lists the scopes it will request; tell the user.
+  `accounts.oauthSetup` lists the scopes it will request and the resource
+  indicator it will send; tell the user.
 
 Search for these tools and read their input types first; the connect tools
 require `body`, so pass `body: {}` when it has nothing. Give the user the
@@ -123,7 +126,11 @@ The program then pauses, and `execute` returns `status: "approval-required"` or
 `"input-required"` with a `requestId` and an `elicitation` describing the
 question. How you answer depends on the connection's mode:
 
-- Model mode (the default): show the request to the user and get their answer.
+- Automatic mode: Executor approves tool calls itself, so `approval-required`
+  never appears; your own permission prompt for `execute` and `call` is the
+  check. A running tool's `input-required` question still comes back to you, and
+  you answer it as in model mode.
+- Model mode: show the request to the user and get their answer.
   Call `resume` with `{ requestId, response: { action: "accept", content } }`,
   or with `action: "decline"` or `"cancel"`. Put the user's form fields in
   `content`. Never approve on the user's behalf.
@@ -191,6 +198,11 @@ configuration or access may allow a new attempt even when `retryable` is false.
 Never rerun an entire `execute` program merely to retry one failed tool.
 `toolCalls` lists every call in order with its `outcome`.
 
+`Promise.all` rejects on the first failure. If the program does not catch it,
+the program ends, and calls still running are `interrupted`; calls marked
+`success` did run. To keep the results of the calls that succeed when one
+fails, use `Promise.allSettled` or a `.catch` on each call.
+
 - `ParseError`, `UnsupportedSyntax`: fix the program; `location` points at it.
 - `UnknownTool`: the path is wrong, its app did not load, or the app was
   deployed after this execution loaded it. Check `unavailableApps` and
@@ -201,14 +213,56 @@ Never rerun an entire `execute` program merely to retry one failed tool.
 - `ToolCallLimitExceeded`, `TimeoutExceeded`: split the work into smaller
   executions.
 
-Calls with outcome `success` took effect, and `interrupted` calls may have.
-Effects are never rolled back. When Executor could not confirm a failed write's
+A remote MCP tool returns its whole result. `isError: true` there means the
+tool says it failed: the call does not throw, and its outcome is `failure`.
+Check `isError` before using such a result. Other fields, such as `ok`, mean
+what the tool's description says.
+
+An outcome of `success` means only that the call returned normally, with no
+tool error reported to Executor. It does not show that the intended action
+happened: check the returned value, such as `isError` or the app's own status
+fields, before treating it as done. `failure` and `interrupted` calls may have
+had effects. Effects are never rolled back. When Executor could not confirm a failed write's
 outcome, its recovery says so: do not repeat it automatically.
 Inside a program, a caught tool error's `message` is the same JSON as
 `response`, so a program can handle expected failures itself.
 
 `status: "capacity-exceeded"` means the server is running too many programs.
 Wait briefly, then retry.
+
+## See images, hear audio and read files
+
+You can look at any image, listen to any audio and read any file a tool gives
+you. Wherever the value `call` or `execute` returns holds one of these MCP
+blocks, at any depth, with its bytes in standard or URL-safe base64, you receive
+it as its own content block instead of base64 text:
+
+- `{ type: "image", mimeType, data }` and `{ type: "audio", mimeType, data }`
+  arrive as media. The JSON shows `{ type, mimeType, contentIndex }` in place.
+- `{ type: "resource", resource: { uri, mimeType, blob } }` arrives as a file,
+  such as a PDF, which your client opens or saves for you to read. The JSON
+  shows `{ type, resource: { uri, mimeType }, contentIndex }` in place.
+
+The same block repeated is sent once. Screenshots from MCP servers already
+arrive as images, and some tools return files as resources, such as email
+attachments. Inside the program the block is whole, so its bytes can be passed
+to another tool.
+
+When a tool returns bytes some other way, such as `{ base64 }`, return them in
+one of these shapes from `execute`: an image block for an image, and otherwise
+a resource whose `uri` ends in the file's name:
+
+```js
+const file = await tools.example.download({ id });
+return {
+  type: "resource",
+  resource: { uri: "file:///report.pdf", mimeType: "application/pdf", blob: file.base64 },
+};
+```
+
+Never return, read, decode or describe base64 as text; return it as a block and
+look. The `executor` CLI writes each block to a file and prints its `path`
+beside its `contentIndex`.
 
 Send feedback with the Executor app's `feedback.submit` tool when Executor gets
 in your way or something works especially well; the `executor` skill says how.

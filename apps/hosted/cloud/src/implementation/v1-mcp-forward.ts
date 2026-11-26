@@ -1,18 +1,3 @@
-/**
- * MCP requests v1 forwards for workspaces that moved to v2 (`notes/v1-import.md`, Forwarding).
- *
- * v1 keeps serving its MCP URLs and authenticating its own credentials (AuthKit tokens and WorkOS
- * API keys). For a moved organization it sends the request on to v2 with a bearer it signs with a
- * secret only v1 and v2 hold, naming the v1 account and organization, and for a toolkit URL the
- * toolkit and the v2 connection it was imported as:
- *
- *     v1fwd.<base64url JSON claims>.<base64url HMAC-SHA256 of "v1fwd.<claims>">
- *
- * This module turns that bearer into ordinary MCP access through the import map: the v1 account's
- * v2 user, the v1 organization's v2 organization, the user's live membership in it, and, for a
- * toolkit, the caller's own copy of it (decision 11), a scoped connection. Every request and every tool call checks it again, as a grant is
- * checked. Nothing here reads v1: what v1 vouches for is only who called and where.
- */
 import {
   AuthenticationUnavailable,
   McpAccess,
@@ -22,6 +7,9 @@ import {
   OrganizationId,
   OrganizationRole,
   organizationOwner,
+  recordAuthFailure,
+  recordCredential,
+  type AuthFailureReason,
   type OrganizationReference,
 } from "@executor-js/hosted-server";
 import { ApprovalMode, GrantId, type GrantPolicy } from "@executor-js/mcp-auth";
@@ -33,44 +21,44 @@ import {
 import { Clock, Effect, Option, Redacted, Result, Schema } from "effect";
 import { Base64Url } from "effect/encoding";
 import { SqlClient } from "effect/sql";
-import { toolkitCopyId } from "./v1-import/store.ts";
 
 const prefix = "v1fwd.";
 
-/** The client every forwarded request is attributed to, in usage and in its session's key. */
+const toolkitCopyId = (toolkitRow: string, member: string) => `${toolkitRow}:${member}`;
+
+const toolkitCopyConnectionId = (organization: string, toolkitRow: string, member: string) =>
+  Effect.promise(() =>
+    crypto.subtle.digest(
+      "SHA-256",
+      new TextEncoder().encode(JSON.stringify([organization, toolkitRow, member])),
+    ),
+  ).pipe(
+    Effect.map(
+      (digest) =>
+        `v1-${Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0"))
+          .join("")
+          .slice(0, 40)}`,
+    ),
+  );
+
 export const v1ForwardClient = "executor-v1";
 
-/** v1 signs a bearer for one request and gives it ten minutes; one over fifteen is refused. */
 const lifetimeSeconds = 900;
 
 const Claims = Schema.Struct({
   v: Schema.Literal(1),
-  /** The v1 account: a WorkOS user ID. */
   account: Schema.NonEmptyString,
-  /** The v1 organization: a WorkOS organization ID. */
   organization: Schema.NonEmptyString,
-  /** Expiry, in Unix seconds. */
   exp: Schema.Int,
-  /** The v1 toolkit's row, for a toolkit URL. */
   toolkit: Schema.optionalKey(Schema.NonEmptyString),
-  /**
-   * The v2 connection v1 computed for the caller's copy of the toolkit, which v1 also names in the
-   * URL; it must be the copy the import made for this caller.
-   */
   connection: Schema.optionalKey(ConnectionId),
 });
 type Claims = typeof Claims.Type;
 
 const bearer = (headers: Headers) => headers.get("authorization")?.match(/^Bearer (\S+)$/iu)?.[1];
 
-/** Whether the request presents a forwarded bearer, before any check. */
 export const isV1Forward = (headers: Headers) => bearer(headers)?.startsWith(prefix) === true;
 
-/**
- * The synthetic grant a forwarded request runs under. Its ID is stable for the user, organization,
- * URL mode and connection, so a session v2 opens for one forwarded request is found again by the
- * next, which presents a new bearer.
- */
 const grantPrefix = "v1:";
 const grantId = (input: {
   readonly user: string;
@@ -83,15 +71,16 @@ const grantId = (input: {
   );
 
 const unauthorized = new McpUnauthorized();
+const rejected = (reason: AuthFailureReason) =>
+  Effect.andThen(recordAuthFailure(reason), Effect.fail(unauthorized));
 
-/** The claims of a bearer v1 signed with `secret` that has not expired, or why not. */
 const verify = (secret: Redacted.Redacted<string>, token: string) =>
   Effect.gen(function* () {
     const [, payload, signature, ...rest] = token.split(".");
     if (payload === undefined || signature === undefined || rest.length > 0)
-      return yield* unauthorized;
+      return yield* rejected("malformed");
     const mac = Base64Url.decode(signature);
-    if (Result.isFailure(mac)) return yield* unauthorized;
+    if (Result.isFailure(mac)) return yield* rejected("malformed");
     const valid = yield* Effect.tryPromise(async () => {
       const key = await crypto.subtle.importKey(
         "raw",
@@ -107,20 +96,21 @@ const verify = (secret: Redacted.Redacted<string>, token: string) =>
         new TextEncoder().encode(`${prefix}${payload}`),
       );
     }).pipe(Effect.orDie);
-    if (!valid) return yield* unauthorized;
+    if (!valid) return yield* rejected("unknown");
     const claims = yield* Base64Url.decodeString(payload).pipe(
       Result.match({
-        onFailure: () => Effect.fail(unauthorized),
+        onFailure: () => rejected("malformed"),
         onSuccess: (json) =>
           Schema.decodeUnknownEffect(Schema.fromJsonString(Claims))(json).pipe(
-            Effect.mapError(() => unauthorized),
+            Effect.catch(() => rejected("malformed")),
           ),
       }),
     );
     const now = Math.floor((yield* Clock.currentTimeMillis) / 1000);
-    if (claims.exp < now || claims.exp > now + lifetimeSeconds) return yield* unauthorized;
+    if (claims.exp < now) return yield* rejected("expired");
+    if (claims.exp > now + lifetimeSeconds) return yield* rejected("malformed");
     if ((claims.toolkit === undefined) !== (claims.connection === undefined))
-      return yield* unauthorized;
+      return yield* rejected("malformed");
     return claims;
   });
 
@@ -136,7 +126,6 @@ const Row = Schema.Struct({
   connectionRevoked: Schema.NullOr(Schema.Boolean),
 });
 
-/** Everything one check reads, in one statement: the mapped user and organization and the rest. */
 const load = (sql: SqlClient.SqlClient, claims: Claims) =>
   sql`
     with u as (
@@ -163,11 +152,10 @@ const load = (sql: SqlClient.SqlClient, claims: Claims) =>
       mc.policy as "connectionPolicy",
       mc.revoked as "connectionRevoked"
     from (select 1) one
-    left join "mcpConnection" mc on mc.id = ${claims.connection ?? null}`.pipe(
+    left join "mcpConnection" mc on mc.id = (select v2_id from t)`.pipe(
     Effect.flatMap((rows) => Schema.decodeUnknownEffect(Row)(rows[0])),
   );
 
-/** The connection a toolkit's grant reads its policy from, as stored. */
 interface StoredConnection {
   readonly id: ConnectionId;
   readonly user: string | null;
@@ -176,10 +164,6 @@ interface StoredConnection {
   readonly revoked: boolean | null;
 }
 
-/**
- * The access a forwarded grant gives, or `refuse` when its user is no longer a member of the
- * organization or its toolkit's connection no longer belongs to them there.
- */
 const grantedAccess = <E>(
   input: {
     readonly user: string;
@@ -187,6 +171,7 @@ const grantedAccess = <E>(
     readonly role: string | null;
     readonly mode: ApprovalMode;
     readonly connection: StoredConnection | undefined;
+    readonly address?: ConnectionId | undefined;
   },
   refuse: E,
 ) =>
@@ -211,6 +196,7 @@ const grantedAccess = <E>(
       );
     }
     const connection = stored?.id;
+    const address = input.address ?? connection;
     return McpAccess.make({
       userId: input.user,
       clientId: v1ForwardClient,
@@ -218,15 +204,14 @@ const grantedAccess = <E>(
         id: grantId({ user: input.user, organization, mode: input.mode, connection }),
         policy,
         target:
-          connection === undefined
+          address === undefined
             ? { kind: "mcp", mode: input.mode }
-            : { kind: "mcp", mode: input.mode, connection },
+            : { kind: "mcp", mode: input.mode, connection: address },
       },
       access: { organization, owner: organizationOwner(organization), role },
     });
   });
 
-/** Storage and decoding failures are an outage to retry, never a refusal. */
 const outage = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
   effect.pipe(
     Effect.catchTags({
@@ -235,12 +220,6 @@ const outage = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
     }),
   );
 
-/**
- * MCP access for a request v1 forwarded, checked against `secret`. A bearer that is not v1's, or
- * has expired, is unauthorized. A valid one whose account, organization or toolkit the import has
- * not mapped, or whose user is no longer a member there, is forbidden: v1 vouched for the caller,
- * and signing in again would not help.
- */
 export const v1ForwardAccess = (
   secret: Option.Option<Redacted.Redacted<string>>,
   request: {
@@ -251,22 +230,36 @@ export const v1ForwardAccess = (
 ) =>
   Effect.gen(function* () {
     const token = bearer(request.headers);
-    // A deployment without the secret accepts no forwarded request.
-    if (token === undefined || Option.isNone(secret)) return yield* unauthorized;
+    yield* recordCredential({ kind: "v1_forward" });
+    if (token === undefined) return yield* rejected("malformed");
+    if (Option.isNone(secret)) return yield* rejected("unknown");
     const claims = yield* verify(secret.value, token);
     const row = yield* load(yield* SqlClient.SqlClient, claims);
     const forbidden = new McpForbidden({ reason: "membership" });
-    if (row.userId === null || row.organization === null) return yield* forbidden;
-    // v1 sends its requests to the bare URL; one that names an organization must name this one.
+    if (row.userId !== null) yield* recordCredential({ kind: "v1_forward", user: row.userId });
+    if (row.userId === null || row.organization === null)
+      return yield* Effect.andThen(recordAuthFailure("not_member"), Effect.fail(forbidden));
     if (
       request.organization !== undefined &&
       request.organization !== row.organization &&
       request.organization !== row.slug
     )
-      return yield* new McpForbidden({ reason: "organization_mismatch" });
-    // A toolkit runs under the caller's copy, the scoped connection its import made for them.
-    if (claims.connection !== undefined && row.toolkitConnection !== claims.connection)
-      return yield* forbidden;
+      return yield* Effect.andThen(
+        recordAuthFailure("organization_mismatch"),
+        Effect.fail(new McpForbidden({ reason: "organization_mismatch" })),
+      );
+    const copy = row.toolkitConnection;
+    if (claims.toolkit !== undefined) {
+      if (copy === null)
+        return yield* Effect.andThen(recordAuthFailure("wrong_resource"), Effect.fail(forbidden));
+      const derived = yield* toolkitCopyConnectionId(
+        row.organization,
+        claims.toolkit,
+        claims.account,
+      );
+      if (claims.connection !== copy && claims.connection !== derived)
+        return yield* Effect.andThen(recordAuthFailure("wrong_resource"), Effect.fail(forbidden));
+    }
     return yield* grantedAccess(
       {
         user: row.userId,
@@ -274,18 +267,19 @@ export const v1ForwardAccess = (
         role: row.role,
         mode: request.mode ?? "model",
         connection:
-          claims.connection === undefined
+          claims.toolkit === undefined || copy === null
             ? undefined
             : {
-                id: claims.connection,
+                id: ConnectionId.make(copy),
                 user: row.connectionUser,
                 resource: row.connectionResource,
                 policy: row.connectionPolicy,
                 revoked: row.connectionRevoked,
               },
+        address: claims.connection,
       },
       forbidden,
-    );
+    ).pipe(Effect.tapError(() => recordAuthFailure("not_member")));
   }).pipe(outage, Effect.withSpan("auth.v1Forward"));
 
 const GrantKey = Schema.fromJsonString(
@@ -297,7 +291,6 @@ const GrantKey = Schema.fromJsonString(
   ]),
 );
 
-/** Whether an MCP grant ID names a forwarded grant rather than an OAuth grant or a PAT. */
 export const isV1ForwardGrant = (id: string) => id.startsWith(grantPrefix);
 
 const BrowserRow = Schema.Struct({
@@ -308,10 +301,6 @@ const BrowserRow = Schema.Struct({
   connectionRevoked: Schema.NullOr(Schema.Boolean),
 });
 
-/**
- * A forwarded grant for its browser approval page, opened by `sessionUser` (none when signed
- * out). Only the grant's own user may review its requests, while still a member.
- */
 export const v1ForwardBrowserAccess = (id: string, sessionUser: string | undefined) =>
   Effect.gen(function* () {
     const key = Schema.decodeUnknownOption(GrantKey)(

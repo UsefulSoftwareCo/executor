@@ -1,4 +1,3 @@
-/** Deploy the local React example through the same public HTTP contract used by agents. */
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { Config, Console, Effect, FileSystem, Path, Schema } from "effect";
@@ -41,7 +40,6 @@ NodeRuntime.runMain(
     files.push({
       path: "package.json",
       content: JSON.stringify({
-        // The workspace reference becomes the exact apps release this checkout builds.
         dependencies: { ...manifest.dependencies, apps: apps.version },
       }),
     });

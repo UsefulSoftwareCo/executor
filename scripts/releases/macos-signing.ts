@@ -1,8 +1,8 @@
-/** Choose one macOS signing identity per build; no signing secret reaches persistent storage. */
 import { Config, Console, Effect, FileSystem, Option, Path, Redacted, Stream } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
+import { fileURLToPath } from "node:url";
+import { staple } from "./macos-staple.ts";
 
-/** The macOS section electron-builder needs for the chosen signing mode. */
 export interface MacSigningConfiguration {
   readonly identity: string | null;
   readonly hardenedRuntime?: boolean;
@@ -13,14 +13,11 @@ export interface MacSigningConfiguration {
   readonly signIgnore?: readonly string[];
 }
 
-/** One build's signing decision: the configuration and the environment it runs under. */
 export interface MacSigning {
   readonly summary: string;
   readonly mac: MacSigningConfiguration;
   readonly env: Record<string, string>;
-  /** Whether electron-builder should sign the disk images it assembles. */
   readonly signDiskImages: boolean;
-  /** Work on the finished artifacts that electron-builder cannot do itself. */
   readonly finalize: (
     directory: string,
   ) => Effect.Effect<
@@ -30,15 +27,9 @@ export interface MacSigning {
   >;
 }
 
-/**
- * A deliberately unsigned build for development. Gatekeeper rejects the result
- * until someone overrides it by hand, so this is never a distributable artifact.
- */
 export const unsignedMac: MacSigning = {
   summary: "unsigned (development)",
   mac: { identity: null },
-  // Without this electron-builder signs with whatever identity the default
-  // keychain happens to hold. An unsigned build must stay unsigned.
   env: { CSC_IDENTITY_AUTO_DISCOVERY: "false" },
   signDiskImages: false,
   finalize: () => Effect.void,
@@ -47,13 +38,6 @@ export const unsignedMac: MacSigning = {
 const security = "/usr/bin/security";
 const notaryProfile = "executor-release";
 
-/**
- * electron-builder signs every file it reads as binary, so a build otherwise
- * spends most of its signing time on Chromium's resource packs, the tarballs
- * the embedded database ships and similar payloads. None of these formats can
- * hold Mach-O code, and the bundle seal still covers them, so skipping them
- * leaves every executable, framework, dylib and native addon signed.
- */
 const unsignableFormats = "\\.(pak|gz|wasm|woff2|nib|icns|png|gif|json|asar)$";
 
 const randomHex = (bytes: number) =>
@@ -73,16 +57,12 @@ const succeed = (
   Effect.gen(function* () {
     const processes = yield* ChildProcessSpawner.ChildProcessSpawner;
     const code = yield* processes.exitCode(
-      // Keychain commands print item attribute dumps nobody reads, so they stay
-      // quiet. Failures go to stderr, and the exit code below is what actually
-      // decides the outcome.
       ChildProcess.make(command, args, { stdout, stderr: "inherit" }),
     );
     if (code !== 0)
       return yield* Effect.die(new Error(`${describe} failed (${command} exited ${code})`));
   });
 
-/** The user search list, quoted one keychain per line by `security`. */
 const userKeychains = Effect.gen(function* () {
   const processes = yield* ChildProcessSpawner.ChildProcessSpawner;
   const lines = yield* processes.lines(
@@ -91,18 +71,12 @@ const userKeychains = Effect.gen(function* () {
   return lines.map((line) => line.trim().replace(/^"|"$/g, "")).filter((line) => line.length > 0);
 });
 
-/**
- * Hold the identity in a keychain of this build's own, deleted when the scope
- * closes. The default keychain keeps the identities it already had, and the
- * search list it belongs to is restored entry for entry when the build ends.
- */
 const temporaryKeychain = Effect.gen(function* () {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const directory = yield* fs.makeTempDirectoryScoped({ prefix: "executor-macos-signing-" });
   yield* fs.chmod(directory, 0o700);
   const file = path.join(directory, "release.keychain-db");
-  // Only this process ever needs the password, so it lives for one build.
   const password = randomHex(24);
   yield* Effect.acquireRelease(
     succeed(security, ["create-keychain", "-p", password, file], "Creating a signing keychain"),
@@ -111,15 +85,8 @@ const temporaryKeychain = Effect.gen(function* () {
         Effect.ignore,
       ),
   );
-  // The default settings lock the keychain after five minutes, part-way through
-  // a long build. An unlocked keychain is acceptable because it is this
-  // build's own and is deleted with the scope.
   yield* succeed(security, ["set-keychain-settings", file], "Configuring the signing keychain");
   yield* succeed(security, ["unlock-keychain", "-p", password, file], "Unlocking the keychain");
-  // codesign resolves an identity only from a keychain on the search list;
-  // passing --keychain on its own finds nothing. Put this build's keychain in
-  // front of the existing ones and then put the list back as it was. Two
-  // signing builds at once would fight over this list, so run them one by one.
   const existing = yield* userKeychains;
   yield* Effect.acquireRelease(
     succeed(
@@ -137,12 +104,6 @@ const temporaryKeychain = Effect.gen(function* () {
   return { directory, file, password };
 });
 
-/**
- * Convert the PEM pair into a complete PKCS#12 file on a private RAM volume.
- * security import can read a pipe before the full archive arrives. Both PEMs
- * still reach openssl through private file descriptors. The archive never
- * reaches persistent storage.
- */
 const importIdentity = (keychain: { readonly file: string; readonly password: string }) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
@@ -150,8 +111,6 @@ const importIdentity = (keychain: { readonly file: string; readonly password: st
     const processes = yield* ChildProcessSpawner.ChildProcessSpawner;
     const key = yield* Config.Redacted("EXECUTOR_MAC_SIGNING_KEY");
     const certificate = yield* Config.Redacted("EXECUTOR_MAC_SIGNING_CERTIFICATE");
-    // This password protects the temporary PKCS#12 until the import completes.
-    // security import takes it as an argument and has no other input for it.
     const transfer = randomHex(24);
     yield* Effect.scoped(
       Effect.gen(function* () {
@@ -215,8 +174,6 @@ const importIdentity = (keychain: { readonly file: string; readonly password: st
           );
       }),
     );
-    // codesign runs as a separate process and would otherwise prompt for access
-    // to the imported key.
     yield* succeed(
       security,
       [
@@ -244,16 +201,9 @@ const importIdentity = (keychain: { readonly file: string; readonly password: st
           `Expected exactly one valid signing identity in the build keychain, found ${hashes.length}`,
         ),
       );
-    // electron-builder matches the qualifier against a `security find-identity`
-    // line, so the fingerprint identifies the certificate without repeating its
-    // name and without the prefix electron-builder rejects.
     return hash;
   });
 
-/**
- * Apple signing tools need complete, seekable credential files. Keep those on
- * a private volume in memory, then eject it as soon as the tool has read them.
- */
 const memoryVolume = Effect.gen(function* () {
   const fs = yield* FileSystem.FileSystem;
   const processes = yield* ChildProcessSpawner.ChildProcessSpawner;
@@ -263,7 +213,6 @@ const memoryVolume = Effect.gen(function* () {
       .string(ChildProcess.make("/usr/bin/hdiutil", ["attach", "-nomount", "ram://2048"]))
       .pipe(Effect.map((output) => output.trim().split(/\s+/)[0] ?? "")),
     (device) =>
-      // Ejecting unmounts the volume and releases the memory behind it.
       succeed("/usr/sbin/diskutil", ["eject", device], "Ejecting the signing volume").pipe(
         Effect.ignore,
       ),
@@ -280,7 +229,6 @@ const memoryVolume = Effect.gen(function* () {
   return directory;
 });
 
-/** Store the App Store Connect key as a notarytool profile in the build keychain. */
 const storeNotaryCredentials = (keychain: { readonly file: string }) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
@@ -313,12 +261,6 @@ const storeNotaryCredentials = (keychain: { readonly file: string }) =>
     );
   });
 
-/**
- * electron-builder notarizes the application it signs, but a disk image is a
- * separate distributable that Apple has never seen: Gatekeeper reads the image
- * itself when someone opens a download, not the bundle inside it. Submit each
- * image once it exists and staple the ticket so the image validates offline.
- */
 const notarizeDiskImages = (keychain: { readonly file: string }, directory: string) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
@@ -339,17 +281,12 @@ const notarizeDiskImages = (keychain: { readonly file: string }, directory: stri
           "--wait",
         ],
         `Notarizing ${name}`,
-        // The submission id belongs in the build log; it identifies the job to
-        // Apple and is not a credential.
         "inherit",
       );
-      yield* succeed("/usr/bin/xcrun", ["stapler", "staple", image], `Stapling ${name}`);
+      yield* staple(image);
     }
-    // Reading the directory and spawning are infrastructure, not a signing
-    // decision; a failure here ends the build the same way `succeed` does.
   }).pipe(Effect.orDie);
 
-/** Acquire signing credentials for one build; use its configuration and finalizer within this scope. */
 export const developerIdMac = (options: {
   readonly entitlements: string;
   readonly notarize: boolean;
@@ -368,8 +305,6 @@ export const developerIdMac = (options: {
       mac: {
         identity,
         hardenedRuntime: true,
-        // Assessing an app Apple has not seen yet always fails; stapling is
-        // what proves the result, and the build verifies that separately.
         gatekeeperAssess: false,
         entitlements: options.entitlements,
         entitlementsInherit: options.entitlements,
@@ -378,10 +313,13 @@ export const developerIdMac = (options: {
       },
       env: {
         CSC_KEYCHAIN: keychain.file,
-        // The identity is explicit, so nothing may be discovered.
         CSC_IDENTITY_AUTO_DISCOVERY: "false",
         ...(options.notarize
-          ? { APPLE_KEYCHAIN: keychain.file, APPLE_KEYCHAIN_PROFILE: notaryProfile }
+          ? {
+              APPLE_KEYCHAIN: keychain.file,
+              APPLE_KEYCHAIN_PROFILE: notaryProfile,
+              EXECUTOR_STAPLE_SCRIPT: fileURLToPath(new URL("./staple.ts", import.meta.url)),
+            }
           : {}),
       },
       signDiskImages: true,
@@ -390,7 +328,6 @@ export const developerIdMac = (options: {
     } satisfies MacSigning;
   });
 
-/** Mach-O and universal binary magic numbers, in file byte order. */
 const machOMagic = new Set([
   "feedface",
   "feedfacf",
@@ -400,22 +337,16 @@ const machOMagic = new Set([
   "bebafeca",
 ]);
 
-/** The release executable's signing identifier, which the Keychain items it creates trust. */
 export const standaloneIdentifier = "com.usefulsoftware.executor.v2.cli";
 
-/**
- * Sign every Mach-O file in a standalone install with Developer ID and the hardened runtime, the
- * executable last, and notarize the whole install when asked. A bare executable cannot hold a
- * stapled ticket, so Gatekeeper confirms notarization online on first run.
- *
- * Executables get `entitlements`: Bun and workerd compile JavaScript at runtime. None of them may
- * load a library from another team: every native addon and library is signed here, so library
- * validation stays on and no unsigned code can be loaded into the signed process.
- */
 export const signStandaloneMac = (
   install: string,
   executable: string,
-  options: { readonly entitlements: string; readonly notarize: boolean },
+  options: {
+    readonly entitlements: string;
+    readonly notarize: boolean;
+    readonly submission?: string;
+  },
 ) =>
   Effect.scoped(
     Effect.gen(function* () {
@@ -441,7 +372,6 @@ export const signStandaloneMac = (
           executable: (info.mode & 0o111) !== 0 && !/\.(node|dylib|so)$/u.test(file),
         });
       }
-      // Nested code first, so each enclosing signature covers signed contents.
       files.sort(
         (left, right) => right.file.split(path.sep).length - left.file.split(path.sep).length,
       );
@@ -497,14 +427,52 @@ export const signStandaloneMac = (
           notaryProfile,
           "--keychain",
           keychain.file,
-          "--wait",
+          ...(options.submission === undefined ? ["--wait"] : []),
           "--output-format",
           "json",
         ]),
       );
-      const status = /"status"\s*:\s*"([^"]+)"/u.exec(report)?.[1];
-      // The submission id identifies the job to Apple and is not a credential.
       yield* Console.log(`Notarization: ${report.trim()}`);
+      if (options.submission !== undefined) {
+        const id = /"id"\s*:\s*"([0-9a-f-]+)"/u.exec(report)?.[1];
+        if (id === undefined)
+          return yield* Effect.die(new Error("Apple returned no notarization submission id"));
+        yield* fs.writeFileString(options.submission, id);
+        return;
+      }
+      const status = /"status"\s*:\s*"([^"]+)"/u.exec(report)?.[1];
+      if (status !== "Accepted")
+        return yield* Effect.die(new Error(`Apple did not accept the install: ${status}`));
+    }),
+  ).pipe(Effect.orDie);
+
+export const waitForNotarization = (file: string) =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const processes = yield* ChildProcessSpawner.ChildProcessSpawner;
+      if (process.platform !== "darwin")
+        return yield* Effect.die(new Error("Notarization runs on macOS"));
+      const id = (yield* fs.readFileString(file)).trim();
+      if (!/^[0-9a-f-]+$/u.test(id))
+        return yield* Effect.die(new Error(`${file} holds no notarization submission id`));
+      const keychain = yield* temporaryKeychain;
+      yield* storeNotaryCredentials(keychain);
+      const report = yield* processes.string(
+        ChildProcess.make("/usr/bin/xcrun", [
+          "notarytool",
+          "wait",
+          id,
+          "--keychain-profile",
+          notaryProfile,
+          "--keychain",
+          keychain.file,
+          "--output-format",
+          "json",
+        ]),
+      );
+      yield* Console.log(`Notarization: ${report.trim()}`);
+      const status = /"status"\s*:\s*"([^"]+)"/u.exec(report)?.[1];
       if (status !== "Accepted")
         return yield* Effect.die(new Error(`Apple did not accept the install: ${status}`));
     }),

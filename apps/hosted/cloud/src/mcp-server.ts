@@ -1,8 +1,4 @@
-/**
- * Private entry point for MCP session objects. An object that wakes in a fresh isolate loads and
- * initializes only this Worker: the executor, the MCP grant checks and the protocol servers, not
- * the API with its routes, dashboard, sign-in, email, billing and schedules.
- */
+import { AlchemyContext } from "alchemy";
 import * as Cloudflare from "alchemy/Cloudflare";
 import { Effect, Layer, Schema } from "effect";
 import { Api } from "./infrastructure/api-worker.ts";
@@ -23,11 +19,9 @@ import {
 } from "./infrastructure/telemetry.ts";
 import { workerBuild } from "./infrastructure/worker-build.ts";
 
-/** The executor and MCP identity are built once per isolate and shared by its objects. */
 const mcpSession = Effect.gen(function* () {
   const executor = yield* cloudServingProduct(yield* appDataSupervisors);
   const environment = yield* Cloudflare.WorkerEnvironment;
-  // `McpSession.make` binds this Worker's own namespace; an object names itself through it.
   const idFromName = Schema.decodeUnknownEffect(SessionNamespace)(environment.McpSession).pipe(
     Effect.map((namespace) => (name: string) => namespace.idFromName(name)),
     Effect.orDie,
@@ -45,10 +39,9 @@ export default McpServer.make(
     if (globalThis.__ALCHEMY_RUNTIME__) return { main: import.meta.url };
     return {
       main: import.meta.url,
-      build: workerBuild("mcp-server"),
+      build: workerBuild("mcp-server", { localTestHooks: (yield* AlchemyContext).dev }),
       ...(yield* cloudObservability),
       workersDev: false,
-      // The API Worker's flags, under which session objects ran before they moved here.
       compatibility: {
         date: "2026-09-08",
         flags: [
@@ -60,7 +53,6 @@ export default McpServer.make(
       },
       env: {
         ...(yield* postHogBindings).env,
-        // Apps started from MCP tools run on the API-owned workflow.
         AppWorkflows: Cloudflare.Workflow("AppWorkflows", {
           className: "AppWorkflows",
           scriptName: (yield* Api).workerName,

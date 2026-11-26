@@ -19,7 +19,6 @@ layer(TestLive, { excludeTestServices: true })("Local query state", (it) => {
         const target = yield* Target;
         const session = yield* api.session();
         const headers = { authorization: `Bearer ${Redacted.value(target.apiKey)}` };
-        // Agent calls carry the API key and no browser origin.
         const agent: Session = {
           ...session,
           send: (method, path, data, extra = {}) => {
@@ -158,7 +157,6 @@ export default defineApp({ user: { accounts: { service } } }, async () => ({  })
         yield* browser.use("Open the app's accounts", (page) =>
           page.goto(`/apps/${app.id}?view=accounts`),
         );
-        // The linked account fills the plain requirement, so connecting another replaces it.
         yield* browser.use("Start connecting another account", (page) =>
           page.getByRole("button", { name: "Connect new account", exact: true }).click(),
         );
@@ -179,6 +177,7 @@ export default defineApp({ user: { accounts: { service } } }, async () => ({  })
               exact: true,
               includeHidden: true,
             })
+            .first()
             .waitFor({ state: "visible" }),
         );
         expect(

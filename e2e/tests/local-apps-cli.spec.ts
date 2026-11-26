@@ -1,4 +1,3 @@
-/** Drive the real `executor apps` CLI against the managed local server. */
 import { expect, layer } from "@effect/vitest";
 import { createServer } from "node:http";
 import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
@@ -13,23 +12,10 @@ import { Evidence } from "../support/evidence.ts";
 import { Workspace, helloIndex, helloPackage } from "../support/app-authoring.ts";
 import { appsVersion, declaredApps } from "../support/apps-release.ts";
 import { localEntryCommand } from "../support/local-entry.ts";
+import { throughPipe } from "../support/pipe-readers.ts";
 
-const Catalogs = Schema.fromJsonString(
-  Schema.Struct({
-    catalogs: Schema.Array(
-      Schema.Struct({
-        app: Schema.Struct({ slug: Schema.String }),
-        skills: Schema.Array(Schema.Struct({ name: Schema.String })),
-      }),
-    ),
-  }),
-);
-const Document = Schema.fromJsonString(
-  Schema.Struct({ content: Schema.String, files: Schema.Array(Schema.String) }),
-);
 const Created = Schema.fromJsonString(Schema.Struct({ id: Schema.String }));
 const Release = Schema.fromJsonString(Schema.Struct({ version: Schema.String }));
-/** A failed command's stdout when a program reads it: the error as the CLI describes it. */
 const Failure = Schema.fromJsonString(
   Schema.Struct({
     error: Schema.Struct({
@@ -56,7 +42,6 @@ const Deployed = Schema.Struct({
 const Source = Schema.fromJsonString(
   Schema.Struct({ files: Schema.Array(Schema.Struct({ path: Schema.String })) }),
 );
-/** A CLI commit prints its new revision and the files it removed, never the files it sent. */
 const Committed = Schema.fromJsonString(
   Schema.Struct({
     revision: Workspace.fields.revision,
@@ -64,7 +49,6 @@ const Committed = Schema.fromJsonString(
   }),
 );
 
-/** The real CLI, run as a child process against the managed local server with its own home. */
 const cli = Effect.gen(function* () {
   const fs = yield* FileSystem.FileSystem,
     path = yield* Path.Path,
@@ -74,18 +58,24 @@ const cli = Effect.gen(function* () {
   const packagedEntry = yield* Config.NonEmptyString("EXECUTOR_E2E_LOCAL_ENTRY").pipe(
     Config.option,
   );
-  // The packaged entry is JavaScript; Windows cannot execute it directly. Commands may run from
-  // another directory, so the entry is absolute.
   const entry = path.resolve(
     Option.isSome(packagedEntry) ? packagedEntry.value : "apps/local/server/src/bin.ts",
   );
   const home = yield* fs.makeTempDirectoryScoped({ prefix: "executor-apps-cli-" });
   const origin = target.metadata.origin;
+  const environment = (signedIn: boolean, extra: Record<string, string> = {}) => ({
+    PATH: process.env.PATH ?? "",
+    HOME: home,
+    DO_NOT_TRACK: "1",
+    ...(signedIn ? { EXECUTOR_API_KEY: Redacted.value(target.apiKey) } : {}),
+    ...extra,
+  });
   const run = (
     args: readonly string[],
     signedIn: boolean,
     cwd?: string,
     extra: Record<string, string> = {},
+    slowReader = false,
   ) =>
     evidence.step(
       `executor apps ${args.join(" ")}`,
@@ -98,20 +88,14 @@ const cli = Effect.gen(function* () {
               {
                 cwd,
                 extendEnv: false,
-                env: {
-                  PATH: process.env.PATH ?? "",
-                  HOME: home,
-                  // Release scenarios never send product analytics, even from a build with a baked key.
-                  DO_NOT_TRACK: "1",
-                  ...(signedIn ? { EXECUTOR_API_KEY: Redacted.value(target.apiKey) } : {}),
-                  ...extra,
-                },
+                env: environment(signedIn, extra),
                 stdout: "pipe",
                 stderr: "pipe",
                 forceKillAfter: "3 seconds",
               },
             ),
           );
+          if (slowReader) yield* child.exitCode.pipe(Effect.timeoutOption("1 second"));
           const [code, stdout, stderr] = yield* Effect.all(
             [
               child.exitCode,
@@ -124,7 +108,7 @@ const cli = Effect.gen(function* () {
         }),
       ),
     );
-  return { run, origin, fs };
+  return { run, origin, fs, entry, environment };
 });
 
 layer(TestLive, { excludeTestServices: true })("Local apps CLI", (it) => {
@@ -141,74 +125,12 @@ layer(TestLive, { excludeTestServices: true })("Local apps CLI", (it) => {
         yield* evidence.json("signed-out.json", signedOut);
         expect(signedOut.code).toBe(1);
         expect(signedOut.stderr).toContain(
-          "run executor apps login --host https://api.executor.sh and pass the same --host",
+          "Run executor login, which signs in to hosted Executor and makes later commands use it, or executor login --host <origin> for another host.",
         );
         expect(signedOut.stderr).toContain(
-          "Without --host or EXECUTOR_HOST, commands use the local background Executor; for a local server at --host, set EXECUTOR_API_KEY to its API key.",
+          "Commands use --host, then EXECUTOR_HOST, then the host you signed in to last, then the local background Executor; for a local server at --host, set EXECUTOR_API_KEY to its API key.",
         );
 
-        const listed = yield* run(["skills", "--host", origin], true);
-        yield* evidence.json("skills-list.json", listed);
-        expect(listed.code, listed.stderr).toBe(0);
-        const catalogs = yield* Schema.decodeUnknownEffect(Catalogs)(listed.stdout);
-        expect(
-          catalogs.catalogs
-            .find((catalog) => catalog.app.slug === "executor")
-            ?.skills.map((skill) => skill.name)
-            .toSorted(),
-        ).toEqual(["app-authoring", "code-mode", "executor"]);
-
-        // Agents read the entry skill first; it links to the authoring guide.
-        const entry = yield* run(
-          ["skills", "--host", origin, "--app", "executor", "--name", "executor"],
-          true,
-        );
-        expect(entry.code, entry.stderr).toBe(0);
-        const entryDocument = yield* Schema.decodeUnknownEffect(Document)(entry.stdout);
-        expect(entryDocument.content).toContain("# Executor");
-        expect(entryDocument.content).toContain("`app-authoring`");
-        expect(entryDocument.files).toContain("feedback.md");
-
-        const guide = yield* run(
-          ["skills", "--host", origin, "--app", "executor", "--name", "app-authoring"],
-          true,
-        );
-        expect(guide.code, guide.stderr).toBe(0);
-        const document = yield* Schema.decodeUnknownEffect(Document)(guide.stdout);
-        expect(document.content).toContain("# Build an Executor app");
-        expect(document.files).toContain("ui.md");
-
-        const topic = yield* run(
-          [
-            "skills",
-            "--host",
-            origin,
-            "--app",
-            "executor",
-            "--name",
-            "app-authoring",
-            "--file",
-            "ui.md",
-          ],
-          true,
-        );
-        expect(topic.code, topic.stderr).toBe(0);
-        expect((yield* Schema.decodeUnknownEffect(Document)(topic.stdout)).content).toContain(
-          "withOptimisticUpdate",
-        );
-
-        const missingName = yield* run(["skills", "--host", origin, "--file", "ui.md"], true);
-        expect(missingName.code).toBe(1);
-        expect(missingName.stderr).toContain("Pass --name with --file.");
-
-        const unknownApp = yield* run(
-          ["skills", "--host", origin, "--app", "missing-app-slug"],
-          true,
-        );
-        expect(unknownApp.code).toBe(1);
-        expect(unknownApp.stderr).toContain("No visible app has slug or ID missing-app-slug.");
-
-        // A source directory is read recursively, without dependency or Git folders.
         const source = yield* fs.makeTempDirectoryScoped({ prefix: "executor-apps-source-" });
         yield* fs.makeDirectory(`${source}/lib`);
         yield* fs.makeDirectory(`${source}/node_modules/ignored`, { recursive: true });
@@ -241,7 +163,6 @@ layer(TestLive, { excludeTestServices: true })("Local apps CLI", (it) => {
             .map((file) => file.path)
             .sort(),
         ).toEqual(["index.ts", "lib/label.ts"]);
-        // The directory declares no apps release, so deploying it is refused with the one to add.
         const directory = yield* Schema.decodeUnknownEffect(Schema.fromJsonString(Workspace))(
           read.stdout,
         );
@@ -254,8 +175,6 @@ layer(TestLive, { excludeTestServices: true })("Local apps CLI", (it) => {
           `Add "apps": "${appsVersion}" to package.json dependencies.`,
         );
 
-        // Committing the current directory prints the new revision, which the next read reports,
-        // and that it removed no file: the skipped dependency and Git folders were never saved.
         yield* fs.writeFileString(`${source}/lib/label.ts`, 'export const label = "edited";\n');
         const committed = yield* run(
           [
@@ -294,6 +213,70 @@ layer(TestLive, { excludeTestServices: true })("Local apps CLI", (it) => {
       }),
     ),
   );
+  it.effect(scenarios.localAppsCliPipedOutput.title, (context) =>
+    withCase(
+      context,
+      Effect.gen(function* () {
+        const target = yield* Target,
+          evidence = yield* Evidence,
+          api = yield* Api;
+        const { run, origin, fs, entry, environment } = yield* cli;
+        const session = yield* api.session();
+        const notes = Array.from(
+          { length: 40_000 },
+          (_, line) => `line ${line} ${"x".repeat(40)}\n`,
+        ).join("");
+        const source = yield* fs.makeTempDirectoryScoped({ prefix: "executor-apps-piped-" });
+        yield* fs.writeFileString(`${source}/index.ts`, helloIndex);
+        yield* fs.writeFileString(`${source}/package.json`, `${helloPackage(appsVersion)}\n`);
+        yield* fs.writeFileString(`${source}/notes.txt`, notes);
+        const created = yield* run(
+          ["create", "--host", origin, "--name", "CLI piped source", "--files", source],
+          true,
+        );
+        expect(created.code, created.stderr).toBe(0);
+        const app = yield* Schema.decodeUnknownEffect(Created)(created.stdout);
+        yield* Effect.addFinalizer(() =>
+          session
+            .send("DELETE", `/v1/apps/${app.id}`, undefined, {
+              authorization: `Bearer ${Redacted.value(target.apiKey)}`,
+            })
+            .pipe(Effect.orDie),
+        );
+
+        const read = yield* run(
+          ["source", "--host", origin, "--app", app.id],
+          true,
+          undefined,
+          {},
+          true,
+        );
+        const printed = Buffer.byteLength(read.stdout);
+        yield* evidence.json("piped-source.json", {
+          code: read.code,
+          stdoutBytes: printed,
+          stderr: read.stderr,
+        });
+        expect(read.code, read.stderr).toBe(0);
+        expect(printed).toBeGreaterThan(notes.length);
+        const files = (yield* Schema.decodeUnknownEffect(Schema.fromJsonString(Deployed))(
+          read.stdout,
+        )).files;
+        expect(files.find((file) => file.path === "notes.txt")?.content).toBe(notes);
+
+        const head = yield* throughPipe(
+          { mode: "head", bytes: 100 },
+          localEntryCommand(entry, ["apps", "source", "--host", origin, "--app", app.id]),
+          environment(true),
+        );
+        yield* evidence.json("head-c-100.json", head);
+        expect(head.read).toBeGreaterThanOrEqual(100);
+        expect(head.stderr).toBe("");
+        expect(head.code).toBe(0);
+        expect(head.millisecondsAfterClose).toBeLessThan(5_000);
+      }),
+    ),
+  );
   it.effect(scenarios.localAppsCliRelease.title, (context) =>
     withCase(
       context,
@@ -303,13 +286,11 @@ layer(TestLive, { excludeTestServices: true })("Local apps CLI", (it) => {
           api = yield* Api;
         const { run, origin, fs } = yield* cli;
         const session = yield* api.session();
-        // The host reports the exact apps release; the CLI holds no version of its own.
         const framework = yield* run(["framework", "--host", origin], true);
         expect(framework.code, framework.stderr).toBe(0);
         const { version } = yield* Schema.decodeUnknownEffect(Release)(framework.stdout);
         expect(version).toBe(appsVersion);
 
-        // Create requires the source, and its help names the command that prints the version.
         const withoutFiles = yield* run(["create", "--host", origin, "--name", "No files"], true);
         yield* evidence.json("create-without-files.json", withoutFiles);
         expect(withoutFiles.code).toBe(1);
@@ -318,8 +299,6 @@ layer(TestLive, { excludeTestServices: true })("Local apps CLI", (it) => {
           "a package.json whose dependencies.apps is the version executor apps framework prints",
         );
 
-        // deploy.md's CLI flow: index.ts and a package.json pinning that version, then create,
-        // read the first commit and deploy it.
         const hello = yield* fs.makeTempDirectoryScoped({ prefix: "executor-apps-hello-" });
         yield* fs.writeFileString(`${hello}/index.ts`, helloIndex);
         yield* fs.writeFileString(`${hello}/package.json`, `${helloPackage(version)}\n`);
@@ -348,7 +327,6 @@ layer(TestLive, { excludeTestServices: true })("Local apps CLI", (it) => {
         );
         expect(deployed.code, deployed.stderr).toBe(0);
 
-        // The host-managed Executor app is generated with the same pinned release.
         const inventory = yield* session.send("GET", "/v1/apps", undefined, {
           authorization: `Bearer ${Redacted.value(target.apiKey)}`,
         });
@@ -387,7 +365,6 @@ layer(TestLive, { excludeTestServices: true })("Local apps CLI", (it) => {
               .pipe(Effect.orDie),
           );
         const listedNames = Effect.gen(function* () {
-          // EXECUTOR_HOST stands in for --host.
           const listed = yield* run(["list"], true, undefined, { EXECUTOR_HOST: origin });
           expect(listed.code, listed.stderr).toBe(0);
           return (yield* Schema.decodeUnknownEffect(Schema.fromJsonString(Apps))(
@@ -395,7 +372,6 @@ layer(TestLive, { excludeTestServices: true })("Local apps CLI", (it) => {
           )).map((app) => app.name);
         });
 
-        // --files also takes a JSON list of files.
         const listFile = `${yield* fs.makeTempDirectoryScoped({ prefix: "executor-apps-json-" })}/files.json`;
         yield* fs.writeFileString(
           listFile,
@@ -416,7 +392,6 @@ layer(TestLive, { excludeTestServices: true })("Local apps CLI", (it) => {
           read.stdout,
         );
 
-        // A failed build reports its stage and source location.
         const failing = yield* fs.makeTempDirectoryScoped({ prefix: "executor-apps-failing-" });
         yield* fs.writeFileString(
           `${failing}/index.ts`,
@@ -462,8 +437,6 @@ layer(TestLive, { excludeTestServices: true })("Local apps CLI", (it) => {
           location: { file: "index.ts", line: 3 },
         });
 
-        // The build saved a newer commit, so a save against the first one is stale. A host error
-        // keeps its code, status, message and fields, on stderr and as JSON on stdout.
         const stale = yield* run(
           [
             "commit",
@@ -491,7 +464,6 @@ layer(TestLive, { excludeTestServices: true })("Local apps CLI", (it) => {
           details: { reason: "conflict" },
         });
 
-        // Source over Executor's limits, or not UTF-8 text, is refused before anything is uploaded.
         const refused = (name: string, directory: string) =>
           Effect.gen(function* () {
             const result = yield* run(
@@ -548,7 +520,6 @@ layer(TestLive, { excludeTestServices: true })("Local apps CLI", (it) => {
         for (const name of ["too-many-files", "too-many-bytes", "binary-files"])
           expect(names).not.toContain(name);
 
-        // A host that does not answer is named as such, with what to check.
         const unreachable = yield* run(["list", "--host", "http://127.0.0.1:9"], true);
         expect(unreachable.code).toBe(1);
         expect(unreachable.stderr).toContain("Code: HostUnreachable");
@@ -556,9 +527,6 @@ layer(TestLive, { excludeTestServices: true })("Local apps CLI", (it) => {
           "HostUnreachable",
         );
 
-        // A failed command from a CLI older than the published release says so, on stderr and
-        // in the JSON error. A current CLI, or a registry that does not answer, adds nothing.
-        // A packaged CLI keeps its own release version, so the registry answers relative to it.
         const environment = (registryUrl: string) => ({
           EXECUTOR_BUILD_VERSION: "2.0.0-beta.2",
           EXECUTOR_NPM_REGISTRY: registryUrl,

@@ -1,10 +1,3 @@
-/**
- * Builds of the frameworks from before routers keep working, unchanged, on the router host. One app
- * is pinned to the published `apps@0.0.1-beta.0` (protocol 1), another to the published
- * `apps@0.0.1-beta.4` (protocol 2), a third to the published `apps@0.0.1-beta.5` (protocol 3).
- * Each protocol's generated server entry is the one hosts used before routers, so its retained
- * build is the same artifact such a host kept.
- */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Layer, Schedule, Schema } from "effect";
 import { randomUUID } from "node:crypto";
@@ -21,8 +14,6 @@ import { McpClient } from "../support/mcp-client.ts";
 import { McpOAuth } from "../support/mcp-oauth.ts";
 import { skillUpstream } from "../support/skill-upstream.ts";
 
-// app-user-accounts: keep, as source of an earlier `apps` release.
-/** Single-file source written for the protocol-1 framework: queries and mutations catalogs. */
 const legacy = (revision: string) => [
   {
     path: "index.ts",
@@ -48,11 +39,6 @@ export default defineApp({ accounts: {}, database }, {
   },
 ];
 
-// app-user-accounts: keep, as source of an earlier `apps` release.
-/**
- * Single-file source written for `apps@0.0.1-beta.4`, protocol 2: queries and mutations catalogs
- * from a factory, and remote skills that its `dynamicSkills` loader reads through the app cache.
- */
 const catalogs = (revision: string, upstream: string) => [
   {
     path: "index.ts",
@@ -77,14 +63,8 @@ export default defineApp({ accounts: {}, database }, async (ctx) => ({
   },
 ];
 
-/** The marker a protocol-3 app's own error carries. */
 const appMarker = "Synthetic conversation is missing";
 
-// app-user-accounts: keep, as source of an earlier `apps` release.
-/**
- * Single-file source written for `apps@0.0.1-beta.5`, protocol 3: queries and mutations catalogs,
- * and a query and a workflow step that throw the app's own named error.
- */
 const detailed = (revision: string) => [
   {
     path: "index.ts",
@@ -111,11 +91,6 @@ export default defineApp({ accounts: {}, database }, {
   },
 ];
 
-/**
- * The same app rewritten for the host's release: routers, as protocol 4 requires, and SQL. Its
- * first migration copies the notes the earlier document store kept. `source.lazy` resolves without
- * being listed, so the catalog cannot give its kind.
- */
 const routed = [
   {
     path: "index.ts",
@@ -183,7 +158,6 @@ const Bundle = Schema.Struct({
 });
 class Pending extends Schema.TaggedError<Pending>()("Pending", {}) {}
 
-/** Poll until a condition holds. */
 const eventually = <A, E, R>(check: Effect.Effect<A, E | Pending, R>) =>
   check.pipe(
     Effect.retry({
@@ -230,7 +204,6 @@ layer(HostedLive, { excludeTestServices: true })("Apps from before routers", (it
         expect((yield* call("mutations.save", { text: "before" }, "mutation")).body).toBe(
           "protocol 1",
         );
-        // A scheduled run that needs review saves an approval naming mutations.review.
         const schedules = `${path}/schedules`;
         expect(
           (yield* api.request(actors.owner, "PATCH", `${schedules}/nightly`, {
@@ -258,8 +231,6 @@ layer(HostedLive, { excludeTestServices: true })("Apps from before routers", (it
         );
         const pending = yield* waitFor("awaiting-approval");
 
-        // The host restarts and loads the retained build again, without rebuilding it. Its data
-        // and the saved approval are unchanged.
         yield* serverControl("restart");
 
         const catalog = yield* body(
@@ -286,7 +257,6 @@ layer(HostedLive, { excludeTestServices: true })("Apps from before routers", (it
           actual: "query",
         });
 
-        // Workflow steps from the protocol-1 bundle name operations without their kind prefix.
         const started = yield* api.request(actors.owner, "POST", `${path}/workflow-runs`, {
           workflow: "record",
           input: { text: "workflow" },
@@ -314,7 +284,6 @@ layer(HostedLive, { excludeTestServices: true })("Apps from before routers", (it
           output: ["before", "inferred", "named", "workflow"],
         });
 
-        // The approval saved before the upgrade resumes the protocol-1 mutation.
         const approval = `${prefix}/scheduled-runs/${pending.id}/approval`;
         expect(
           (yield* api.request(actors.owner, "POST", approval, {
@@ -334,7 +303,6 @@ layer(HostedLive, { excludeTestServices: true })("Apps from before routers", (it
         );
         yield* waitFor("succeeded", 2);
 
-        // Agents search and call the old names through MCP.
         const key = yield* body(
           Schema.Struct({ id: Schema.String, key: Schema.RedactedFromValue(Schema.String) }),
           yield* api.request(actors.owner, "POST", "/api/auth/api-key/create", {
@@ -375,8 +343,6 @@ layer(HostedLive, { excludeTestServices: true })("Apps from before routers", (it
         );
         expect(saved.execution).toEqual({ ok: true, value: "protocol 1" });
 
-        // Every app declares its framework. Source without a declaration is refused with the
-        // release to add, and the running build keeps serving.
         const unpinned = yield* saveAndDeploy(actors.owner, path, { files: legacy("second") });
         expect(unpinned.status, JSON.stringify(unpinned.body)).toBe(422);
         expect(unpinned.body).toMatchObject({
@@ -385,7 +351,6 @@ layer(HostedLive, { excludeTestServices: true })("Apps from before routers", (it
         });
         expect((yield* call("mutations.save", { text: "still one" })).body).toBe("protocol 1");
 
-        // Pinned to either published protocol-1 release, the same source rebuilds and runs unchanged.
         for (const version of ["0.0.1-beta.0", "0.0.1-beta.1"] as const) {
           const release = yield* publishedRelease(version);
           const pinned = yield* saveAndDeploy(actors.owner, path, {
@@ -397,7 +362,6 @@ layer(HostedLive, { excludeTestServices: true })("Apps from before routers", (it
           expect((yield* call("queries.notes", {}, "query")).body).toContain(version);
         }
 
-        // A new app declares the host's release, protocol 4, and must use routers.
         const fresh = yield* api.request(actors.owner, "POST", `${prefix}/apps/deploy`, {
           name: `Router app ${randomUUID().slice(0, 8)}`,
           files: [...routed, appsManifest],
@@ -411,7 +375,6 @@ layer(HostedLive, { excludeTestServices: true })("Apps from before routers", (it
             input: { text: "new" },
           })).body,
         ).toBe("routers");
-        // A tool the catalog doesn't list is called without a kind and runs as its own kind.
         const secondCall = (
           tool: string,
           input: Record<string, string>,
@@ -434,7 +397,6 @@ layer(HostedLive, { excludeTestServices: true })("Apps from before routers", (it
         });
         expect((yield* secondCall("notes", {})).body).toEqual(["new", "unlisted", "named"]);
 
-        // Upgrading to the host's release needs router source: protocol-1 source is refused.
         const refused = yield* saveAndDeploy(actors.owner, path, {
           files: [...legacy("upgrade"), appsManifest],
         });
@@ -450,7 +412,6 @@ layer(HostedLive, { excludeTestServices: true })("Apps from before routers", (it
             .toSorted(),
         ).toEqual(["notes", "save"]);
         expect((yield* call("save", { text: "upgraded" })).body).toBe("routers");
-        // The upgraded app keeps the notes its document store held; its migration copied them.
         const kept = yield* body(Schema.Array(Schema.String), yield* call("notes", {}, "query"));
         expect(kept).toContain("still pinned");
         expect(kept.at(-1)).toBe("upgraded");
@@ -493,7 +454,6 @@ layer(HostedLive, { excludeTestServices: true })("Apps from before routers", (it
           "protocol 2",
         );
 
-        // The host restarts and loads the retained build again, without rebuilding it.
         yield* serverControl("restart");
 
         const catalog = yield* body(
@@ -511,7 +471,6 @@ layer(HostedLive, { excludeTestServices: true })("Apps from before routers", (it
         expect((yield* call("mutations.save", { text: "named" }, "mutation")).body).toBe(
           "protocol 2",
         );
-        // A wrong kind is refused before the bundle runs, so nothing is written.
         const mismatch = yield* call("mutations.save", { text: "never" }, "query");
         expect(mismatch.status).toBe(409);
         expect(mismatch.body).toMatchObject({
@@ -521,7 +480,6 @@ layer(HostedLive, { excludeTestServices: true })("Apps from before routers", (it
         });
         expect((yield* call("queries.notes", {})).body).toEqual(["before", "inferred", "named"]);
 
-        // Workflow steps from the protocol-2 bundle name operations without their kind prefix.
         const started = yield* api.request(actors.owner, "POST", `${path}/workflow-runs`, {
           workflow: "record",
           input: { text: "workflow" },
@@ -544,8 +502,6 @@ layer(HostedLive, { excludeTestServices: true })("Apps from before routers", (it
           output: ["before", "inferred", "named", "workflow"],
         });
 
-        // Protocol 2 reports that its skill loader read through the app cache, so the host keeps
-        // the catalog: the next read does not contact the publisher.
         const skills = api
           .request(actors.owner, "GET", `${path}/skill-bundle`)
           .pipe(Effect.flatMap((response) => body(Bundle, response)));
@@ -556,7 +512,6 @@ layer(HostedLive, { excludeTestServices: true })("Apps from before routers", (it
         expect(yield* skills).toEqual(first);
         expect((yield* upstream.requests).length).toBe(loaded);
 
-        // Agents search and call the old names through MCP.
         const key = yield* body(
           Schema.Struct({ id: Schema.String, key: Schema.RedactedFromValue(Schema.String) }),
           yield* api.request(actors.owner, "POST", "/api/auth/api-key/create", {
@@ -597,8 +552,6 @@ layer(HostedLive, { excludeTestServices: true })("Apps from before routers", (it
         );
         expect(saved.execution).toEqual({ ok: true, value: "protocol 2" });
 
-        // Pinned to the bare published version, which hosts resolve from npm, the source rebuilds
-        // and runs unchanged, and its data is kept.
         const rebuilt = yield* saveAndDeploy(actors.owner, path, {
           files: [
             ...catalogs("second", upstream.url),
@@ -657,7 +610,6 @@ layer(HostedLive, { excludeTestServices: true })("Apps from before routers", (it
           "protocol 3",
         );
 
-        // The host restarts and loads the retained build again, without rebuilding it.
         yield* serverControl("restart");
 
         const catalog = yield* body(
@@ -676,7 +628,6 @@ layer(HostedLive, { excludeTestServices: true })("Apps from before routers", (it
         expect((yield* call("mutations.save", { text: "named" }, "mutation")).body).toBe(
           "protocol 3",
         );
-        // A wrong kind is refused before the bundle runs, so nothing is written.
         const mismatch = yield* call("mutations.save", { text: "never" }, "query");
         expect(mismatch.status).toBe(409);
         expect(mismatch.body).toMatchObject({
@@ -686,7 +637,6 @@ layer(HostedLive, { excludeTestServices: true })("Apps from before routers", (it
         });
         expect((yield* call("queries.notes", {})).body).toEqual(["before", "inferred", "named"]);
 
-        // Protocol 3 carries the app's own error name and message, with or without a kind.
         for (const kind of [undefined, "query"] as const) {
           const failed = yield* call("queries.fail", {}, kind);
           expect(failed.status, JSON.stringify(failed.body)).toBe(502);
@@ -697,8 +647,6 @@ layer(HostedLive, { excludeTestServices: true })("Apps from before routers", (it
           });
         }
 
-        // Workflow steps from the protocol-3 bundle name operations without their kind prefix,
-        // and a failing step keeps the app's error.
         const settled = (workflow: string, input: Record<string, string>) =>
           Effect.gen(function* () {
             const started = yield* api.request(actors.owner, "POST", `${path}/workflow-runs`, {
@@ -728,8 +676,6 @@ layer(HostedLive, { excludeTestServices: true })("Apps from before routers", (it
           failure: { step: "explode", errorName: "ConversationMissing", message: appMarker },
         });
 
-        // Pinned to the bare published version, which hosts resolve from npm, the source rebuilds
-        // and runs unchanged, and its data is kept.
         const rebuilt = yield* saveAndDeploy(actors.owner, path, {
           files: [
             ...detailed("second"),

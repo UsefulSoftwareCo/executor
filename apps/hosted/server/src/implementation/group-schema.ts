@@ -1,8 +1,6 @@
-/** Additive hosted-only group storage. Existing resource and auth rows are unchanged. */
 import { Effect } from "effect";
 import { SqlClient } from "effect/sql";
 
-/** Run under the hosted migration lock after Better Auth has created its organization/member tables. */
 export const migrateGroups = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   yield* sql`create table if not exists hosted_groups (

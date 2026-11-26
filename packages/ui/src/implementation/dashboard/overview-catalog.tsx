@@ -5,7 +5,6 @@ import { Atom, AsyncResult } from "effect/reactivity";
 import type { FailureProps, Query } from "../../contracts/dashboard.ts";
 import { OverviewCardLoading } from "./app-loading.tsx";
 
-/** Summarize live catalogs once by name; execution stays in the account-specific tabs. */
 export function OverviewCatalog<A, E, Item extends { readonly name: string }>({
   sources,
   items,

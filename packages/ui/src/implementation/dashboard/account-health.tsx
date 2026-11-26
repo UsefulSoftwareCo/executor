@@ -11,12 +11,11 @@ import { formatMoment, useDisplayFormat } from "../hooks/display-format.ts";
 
 type AccountInfo = NonNullable<AccountHealth["info"]>;
 
-/** What one app's latest check means for the reader; tone matches the other status pills. */
 export const describeAccountCheck = (status: AccountCheckStatus) =>
   Match.value(status).pipe(
     Match.when("healthy", () => ({ label: "Working", tone: "good" as const })),
     Match.when("credentials_rejected", () => ({
-      label: "Sign-in rejected",
+      label: "Credentials not working",
       tone: "bad" as const,
     })),
     Match.when("forbidden", () => ({ label: "Missing permission", tone: "warn" as const })),
@@ -35,11 +34,6 @@ const tones = {
   muted: "bg-muted-foreground/50",
 };
 
-/**
- * One app's latest check as a dot on its app reference. A result from before the account's
- * credentials or the app changed is shown as outdated, never as the current state. Apps without a
- * check, or not yet checked, show nothing.
- */
 export function AccountCheckDot({ health }: { readonly health: AccountAppHealth | undefined }) {
   const format = useDisplayFormat();
   const check = health?.check;
@@ -59,10 +53,6 @@ export function AccountCheckDot({ health }: { readonly health: AccountAppHealth 
   );
 }
 
-/**
- * The upstream photo a check reported. The image shows only once it loads, so a missing, broken or
- * slow photo leaves the fallback: a person icon by default, or nothing.
- */
 export function AccountAvatar({
   info,
   fallback = true,
@@ -90,7 +80,6 @@ export function AccountAvatar({
   );
 }
 
-/** The upstream identity a check reported, for the account heading. */
 export function AccountIdentity({ info }: { readonly info: AccountInfo }) {
   const name = info.displayName ?? info.username ?? info.email;
   const secondary = [
@@ -120,10 +109,6 @@ export function AccountIdentity({ info }: { readonly info: AccountInfo }) {
   );
 }
 
-/**
- * Each selecting app's latest check, with an action to check again. Opening it checks once when a
- * result is missing or outdated, such as after new credentials.
- */
 export function AccountHealthPanel<E>({
   data,
   check,
@@ -146,8 +131,6 @@ export function AccountHealthPanel<E>({
     setPending(false);
     if (Exit.isFailure(exit)) setError(exit.cause);
   };
-  // Each missing or outdated result is checked once while the panel is open, so a redeploy or new
-  // credentials meanwhile check again.
   const staleResults =
     health?.apps
       .filter((entry) => entry.checkable && (entry.check === null || !entry.check.current))
@@ -200,10 +183,6 @@ export function AccountHealthPanel<E>({
   );
 }
 
-/**
- * One app's latest check, spelled out with its time and, when it failed, the reason given. While
- * `checking`, a missing or outdated result gives way to the check in progress.
- */
 export function AccountCheckResult({
   health,
   checking = false,
@@ -211,7 +190,6 @@ export function AccountCheckResult({
 }: {
   readonly health: AccountAppHealth | undefined;
   readonly checking?: boolean;
-  /** Offered when checking again could not run, while the result is still missing or outdated. */
   readonly retry?: (() => void) | undefined;
 }) {
   if (health === undefined || !health.checkable)

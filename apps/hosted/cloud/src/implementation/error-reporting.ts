@@ -1,4 +1,3 @@
-/** Error-only Sentry integration with one client and isolated scope per Worker request. */
 import { CloudflareClient, Scope, createTransport } from "@sentry/cloudflare";
 import { createStackParser, nodeStackLineParser } from "@sentry/core";
 import { CurrentRuntimeContext } from "alchemy/RuntimeContext";
@@ -7,11 +6,6 @@ import { CurrentUserId, CurrentOrganization } from "@executor-js/hosted-server";
 import { isRequestRejection } from "@executor-js/telemetry/http";
 import { recordedError } from "@executor-js/telemetry/recorded-failure";
 
-/**
- * Client rejections stay in request telemetry and are not incidents: declared
- * 4xx errors, and requests an endpoint's schema rejected. The request span
- * records why a request was rejected.
- */
 const isClientRejection = (error: unknown) => {
   if (isRequestRejection(error)) return true;
   if (!(error instanceof Error) || !Schema.isSchema(error.constructor)) return false;
@@ -19,8 +13,6 @@ const isClientRejection = (error: unknown) => {
   return typeof status === "number" && status >= 400 && status < 500;
 };
 
-// Match Sentry's Cloudflare parser: Worker module names are relative, while
-// uploaded release artifacts use root-relative paths.
 const [stackPriority, parseStackLine] = nodeStackLineParser();
 const workerStackParser = createStackParser([
   stackPriority,
@@ -42,7 +34,6 @@ const Settings = Schema.Struct({
   environment: Schema.String,
   release: Schema.String,
 });
-/** The reporting boundary never replaces the failure of a product operation. */
 export class SentryTransportFailed extends Schema.TaggedError<SentryTransportFailed>()(
   "SentryTransportFailed",
   {},
@@ -54,11 +45,9 @@ const Reporter = Context.Reference<Reporter>("cloud/SentryReporter", {
   defaultValue: () => ({ capture: () => Effect.void }),
 });
 
-/** Capture a handled Effect failure before an API or runtime adapter translates it. */
 export const reportCloudFailure = (cause: Cause.Cause<unknown>) =>
   Effect.flatMap(Reporter, (reporter) => reporter.capture(cause));
 
-/** Build a request-local client; Effect/Alchemy owns the final flush through waitUntil. */
 export const withCloudSentry = <A, E, R>(
   handler: Effect.Effect<A, E, R>,
   settings: Effect.Effect<unknown>,
@@ -110,7 +99,6 @@ export const withCloudSentry = <A, E, R>(
     );
     const seen = new Set<unknown>();
     const captureIn = (cause: Cause.Cause<unknown>, context: Context.Context<never>) => {
-      // Filter each reason, so a client rejection cannot hide an unrelated defect in the same cause.
       const reasons = cause.reasons.filter(
         (reason) =>
           reason._tag !== "Interrupt" &&
@@ -148,7 +136,6 @@ export const withCloudSentry = <A, E, R>(
           }
         }
       }
-      // An app's own text reaches its caller, never an incident report.
       client.captureException(recordedError(exception), undefined, scope);
     };
     const capture = (cause: Cause.Cause<unknown>) =>
@@ -163,7 +150,6 @@ export const withCloudSentry = <A, E, R>(
     );
   });
 
-/** Resolve the binding accessor at initialization, preserving native Alchemy event context. */
 export const cloudSentry = Effect.gen(function* () {
   const context = yield* CurrentRuntimeContext;
   const settings = context ? context.get<unknown>("EXECUTOR_SENTRY") : Effect.succeed(undefined);

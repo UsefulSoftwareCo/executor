@@ -1,4 +1,3 @@
-/** Prepare pinned Git sources beside binary releases. Does not publish or execute upstream code. */
 import { createHash } from "node:crypto";
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -79,7 +78,6 @@ const build = Effect.gen(function* () {
   const processes = yield* ChildProcessSpawner.ChildProcessSpawner;
   const http = (yield* HttpClient.HttpClient).pipe(HttpClient.filterStatusOk);
   const root = yield* path.fromFileUrl(new URL("../../", import.meta.url));
-  // Changing the bundled binary requires an explicit review of its matching sources.
   yield* fs.readFileString(path.join(root, "package.json")).pipe(
     Effect.flatMap(
       Schema.decodeUnknownEffect(

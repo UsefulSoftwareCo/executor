@@ -24,7 +24,6 @@ import { Link, useNavigate } from "@tanstack/react-router";
 
 interface AppToolsProps {
   readonly app: App;
-  /** The app's requirements with their linked accounts. */
   readonly requirements: readonly RequirementAccounts<DashboardAccount>[];
   readonly selected: string | undefined;
 }
@@ -56,7 +55,6 @@ function AccountSetup({
   );
 }
 
-/** Incomplete account setup is a product state; do not start tool discovery until it is resolved. */
 export function AppTools(props: AppToolsProps) {
   const readiness = appToolReadiness(props.app, props.requirements);
   switch (readiness.state) {
@@ -75,7 +73,7 @@ export function AppTools(props: AppToolsProps) {
         <AccountReconnect
           app={props.app.id}
           accounts={readiness.accounts}
-          status="Sign-in rejected"
+          status="Credentials refused"
         />
       );
     case "unavailable":
@@ -89,7 +87,6 @@ export function AppTools(props: AppToolsProps) {
   }
 }
 
-/** An expired sign-in is an account action, not an empty tool browser or retryable request. */
 function AccountReconnect({
   app,
   accounts,
@@ -127,7 +124,6 @@ function AccountReconnect({
   );
 }
 
-/** Browse the complete live tool catalog with a stable, separate schema inspector. */
 function LiveAppTools({ app, requirements, selected }: AppToolsProps) {
   const navigate = useNavigate();
   const catalog = { app: app.id, version: app.activeVersion };

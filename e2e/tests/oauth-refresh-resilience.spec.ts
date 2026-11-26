@@ -1,4 +1,3 @@
-/** Renewal failures are classified from the token endpoint's real wire responses. */
 import { expect, layer } from "@effect/vitest";
 import { Clock, Effect, Schedule, Schema } from "effect";
 import { FetchHttpClient, HttpClient } from "effect/http";
@@ -32,7 +31,6 @@ const Echo = Schema.Struct({
   authorization: Schema.NullOr(Schema.String),
 });
 const Read = Schema.Record(Schema.String, Echo);
-/** The access token issued at sign-in (0) or by the issuer's nth refresh request. */
 const presented = (generation: number) => ({
   refreshed: generation > 0,
   authorization:
@@ -45,16 +43,6 @@ type TokenError = Exclude<
   null | undefined
 >;
 const privateError = { error_description: "PRIVATE_PROVIDER_ERROR" };
-/**
- * How the token endpoint answers a refresh: an outage (503), rate limit (429), an OAuth
- * `server_error` or `temporarily_unavailable` error body with HTTP 400, a dropped
- * connection, a 200 without an access token, a refused client, another refusal, or a revoked
- * grant (`invalid_grant`).
- */
-/**
- * The recovery after a temporary renewal failure inside a call that may write. It promises no
- * renewal on the next use, which a token without an expiry would not get.
- */
 const renewalInsideWrite =
   "Respect any wait specified by the renewal error; a later safe read that uses this account may trigger renewal when access is due for renewal or rejected again. If renewal keeps failing, inspect its error and reconnect only when the service indicates it is needed.";
 
@@ -79,17 +67,42 @@ const refreshFailures = {
   unauthorized_client: { status: 400, body: { error: "unauthorized_client", ...privateError } },
   invalid_request: { status: 400, body: { error: "invalid_request", ...privateError } },
   invalid_scope: { status: 400, body: { error: "invalid_scope", ...privateError } },
-  // Slack's token endpoint answers HTTP 200 with its own error codes, such as internal_error.
   slack_internal_error: {
     status: 200,
     body: { ok: false, error: "internal_error", ...privateError },
   },
   invalid_grant: { status: 400, body: { error: "invalid_grant", ...privateError } },
+  // Supabase Auth's OAuth server refuses a refresh with its own body instead of RFC 6749's
+  // `error`. Its `refresh_token_already_used` means the grant has ended; other codes do not.
+  supabase_refusal: {
+    status: 400,
+    body: { code: 400, error_code: "validation_failed", msg: "PRIVATE_PROVIDER_ERROR" },
+  },
+  supabase_already_used: {
+    status: 400,
+    body: { code: 400, error_code: "refresh_token_already_used", msg: "PRIVATE_PROVIDER_ERROR" },
+  },
+  github_bad_refresh_token: { status: 200, body: { error: "bad_refresh_token", ...privateError } },
+  slack_invalid_refresh_token: {
+    status: 200,
+    body: { ok: false, error: "invalid_refresh_token", ...privateError },
+  },
+  slack_token_revoked: {
+    status: 200,
+    body: { ok: false, error: "token_revoked", ...privateError },
+  },
+  aws_token_expired: {
+    status: 401,
+    body: { error: "TOKEN_EXPIRED", message: "PRIVATE_PROVIDER_ERROR" },
+  },
+  aws_user_credentials_changed: {
+    status: 403,
+    body: { error: "USER_CREDENTIALS_CHANGED", message: "PRIVATE_PROVIDER_ERROR" },
+  },
+  tesla_login_required: { status: 401, body: { error: "login_required", ...privateError } },
 } satisfies Record<string, TokenError>;
 type RefreshFailure = keyof typeof refreshFailures;
-/** Seconds a token lasts when a scenario needs it to expire before the next call. */
 const shortLifetime = 1;
-/** Longer than `shortLifetime`, measured from after the token was saved. */
 const pastShortLifetime = "1200 millis";
 const Failure = Schema.Struct({
   _tag: Schema.String,
@@ -105,7 +118,6 @@ const Failure = Schema.Struct({
   retryAfter: Schema.optional(Schema.String),
 });
 
-/** One synthetic issuer, a deployed app that reads its token, and helpers to connect accounts. */
 const renewalFixture = Effect.gen(function* () {
   const api = yield* Api,
     actors = yield* Actors,
@@ -114,15 +126,8 @@ const renewalFixture = Effect.gen(function* () {
     http = yield* HttpClient.HttpClient;
   const issuer = yield* oauthSetupIssuer;
   const prefix = `/api/organizations/${actors.organization.id}`;
-  // Tokens issued inside the host's 30-second renewal window renew on the next use.
   yield* issuer.configure({ refreshTokens: true, expiresIn: 20 });
   const name = `Renewal ${randomUUID().slice(0, 8)}`;
-  /**
-   * Deploy an app whose query presents each listed slot's token to the issuer's resource, and
-   * whose mutation posts the first slot's token. A refused token is reported as an
-   * authentication failure of the account that presented it, as provider helpers do. `manifest`
-   * pins the `apps` release it is built with.
-   */
   const deploy = (appName: string, slots: ReadonlyArray<string>, manifest = appsManifest) =>
     Effect.gen(function* () {
       const reads = slots
@@ -162,7 +167,6 @@ export default defineApp({ user: { accounts: { ${slots.map((slot) => `${slot}: s
 
   const connect = (label: string, appId = app.id) =>
     Effect.gen(function* () {
-      // Connecting from the app links the new account to it.
       const connection = yield* body(
         Resource,
         yield* api.request(
@@ -200,28 +204,17 @@ export default defineApp({ user: { accounts: { ${slots.map((slot) => `${slot}: s
       yield* Effect.addFinalizer(() =>
         api.request(actors.owner, "DELETE", `${prefix}/accounts/${account.id}`).pipe(Effect.orDie),
       );
-      // Linking the account sets it up as the app's webhook source in the background, which
-      // resolves, and so may renew, the account. Let it finish so each renewal below belongs to
-      // the call the scenario makes.
       yield* settleWebhookSources(actors.owner, `${prefix}/apps/${appId}`, (sources) =>
         sources.some((source) => source.account === account.id && source.status !== "pending"),
       );
       return account.id;
     });
-  /**
-   * Read with the app's linked account. Connecting another account from the app replaces the
-   * link, so each call uses the account connected last.
-   */
   const read = (appId = app.id) =>
     api.request(actors.owner, "POST", `${prefix}/apps/${appId}/tools/call`, {
       tool: "read",
       kind: "query",
       input: {},
     });
-  /**
-   * List the app's tools, as a caller discovering them does. The listing is kept, and only a kept
-   * listing confirms that a query only reads, so a refused query is repeated after renewal.
-   */
   const list = (appId = app.id) =>
     Effect.gen(function* () {
       const listed = yield* api.request(actors.owner, "GET", `${prefix}/apps/${appId}/tools`);
@@ -306,13 +299,13 @@ layer(HostedLive, { excludeTestServices: true })("OAuth refresh resilience", (it
         yield* expectRead(first);
         expect(yield* refreshes).toBe(first);
 
-        // One call renews a grant once, even when the account fills two slots and the renewed
-        // token already falls inside the renewal window: the second slot uses that token.
         {
           const pair = yield* deploy(`${name} pair`, ["service", "backup"]);
-          // Connecting from the app links the account to `service`; link it to `backup` too.
-          const shared = yield* connect("Synthetic shared account", pair.id);
+          const shared = yield* connect("Synthetic paired account", pair.id);
           yield* linkAccount(actors.owner, `${prefix}/apps/${pair.id}`, "backup", shared);
+          yield* settleWebhookSources(actors.owner, `${prefix}/apps/${pair.id}`, (sources) =>
+            sources.some((source) => source.account === shared && source.status !== "pending"),
+          );
           const renewed = (yield* refreshes) + 1;
           const response = yield* api.request(
             actors.owner,
@@ -399,6 +392,7 @@ layer(HostedLive, { excludeTestServices: true })("OAuth refresh resilience", (it
             providerError: "invalid_scope",
           },
           { failure: "slack_internal_error", reason: "renewal_rejected", status: 200 },
+          { failure: "supabase_refusal", reason: "renewal_rejected", status: 400 },
         ];
         for (const scenario of transient) {
           yield* Effect.sleep(pastShortLifetime);
@@ -418,10 +412,8 @@ layer(HostedLive, { excludeTestServices: true })("OAuth refresh resilience", (it
                 : { providerError: scenario.providerError }),
             },
           });
-          // A dropped connection has no response status to record.
           if (scenario.status === undefined)
             expect((yield* body(Failure, failed)).cause?.status, scenario.failure).toBeUndefined();
-          // Only a rate limit carries the time its Retry-After names, here 30 seconds ahead.
           const retryAfter = (yield* body(Failure, failed)).retryAfter;
           if (scenario.reason !== "rate_limited")
             expect(retryAfter, scenario.failure).toBeUndefined();
@@ -432,7 +424,6 @@ layer(HostedLive, { excludeTestServices: true })("OAuth refresh resilience", (it
               yield* Clock.currentTimeMillis,
             );
           assertPrivate(failed.body);
-          // One attempt per call; the claim is released rather than retried or abandoned.
           expect(yield* refreshes, scenario.failure).toBe(before + 1);
           if (scenario.failure === "unavailable") {
             const trace = yield* spans;
@@ -445,6 +436,11 @@ layer(HostedLive, { excludeTestServices: true })("OAuth refresh resilience", (it
             ).toMatchObject({
               "oauth.provider.id": provider,
               "oauth.renewal.outcome": "service_unavailable",
+              "oauth.resolve.purpose": "run",
+              "oauth.resolve.credential_type": "oauth2",
+              "executor.account.id": expect.any(String),
+              "executor.organization.id": actors.organization.id,
+              "executor.user.id": expect.any(String),
             });
             expect(
               trace.data.find(({ span }) => span.operationName === "oauth.refresh")?.span.tags,
@@ -452,15 +448,10 @@ layer(HostedLive, { excludeTestServices: true })("OAuth refresh resilience", (it
             assertPrivate(trace);
             yield* evidence.json("refresh-unavailable-trace.json", trace);
           }
-          // The saved refresh token still works once the service recovers. The renewed token
-          // is short-lived too, so the next case starts from an expired token again.
           yield* issuer.configure({ tokenError: null });
           yield* expectRead(before + 2);
         }
 
-        // A renewal that states no lifetime, by omitting it or giving zero, keeps its token
-        // rather than renewing on every call. The service's refusal of such a token renews it;
-        // the renewal-on-refusal scenario below covers that.
         for (const lifetime of [0, null] as const) {
           yield* issuer.configure({ expiresIn: 20 });
           yield* connect(`Synthetic ${lifetime ?? "omitted"} lifetime account`);
@@ -470,13 +461,11 @@ layer(HostedLive, { excludeTestServices: true })("OAuth refresh resilience", (it
           yield* expectRead(renewed);
           expect(yield* refreshes, `expires_in ${lifetime}`).toBe(renewed);
         }
-        // Without a refresh token, a zero lifetime does not demand an immediate reconnect.
         yield* issuer.configure({ refreshTokens: false, expiresIn: 0 });
         yield* connect("Synthetic zero-lifetime account");
         yield* expectRead(0);
         yield* issuer.configure({ refreshTokens: true, expiresIn: 20 });
 
-        // A refused grant needs a new sign-in, and the host stops presenting it.
         const refused = yield* connect("Synthetic refused account");
         yield* issuer.configure({ tokenError: refreshFailures.invalid_grant });
         const beforeRefusal = yield* refreshes;
@@ -503,8 +492,6 @@ layer(HostedLive, { excludeTestServices: true })("OAuth refresh resilience", (it
           "oauth.error.provider_code": "invalid_grant",
           "http.response.status_code": "400",
         });
-        // An account that needs reconnecting is an expected state, recorded as the resolve's
-        // outcome rather than as a failed span.
         expect(
           refusal.data.find(
             ({ span }) =>
@@ -518,6 +505,73 @@ layer(HostedLive, { excludeTestServices: true })("OAuth refresh resilience", (it
         const again = yield* read();
         expect(again.status, JSON.stringify(again.body)).toBe(409);
         expect(yield* refreshes).toBe(beforeRefusal + 1);
+      }),
+    ),
+  );
+  it.effect(scenarios.oauthRenewalEndedGrantCodes.title, (context) =>
+    withHostedCase(
+      context,
+      Effect.gen(function* () {
+        const { issuer, provider, connect, read, refreshes, assertPrivate, spans, evidence } =
+          yield* renewalFixture;
+        const ended: ReadonlyArray<{
+          readonly failure: RefreshFailure;
+          readonly status: number;
+          readonly code: string;
+        }> = [
+          { failure: "supabase_already_used", status: 400, code: "refresh_token_already_used" },
+          { failure: "github_bad_refresh_token", status: 200, code: "bad_refresh_token" },
+          { failure: "slack_invalid_refresh_token", status: 200, code: "invalid_refresh_token" },
+          { failure: "slack_token_revoked", status: 200, code: "token_revoked" },
+          { failure: "aws_token_expired", status: 401, code: "token_expired" },
+          {
+            failure: "aws_user_credentials_changed",
+            status: 403,
+            code: "user_credentials_changed",
+          },
+          { failure: "tesla_login_required", status: 401, code: "login_required" },
+        ];
+        for (const scenario of ended) {
+          const account = yield* connect(`Synthetic ${scenario.failure} account`);
+          yield* issuer.configure({ tokenError: refreshFailures[scenario.failure] });
+          const before = yield* refreshes;
+          const refusedRead = yield* read();
+          expect(
+            refusedRead.status,
+            `${scenario.failure}: ${JSON.stringify(refusedRead.body)}`,
+          ).toBe(409);
+          expect(yield* body(Failure, refusedRead), scenario.failure).toMatchObject({
+            _tag: "OAuthReconnectRequired",
+            account,
+            cause: { stage: "refresh", status: scenario.status },
+          });
+          assertPrivate(refusedRead.body);
+          const trace = yield* spans;
+          expect(
+            trace.data.find(
+              ({ span }) =>
+                span.operationName === "oauth.resolve" &&
+                span.tags["oauth.renewal.outcome"] !== undefined,
+            )?.span.tags,
+            scenario.failure,
+          ).toMatchObject({
+            "oauth.provider.id": provider,
+            "oauth.renewal.outcome": "reconnect",
+            "oauth.reconnect.reason": "renewal_refused",
+          });
+          expect(
+            trace.data.find(({ span }) => span.operationName === "oauth.refresh")?.span.tags,
+            scenario.failure,
+          ).toMatchObject({ "oauth.error.known_provider_code": scenario.code });
+          assertPrivate(trace);
+          yield* evidence.json(`refresh-${scenario.failure}-trace.json`, trace);
+          yield* issuer.configure({ tokenError: null });
+          const stillEnded = yield* read();
+          expect(stillEnded.status, `${scenario.failure}: ${JSON.stringify(stillEnded.body)}`).toBe(
+            409,
+          );
+          expect(yield* refreshes, scenario.failure).toBe(before + 1);
+        }
       }),
     ),
   );
@@ -536,19 +590,14 @@ layer(HostedLive, { excludeTestServices: true })("OAuth refresh resilience", (it
           spans,
           evidence,
         } = yield* renewalFixture;
-        // Tokens last 20 seconds, inside the host's 30-second renewal window, so every call
-        // renews ahead of expiry.
         const account = yield* connect("Synthetic outage account");
         const current = (yield* refreshes) + 1;
         yield* expectRead(current);
 
-        // The service is down. The call's renewal fails without ending the grant, and the call
-        // uses the token it still holds, as calls waiting on that renewal do.
         yield* issuer.configure({ tokenError: refreshFailures.unavailable });
         const beforeOutage = yield* refreshes;
         yield* expectRead(current);
         expect(yield* refreshes, "One renewal attempt per call").toBe(beforeOutage + 1);
-        // The failure is traced as the resolve's outcome, not as a failed resolve.
         const trace = yield* spans;
         const resolved = trace.data.find(
           ({ span }) =>
@@ -566,13 +615,10 @@ layer(HostedLive, { excludeTestServices: true })("OAuth refresh resilience", (it
         assertPrivate(trace);
         yield* evidence.json("renewal-ahead-of-expiry-outage-trace.json", trace);
 
-        // The grant and its refresh token were kept, so the next call after the service
-        // recovers renews.
         yield* issuer.configure({ tokenError: null });
         yield* expectRead(beforeOutage + 2);
         expect(yield* refreshes).toBe(beforeOutage + 2);
 
-        // Once the token has expired there is nothing to fall back to: the call fails.
         yield* issuer.configure({ expiresIn: shortLifetime });
         yield* expectRead(beforeOutage + 3);
         yield* Effect.sleep(pastShortLifetime);
@@ -609,9 +655,6 @@ layer(HostedLive, { excludeTestServices: true })("OAuth refresh resilience", (it
           refreshes,
           assertPrivate,
         } = yield* renewalFixture;
-        // Salesforce issues a refresh token but no `expires_in`, then ends the session later, and
-        // its API answers the old token with 401. Executor renews the grant once and repeats a
-        // query the app's kept listing confirms only reads; later calls keep the renewed token.
         yield* issuer.configure({ expiresIn: null });
         const session = yield* connect("Synthetic Salesforce-style account");
         yield* list();
@@ -624,13 +667,10 @@ layer(HostedLive, { excludeTestServices: true })("OAuth refresh resilience", (it
         const renewed = beforeExpiry + 1;
         yield* expectRead(renewed);
         expect(yield* refreshes).toBe(renewed);
-        // The refused read and its one repetition.
         expect((yield* issuer.metrics).resourceRequests.GET).toBe(reads + 2);
         yield* expectRead(renewed);
         expect(yield* refreshes).toBe(renewed);
 
-        // A mutation is never repeated: an earlier request in the same call may already have
-        // made changes. The grant is still renewed, and the next call uses it.
         yield* issuer.expireAccessTokens;
         const posts = (yield* issuer.metrics).resourceRequests.POST;
         const write = api.request(actors.owner, "POST", `${prefix}/apps/${app.id}/tools/call`, {
@@ -655,7 +695,6 @@ layer(HostedLive, { excludeTestServices: true })("OAuth refresh resilience", (it
         expect(yield* body(Read, written)).toEqual({ service: presented(renewed + 1) });
         expect(yield* refreshes).toBe(renewed + 1);
 
-        // A renewal the service refuses with invalid_grant needs a new sign-in.
         yield* issuer.expireAccessTokens;
         yield* issuer.configure({ tokenError: refreshFailures.invalid_grant });
         const ended = yield* read();
@@ -678,14 +717,8 @@ layer(HostedLive, { excludeTestServices: true })("OAuth refresh resilience", (it
       Effect.gen(function* () {
         const { issuer, name, deploy, app, connect, read, list, refreshes, assertPrivate } =
           yield* renewalFixture;
-        // No `expires_in`, so only the service's refusal starts a renewal.
         yield* issuer.configure({ expiresIn: null });
-        /**
-         * The service refuses `read` once. Executor renews the grant but, with no kept listing
-         * confirming the query only reads, does not repeat it: one failed call that may have
-         * written. The next call uses the renewed token.
-         */
-        const refusedOnce = (appId: string, session: string) =>
+        const refusedOnce = (appId: string, session: string, declared: boolean) =>
           Effect.gen(function* () {
             yield* issuer.expireAccessTokens;
             const before = yield* refreshes;
@@ -697,10 +730,14 @@ layer(HostedLive, { excludeTestServices: true })("OAuth refresh resilience", (it
               reason: "unauthorized",
               status: 401,
               credentialsRenewed: true,
-              mayHaveWritten: true,
               account: { id: session },
-              recovery: { action: unknownOutcomeAction },
             });
+            if (declared) expect(refused.body).not.toHaveProperty("mayHaveWritten");
+            else
+              expect(refused.body).toMatchObject({
+                mayHaveWritten: true,
+                recovery: { action: unknownOutcomeAction },
+              });
             assertPrivate(refused.body);
             expect(yield* refreshes).toBe(before + 1);
             expect((yield* issuer.metrics).resourceRequests.GET).toBe(gets + 1);
@@ -711,22 +748,17 @@ layer(HostedLive, { excludeTestServices: true })("OAuth refresh resilience", (it
             expect((yield* issuer.metrics).resourceRequests.GET).toBe(gets + 2);
           });
 
-        // Nobody has listed the app's tools yet.
         const session = yield* connect("Synthetic unlisted account");
-        yield* refusedOnce(app.id, session);
+        yield* refusedOnce(app.id, session, false);
 
-        // The same app built on `apps` beta.95, from before `kindConfirmed`: its kept listing names
-        // `read` a query, but nothing confirms it.
         const legacy = yield* deploy(`${name} beta.95`, ["service"], {
           path: "package.json",
           content: JSON.stringify({ dependencies: { apps: "0.0.1-beta.95" } }),
         });
         const legacySession = yield* connect("Synthetic beta.95 account", legacy.id);
         yield* list(legacy.id);
-        yield* refusedOnce(legacy.id, legacySession);
+        yield* refusedOnce(legacy.id, legacySession, true);
 
-        // Built on the current release and listed, the app confirms `read`, so the refused call
-        // is repeated with the renewed token and succeeds.
         yield* list();
         yield* issuer.expireAccessTokens;
         const before = yield* refreshes;
@@ -745,8 +777,6 @@ layer(HostedLive, { excludeTestServices: true })("OAuth refresh resilience", (it
         const { api, actors, issuer, prefix, name, connect, list, refreshes, assertPrivate } =
           yield* renewalFixture;
         const records = yield* recordingService;
-        // `save` hands a record to a service that saves it later, then presents the account's
-        // token. `check` only presents the token, and `records` reads the saved records.
         const deployed = yield* api.request(actors.owner, "POST", `${prefix}/apps/deploy`, {
           name: `${name} records`,
           files: [
@@ -794,19 +824,12 @@ export default defineApp({ user: { accounts: { service } } }, async ({ user: { a
             Effect.map(({ records }) => records),
           );
 
-        // Salesforce-style: no `expires_in`, so only the service's refusal starts a renewal. The
-        // token endpoint is down when it does.
         yield* issuer.configure({ expiresIn: null });
         const session = yield* connect("Synthetic records account", app.id);
-        // The kept listing confirms that `check` and `records` only read.
         yield* list(app.id);
         yield* issuer.expireAccessTokens;
         yield* issuer.configure({ tokenError: refreshFailures.unavailable });
 
-        // The service accepted the record, then refused the token. Renewing it failed after the
-        // call was dispatched, so the failure is the call's: its outcome is unknown. A token with
-        // no expiry is renewed only when the service refuses it again, so the recovery promises no
-        // renewal on the next use and leaves out the renewal's own advice to try again.
         const beforeWrite = yield* refreshes;
         const posts = (yield* issuer.metrics).resourceRequests.POST;
         const written = yield* call("save", "mutation", { name: "first" });
@@ -838,13 +861,11 @@ export default defineApp({ user: { accounts: { service } } }, async ({ user: { a
         expect(failed.recovery).toEqual(unknownOutcomeRecovery(renewalInsideWrite));
         assertPrivate(written.body);
         expect(yield* refreshes).toBe(beforeWrite + 1);
-        // The call was not repeated, and its change is still pending.
         expect((yield* issuer.metrics).resourceRequests.POST).toBe(posts + 1);
         expect(yield* saved()).toEqual([]);
         yield* records.commit;
         expect(yield* saved()).toEqual(["first"]);
 
-        // A read changed nothing, so the same failed renewal keeps its own retry advice.
         const checked = yield* call("check", "query", {});
         expect(checked.status, JSON.stringify(checked.body)).toBe(502);
         expect(checked.body).toMatchObject({
@@ -858,8 +879,6 @@ export default defineApp({ user: { accounts: { service } } }, async ({ user: { a
         expect(checked.body).not.toHaveProperty("mayHaveWritten");
         assertPrivate(checked.body);
 
-        // A rate-limited renewal inside a write gets the same recovery: its wait is respected, and
-        // its advice to retry is not passed on.
         yield* issuer.configure({ tokenError: refreshFailures.rate_limited });
         const limited = yield* call("save", "mutation", { name: "second" });
         expect(limited.status, JSON.stringify(limited.body)).toBe(502);
@@ -894,8 +913,6 @@ export default defineApp({ user: { accounts: { service } } }, async ({ user: { a
           ["worker", false],
           ["facet", true],
         ] as const) {
-          // The app's factory saves a record, then presents the account's token while the app is
-          // evaluated, before any tool runs. A call that names no kind evaluates it to find one.
           const marker = `factory-${mode}`;
           const deployed = yield* api.request(actors.owner, "POST", `${prefix}/apps/deploy`, {
             name: `${name} ${mode} factory`,
@@ -934,13 +951,10 @@ export default defineApp({ user: { accounts: { service } } }, async ({ user: { a
             Effect.map((saved) => saved.filter((record) => record === marker).length),
           );
 
-          // No `expires_in`, so only the service's refusal starts a renewal.
           yield* issuer.configure({ expiresIn: null });
           const session = yield* connect(`Synthetic ${mode} factory account`, app.id);
           yield* issuer.expireAccessTokens;
 
-          // The renewal fails. The factory wrote once and the catalog is not evaluated again:
-          // the call's outcome is unknown, and the renewal's advice to try again is not passed on.
           yield* issuer.configure({ tokenError: refreshFailures.unavailable });
           const beforeFailure = { writes: yield* factoryWrites, refreshes: yield* refreshes };
           const failed = yield* call("save");
@@ -969,8 +983,6 @@ export default defineApp({ user: { accounts: { service } } }, async ({ user: { a
           expect(yield* factoryWrites, mode).toBe(beforeFailure.writes + 1);
           expect(yield* refreshes).toBe(beforeFailure.refreshes + 1);
 
-          // The renewal succeeds. The catalog is still not evaluated again and the call is not
-          // made, so the factory wrote once; the response says the call was not repeated.
           yield* issuer.configure({ tokenError: null });
           const beforeRenewal = { writes: yield* factoryWrites, refreshes: yield* refreshes };
           const renewed = yield* call("save");
@@ -989,19 +1001,16 @@ export default defineApp({ user: { accounts: { service } } }, async ({ user: { a
             renewed,
           );
           expect(renewedFailure.message).toContain(
-            "Executor has renewed the account’s access, but did not repeat this call automatically.",
+            "Access was restored. This call was not repeated; earlier steps may have changed data. Check the result and retry only if the user chooses.",
           );
           expectUnknownOutcome(renewedFailure.recovery);
           assertPrivate(renewed.body);
           expect(yield* factoryWrites, mode).toBe(beforeRenewal.writes + 1);
           expect(yield* refreshes).toBe(beforeRenewal.refreshes + 1);
-          // The next call uses the renewed access.
           const saved = yield* call("save");
           expect(saved.status, JSON.stringify(saved.body)).toBe(200);
           expect(yield* refreshes).toBe(beforeRenewal.refreshes + 1);
 
-          // A query keeps its renewal: the refused evaluation is repeated once with the renewed
-          // access. Its app code is taken to only read, so the factory runs twice.
           yield* issuer.expireAccessTokens;
           const beforeQuery = { writes: yield* factoryWrites, refreshes: yield* refreshes };
           const checked = yield* call("check", "query");
@@ -1010,12 +1019,8 @@ export default defineApp({ user: { accounts: { service } } }, async ({ user: { a
           expect(yield* refreshes).toBe(beforeQuery.refreshes + 1);
           expect(yield* factoryWrites, mode).toBe(beforeQuery.writes + 2);
           yield* issuer.configure({ tokenError: null, expiresIn: 20 });
-          // The calls ran where the case says: the facet loads its build in facet mode.
           yield* telemetry
-            .spans("runtime.app.build.load", {
-              "executor.app.id": app.id,
-              "executor.runtime.mode": mode,
-            })
+            .spans("runtime.app.build.load", { app: app.id }, { "executor.runtime.mode": mode })
             .pipe(
               Effect.flatMap((spans) =>
                 spans.length > 0
@@ -1034,9 +1039,6 @@ export default defineApp({ user: { accounts: { service } } }, async ({ user: { a
       Effect.gen(function* () {
         const { api, actors, issuer, prefix, name, connect, refreshes, assertPrivate } =
           yield* renewalFixture;
-        // An account-dependent catalog: the app reads the service while it is evaluated, before
-        // any tool runs, and names the token it presented in its tool's description. MCP
-        // discovery reads this same listing.
         const deployed = yield* api.request(actors.owner, "POST", `${prefix}/apps/deploy`, {
           name: `${name} catalog`,
           files: [
@@ -1065,13 +1067,10 @@ export default defineApp({ user: { accounts: { service } } }, async ({ user: { a
         const list = () => api.request(actors.owner, "GET", `${prefix}/apps/${app.id}/tools`);
         const reads = issuer.metrics.pipe(Effect.map((metrics) => metrics.resourceRequests.GET));
 
-        // Salesforce-style: a refresh token and no `expires_in`, so nothing renews it ahead.
         yield* issuer.configure({ expiresIn: null });
         const session = yield* connect("Synthetic catalog account", app.id);
         yield* issuer.expireAccessTokens;
 
-        // A renewal that fails for a transient reason reports that failure, and the listing is not
-        // kept: the next listing renews and succeeds.
         yield* issuer.configure({ tokenError: refreshFailures.unavailable });
         const beforeOutage = yield* refreshes;
         const outage = yield* list();
@@ -1085,8 +1084,6 @@ export default defineApp({ user: { accounts: { service } } }, async ({ user: { a
         expect(yield* refreshes).toBe(beforeOutage + 1);
         yield* issuer.configure({ tokenError: null });
 
-        // The service refuses the token while the catalog is evaluated: Executor renews the grant
-        // once and evaluates again, which only reads.
         const beforeRenewal = yield* reads;
         const renewed = (yield* refreshes) + 1;
         const listed = yield* list();
@@ -1095,9 +1092,7 @@ export default defineApp({ user: { accounts: { service } } }, async ({ user: { a
           { name: "read", description: JSON.stringify(presented(renewed)) },
         ]);
         expect(yield* refreshes).toBe(renewed);
-        // The refused evaluation and its one repetition.
         expect(yield* reads).toBe(beforeRenewal + 2);
-        // The renewed listing is kept: the next listing neither evaluates nor renews again.
         const kept = yield* list();
         expect(kept.status, JSON.stringify(kept.body)).toBe(200);
         expect((yield* body(Listing, kept)).items).toEqual([
@@ -1106,14 +1101,10 @@ export default defineApp({ user: { accounts: { service } } }, async ({ user: { a
         expect(yield* refreshes).toBe(renewed);
         expect(yield* reads).toBe(beforeRenewal + 2);
 
-        // A renewal refused with invalid_grant during listing needs a new sign-in. Another account
-        // has its own listing, so the kept one above does not answer for it.
         const ending = yield* connect("Synthetic ending catalog account", app.id);
         yield* issuer.expireAccessTokens;
         yield* issuer.configure({ tokenError: refreshFailures.invalid_grant });
         const beforeEnd = yield* refreshes;
-        // Self-host evaluates the listing as background work, and its reader checks the accounts
-        // again before taking the outcome, so it reports the reconnect it finds there.
         const ended = yield* list();
         expect(ended.status, JSON.stringify(ended.body)).toBe(409);
         expect(ended.body).toMatchObject({
@@ -1121,7 +1112,6 @@ export default defineApp({ user: { accounts: { service } } }, async ({ user: { a
           account: ending,
         });
         assertPrivate(ended.body);
-        // The listing's own renewal was the one the service refused.
         expect(yield* refreshes).toBe(beforeEnd + 1);
         yield* issuer.configure({ tokenError: null, expiresIn: 20 });
         const stillEnded = yield* list();

@@ -1,19 +1,14 @@
-/**
- * Placement applies only to fetch handlers, so Cron Triggers run wherever Cloudflare starts them,
- * often far from the database. A trigger therefore only asks the API Worker's own fetch handler,
- * through a service binding to itself, to run its job. The placed handler does the database work,
- * and any Durable Object or Workflow the job first contacts is created beside it.
- */
 import { recordRoute, traceHeaders } from "@executor-js/telemetry";
 import { Random, RuntimeContext } from "alchemy";
 import * as Cloudflare from "alchemy/Cloudflare";
 import type { Fetcher } from "@cloudflare/workers-types";
-import { Effect, Exit, Redacted, Schema } from "effect";
+import { Cause, Effect, Exit, Option, Redacted, Schema } from "effect";
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/http";
 import { timingSafeEqual } from "node:crypto";
+import { JobOutcome, jobFailedWith, type JobError } from "../contracts/job-outcome.ts";
+import { previewActivity } from "./preview-activity.ts";
 import { previewLifetime } from "./test-stage-expiry.ts";
 
-/** Every job a Cron Trigger starts. */
 export const BackgroundJob = Schema.Literals([
   "organization-removal",
   "provisioning",
@@ -26,6 +21,7 @@ export const BackgroundJob = Schema.Literals([
   "workflow-reconcile",
   "billing-reconcile",
   "agent-grant-expiry",
+  "tool-call-log",
 ]);
 export type BackgroundJob = typeof BackgroundJob.Type;
 
@@ -34,8 +30,57 @@ export class BackgroundJobFailed extends Schema.TaggedError<BackgroundJobFailed>
   { job: BackgroundJob },
 ) {}
 
-/** The API Worker's service binding to itself, declared in its `env`. */
 export const selfBinding = "ApiSelf";
+
+const outcomeHeader = "executor-job-outcome";
+const failureHeader = "executor-job-failure";
+
+const outcomeHeaders = (outcome: JobOutcome): Record<string, string> =>
+  outcome.outcome === "completed"
+    ? { [outcomeHeader]: outcome.outcome }
+    : { [outcomeHeader]: outcome.outcome, [failureHeader]: outcome.failure };
+
+const reportedOutcome = (headers: {
+  readonly get: (name: string) => string | null;
+}): Option.Option<JobOutcome> => {
+  const outcome = headers.get(outcomeHeader);
+  if (outcome === null) return Option.none();
+  return Option.some(
+    Option.getOrElse(
+      Schema.decodeUnknownOption(JobOutcome)({
+        outcome,
+        failure: headers.get(failureHeader) ?? undefined,
+      }),
+      (): JobOutcome => ({ outcome: "failed", failure: "UnrecognizedFailure" }),
+    ),
+  );
+};
+
+const unreported: JobOutcome = { outcome: "failed", failure: "Unreported" };
+
+const outcomeAttributes = (outcome: JobOutcome): Record<string, string> =>
+  outcome.outcome === "completed"
+    ? { "executor.outcome": outcome.outcome }
+    : { "executor.outcome": outcome.outcome, "executor.job.failure": outcome.failure };
+
+const recordUnreported = (cause: Cause.Cause<unknown>) =>
+  Effect.currentSpan.pipe(
+    Effect.flatMap((span) =>
+      span.attributes.has("executor.outcome")
+        ? Effect.void
+        : Effect.annotateCurrentSpan(
+            outcomeAttributes({
+              outcome: "failed",
+              failure: Cause.hasFails(cause)
+                ? "Unreported"
+                : Cause.hasDies(cause)
+                  ? "Defect"
+                  : "Interrupted",
+            }),
+          ),
+    ),
+    Effect.ignore,
+  );
 
 const NativeFetcher = Schema.declare(
   (value): value is Pick<Fetcher, "fetch"> =>
@@ -45,12 +90,11 @@ const NativeFetcher = Schema.declare(
     typeof value.fetch === "function",
 );
 
-/** Resolve the binding and the dispatch key during Worker initialization. */
 export const cloudBackgroundJobs = Effect.gen(function* () {
   const environment = yield* Cloudflare.WorkerEnvironment;
-  // Only the API Worker reads it: the route below is also reachable from the public origin.
   const secret = yield* (yield* Random("BackgroundJobSecret")).text;
   const lifetime = yield* previewLifetime;
+  const activity = yield* previewActivity;
   const authorization = Effect.map(secret, (value) => `Bearer ${Redacted.value(value)}`);
 
   const request = (job: BackgroundJob) =>
@@ -65,10 +109,19 @@ export const cloudBackgroundJobs = Effect.gen(function* () {
         await response.body?.cancel();
         return response;
       });
-      yield* Effect.annotateCurrentSpan("http.response.status_code", response.status);
+      const outcome = reportedOutcome(response.headers);
+      yield* Effect.annotateCurrentSpan({
+        "http.response.status_code": response.status,
+        ...(Option.isSome(outcome)
+          ? outcomeAttributes(outcome.value)
+          : response.status === 204
+            ? {}
+            : outcomeAttributes(unreported)),
+      });
       if (response.status !== 204) return yield* new BackgroundJobFailed({ job });
     }).pipe(
       Effect.mapError(() => new BackgroundJobFailed({ job })),
+      Effect.onExit((exit) => (Exit.isFailure(exit) ? recordUnreported(exit.cause) : Effect.void)),
       Effect.withSpan("job.dispatch", { attributes: { "executor.job": job } }),
       Effect.provide(RuntimeContext.phantom),
       lifetime.background,
@@ -79,18 +132,12 @@ export const cloudBackgroundJobs = Effect.gen(function* () {
     );
 
   return {
-    /** Start a job from a Cron Trigger; the trigger's invocation waits for the job to finish. */
     schedule: (cron: string, ...jobs: ReadonlyArray<BackgroundJob>) =>
       Cloudflare.Workers.cron(cron, () =>
         Effect.forEach(jobs, dispatch, { concurrency: "unbounded", discard: true }),
       ),
-    /**
-     * Run a job in the placed handler from code that is not placed, such as a workflow step or a
-     * Durable Object, and wait for it. Fails unless the job finished.
-     */
     request,
-    /** The placed route that runs one job and answers when it has finished: 204, or 500 if it failed. */
-    route: <E, R>(run: (job: BackgroundJob) => Effect.Effect<void, E, R>) =>
+    route: <E extends JobError, R>(run: (job: BackgroundJob) => Effect.Effect<JobOutcome, E, R>) =>
       HttpRouter.add(
         "POST",
         "/api/internal/jobs/:job",
@@ -101,10 +148,17 @@ export const cloudBackgroundJobs = Effect.gen(function* () {
           if (supplied.length !== expected.length || !timingSafeEqual(supplied, expected))
             return HttpServerResponse.empty({ status: 404 });
           const { job } = yield* HttpRouter.schemaPathParams(Schema.Struct({ job: BackgroundJob }));
-          // Job names are Executor's own, so the path keeps the job the route ran.
           yield* recordRoute(`/api/internal/jobs/${job}`);
-          const ran = yield* run(job).pipe(lifetime.background, Effect.exit);
-          return HttpServerResponse.empty({ status: Exit.isSuccess(ran) ? 204 : 500 });
+          if (
+            (yield* lifetime.isBackgroundStopped) ||
+            (job !== "site-assets" && (yield* activity.isIdle))
+          )
+            return HttpServerResponse.empty({ status: 204 });
+          const ran = yield* Effect.exit(run(job));
+          return HttpServerResponse.empty({
+            status: Exit.isSuccess(ran) ? 204 : 500,
+            headers: outcomeHeaders(Exit.isSuccess(ran) ? ran.value : jobFailedWith(ran.cause)),
+          });
         }).pipe(
           Effect.catchTag("SchemaError", () =>
             Effect.succeed(HttpServerResponse.empty({ status: 404 })),

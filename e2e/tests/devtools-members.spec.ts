@@ -1,4 +1,3 @@
-/** Development bootstraps authority, then uses the same native flow as deployed hosted products. */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Layer, Schema } from "effect";
 import { randomUUID } from "node:crypto";

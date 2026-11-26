@@ -1,5 +1,6 @@
 /** Portable browser-build inputs and output, independent of a compiler or host filesystem. */
 import type { Effect } from "effect";
+import type { AppUiDocument } from "apps/ui/contracts";
 import type { RuntimeBuildFailed } from "./runtime.ts";
 
 /** One complete retained browser object, relative to the app's asset root. */
@@ -16,9 +17,18 @@ export interface UiBuildEntry {
   readonly css?: string;
 }
 
-/** One build's HTML plan. Entry paths use canonical project-relative POSIX paths. */
-export interface UiBuildPlan {
+/** One authored page the build retains, as written. */
+export interface UiBuildDocument {
+  readonly kind: AppUiDocument;
   readonly html: string;
+}
+
+/**
+ * One build's HTML plan: every page the app declares and the entries any of them names, once
+ * each. Entry paths use canonical project-relative POSIX paths.
+ */
+export interface UiBuildPlan {
+  readonly documents: readonly UiBuildDocument[];
   readonly entries: readonly string[];
   readonly finish: (
     files: readonly UiBuildFile[],

@@ -49,7 +49,6 @@ layer(TestLive, { excludeTestServices: true })("Local app launch", (it) => {
           target = yield* Target,
           session = yield* api.session();
         const headers = { authorization: `Bearer ${Redacted.value(target.apiKey)}` };
-        // Agent calls carry the API key and no browser origin.
         const agent: Session = {
           ...session,
           send: (method, path, data, extra = {}) => {
@@ -74,7 +73,6 @@ layer(TestLive, { excludeTestServices: true })("Local app launch", (it) => {
         );
         const create = (label: string, token = "synthetic-launch-token") =>
           Effect.gen(function* () {
-            // Connecting from the app links the account, replacing the one linked before.
             const account = yield* connectLocalAccount(
               agent,
               {
@@ -110,11 +108,9 @@ layer(TestLive, { excludeTestServices: true })("Local app launch", (it) => {
         );
         if (ui === null) return yield* Effect.die(new Error("Missing app URL"));
         const appOrigin = new URL(ui).origin;
-        // The app link names no account; the app uses the account linked to it.
         expect(new URL(ui).searchParams.has("accounts")).toBe(false);
         const { timeline } = yield* recordAppOpening(
           Effect.gen(function* () {
-            // Another deep link than the one opened below, which must load a new document.
             yield* browser.use("One account opens without a chooser", (page) =>
               page.goto(new URL("/inbox?folder=all#message", ui).href),
             );
@@ -123,15 +119,12 @@ layer(TestLive, { excludeTestServices: true })("Local app launch", (it) => {
             );
           }),
         );
-        // Sign-in is redirects only; no host-owned page renders before the app.
         expect(screens(timeline)).not.toContain("Opening app…");
         expect(
           committedDocuments(timeline)
             .map((url) => url.pathname)
             .filter((path) => path.startsWith("/_executor/auth/")),
         ).toEqual([]);
-        // Chromium maps *.localhost to loopback itself; Node relies on the OS resolver,
-        // which does not on every platform. Local listens on 127.0.0.1.
         const appLoopback = new URL(ui);
         appLoopback.hostname = "127.0.0.1";
         expect(
@@ -175,8 +168,6 @@ layer(TestLive, { excludeTestServices: true })("Local app launch", (it) => {
             ),
           ).searchParams.has("accounts"),
         ).toBe(false);
-        // Connecting another account from the app replaces the one it uses; the app opens
-        // straight away with it, keeping its deep link.
         const work = yield* create("Work");
         expect(yield* localLinks(agent, app.id)).toEqual([work]);
         yield* browser.use("The app opens with the newly linked account", (page) =>
@@ -217,11 +208,12 @@ layer(TestLive, { excludeTestServices: true })("Local app launch", (it) => {
         const [rejectedPage, rejectedFix, rejectedApp] = yield* blocked(
           "Open the app with a rejected linked account",
         );
-        expect(rejectedPage).toContain("Rejected (Launch fixture): sign-in rejected at last check");
+        expect(rejectedPage).toContain(
+          "Rejected (Launch fixture): credentials not working at last check",
+        );
         expect(rejectedFix).toContain(`/apps/${app.id}?view=accounts`);
         expect(rejectedApp).toBe(0);
         yield* browser.checkpoint("Blocked accounts explain why the app cannot open");
-        // With nothing linked, the page says what to link; the replaced accounts stay saved.
         yield* unlinkLocal(agent, app.id, "service", rejected);
         const [missingPage, missingFix, missingApp] = yield* blocked(
           "Open the app with no linked account",
@@ -230,7 +222,6 @@ layer(TestLive, { excludeTestServices: true })("Local app launch", (it) => {
         expect(missingFix).toContain(`/apps/${app.id}?view=accounts`);
         expect(missingApp).toBe(0);
         expect((yield* send("GET", `/v1/accounts/${work}`)).status).toBe(200);
-        // Removing the linked account removes its link too.
         yield* linkLocal(agent, app.id, "service", work);
         yield* remove(work);
         expect(yield* localLinks(agent, app.id)).toEqual([]);

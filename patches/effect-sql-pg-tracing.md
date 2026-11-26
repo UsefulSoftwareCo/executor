@@ -1,15 +1,38 @@
 # PostgreSQL connection tracing
 
-`@effect/sql-pg` 4.0.1 traces SQL statements and transactions,
-but its physical PostgreSQL connection acquisition has no span. A slow first
+`@effect/sql-pg` 4.1.4 traces SQL statements and transactions. With
+`SpanPropagationEnabled` it adds a `db.connect` child span to a statement that waited
+for a new session, covering the part of the connect it waited for. An attempt has no
+span of its own: a failed or retried attempt, or one no statement waited for, is not
+recorded. A slow first
 transaction therefore includes an unexplained interval before its first query.
 
-`@effect%2Fsql-pg@4.0.1.patch` adds a client `sql.connect` span around the
-driver's existing network connection and authentication effect. It ends when
+`@effect%2Fsql-pg@4.1.4.patch` adds a client `sql.connect` span around one
+connection attempt: password resolution, the driver's existing network
+connection and authentication effect, and `connectTimeout`. It ends when
 PostgreSQL sends `ReadyForQuery`, or on failure or interruption. It adds no URL,
-credentials, query text, or connection attributes. Password/config resolution
-and later query execution are outside this span. The span records its
+credentials, query text, or connection attributes. Config resolution and later
+query execution are outside this span. The span records its
 `db.connect.attempt`, starting at 1.
+
+A failed attempt fails its span and records why as `db.connect.failure`, one of:
+
+- `timeout`: the attempt reached `connectTimeout`. The timeout runs inside the
+  span, so the attempt fails it; before late October 2026 the timeout
+  interrupted the span from outside and it ended with status OK.
+- `refused`: the connection was not accepted. The transport failed before its
+  socket connected (a refused, unreachable or unresolvable host), or the server
+  answered the startup with an error that is not about authentication, such as
+  too many connections. Classified by when it failed, not by the socket error's
+  text or code: workerd's `node:net` gives a refused connection no code.
+- `auth`: authentication failed: SQLSTATE class 28, no password configured, or
+  an exchange that could not complete.
+- `other`: anything else, such as a password provider that dies, a connected
+  socket that failed or closed during startup, TLS negotiation, or a response
+  the driver could not read.
+
+An attempt its caller interrupts records none and still ends interrupted. The
+attribute changes no error, retry or timeout.
 
 The patch changes both source and distributed JavaScript. It preserves lazy
 pool acquisition, reuse, dead-connection replacement, idle release, and scoped
@@ -19,8 +42,11 @@ an extra eager acquisition in application code.
 
 The patch is generated with `bun patch` against the npm release. Regenerate it
 when upgrading, and remove it if upstream adds equivalent connection tracing.
-4.0.1 drains an interrupted statement through `drainAborted`; the wire span wraps
+The driver drains an interrupted statement through `drainAborted`; the wire span wraps
 that unchanged cancellation path.
+
+The patch is ported from source: `dist/` and the type declarations are generated from
+the patched `src/` with the release's own build settings, so the two copies cannot differ.
 
 ## Session object pool and batches
 
@@ -30,12 +56,18 @@ caller per connection, `PgPool.held`, settling abandoned and unawaited statement
 `notes/database-pool.md` describes them. Like everything else here they are in both `src/` and
 `dist/`, so a port from either copy keeps them; only `dist/` is loaded.
 
+Nothing is written on a connection while a `pipelined` batch's `COMMIT` on it is unanswered: a
+leaf's statement issued meanwhile waits in the connection's queue and goes out with the flush that
+follows the answer, and a batch's `COMMIT` ends the socket write it is in. Through Hyperdrive a
+statement written behind an unanswered `COMMIT` was never answered (`notes/database-pool.md`,
+"Batches").
+
 ## Connection retries
 
 The patch also adds a `connectRetries` option (default `0`) to `PgConnection`
 and `PgClient` configuration. A connection attempt that fails with a retryable
 reason, such as a transport error or `connectTimeout`, is made again up to that
-many times. Each attempt has its own `connectTimeout`. Nothing has been sent on
+many times. Each attempt has its own `connectTimeout` and `sql.connect` span. Nothing has been sent on
 a connection before `ReadyForQuery`, so this never repeats a statement; query
 failures are not retried. Authentication failures are not retryable. A retried
 attempt's span also records the previous failure's fixed driver message as
@@ -88,3 +120,63 @@ separate Kysely driver are not decorated by this hook.
 The sixth native-driver test checks the actual Parse/Bind bytes, retained bound
 value, SQL comment and wire parent. Removing the event layer makes its comment
 assertion fail on the undecorated `SELECT $1`.
+
+## One repeat after a lost connection
+
+Cloud's databases sit behind proxies (Hyperdrive, PlanetScale's routing) that sometimes end
+connections without the client hearing of it until it next writes. A pooled connection then fails
+its next statement with `PgConnection: Connection closed`. In production that happened to 805
+statements between 7 and 14 November 2026, in bursts, through Hyperdrive and on direct
+connections alike.
+
+`PgPool.use` runs a callback whose connection was lost (`PgConnection.connectionLost`: closed, or a
+socket error; not our own `Connection is closed`, a server error or a cancel) once more when:
+
+- **it is all reads.** Every statement it queued or sent passed `PgConnection.readOnlyStatement`
+  (`LeaseUse.wrote` is unset). A write counts from the moment it is queued, before any check, so a
+  write is never repeated, sent or not: whether a sent write applied cannot be known.
+- **it is not a held group's** (`PgPool.held`, as the session objects' tool-call batches are), and
+  not nested in another run (the outer run decides);
+- **it has not been repeated already.**
+
+Transactions reserve a connection and never come through `use`. A pipelined batch marks each
+statement it queues (`pipelineBatchUnsafe`), though its caller never fails with a lost connection
+today: it takes each statement's result as an `Exit`.
+
+**The classifier** (`readOnlyStatement`) reads a statement's text. A read is a `SELECT`, or a `WITH`
+of `SELECT`s, naming no `INSERT`, `UPDATE`, `DELETE`, `MERGE`, `TRUNCATE`, `COPY`, `LOCK`, `CALL`, `DO`
+or `INTO`, no `FOR UPDATE`/`FOR NO KEY UPDATE`/`FOR SHARE`/`FOR KEY SHARE`, and none of `nextval`,
+`setval`, `pg_advisory*`, `pg_try_advisory*`, `set_config`, `pg_notify`, `pg_terminate_backend`,
+`pg_cancel_backend` and `lo_*`. Anything else is a write, including a `SELECT` behind a comment or
+a parenthesis, `VALUES`, `TABLE`, `EXPLAIN` and `SHOW`. Not caught: a `SELECT` calling a
+user-defined function with side effects. The product calls none outside a transaction (its
+functions are triggers); one that does must run in a transaction.
+
+**The repeat's connection is the pool's.** The repeat checks out a connection of the same pool,
+opened after the loss. A burst usually kills many connections at once, and a half-open connection
+cannot be told from a healthy one without using it, so every idle connection opened before the loss
+that the repeat is handed is closed, healthy or not, and the pool opens another. Later statements
+that would have used a healthy one reconnect: the price of not handing the repeat a second dead
+socket. Each candidate is checked out in a scope of its own and closed before the next is taken,
+because the pool stops counting an invalidated connection toward its cap while it is still checked
+out. So no more connections than `maxConnections` are ever open at once: cap 4 with all 4 idle
+connections dropped, one read, peaks at 4 open sockets (7 before this). The new connection stays
+in the pool. Under the pool's acquire timeout, if it has one, like any checkout. Only on pools
+where each connection serves one run at a time (`concurrency` 1), which is every Cloud pool: on a
+pool sharing connections among runs, closing an older one could cut off a run using it.
+
+**Latency.** A repeat costs one connect when the database can be reached, after closing any older
+idle connections it is handed.
+When it cannot, the repeat's connection gets the pool's usual two attempts (`connectTimeout`
+2.5 s each in Cloud), so a read fails up to 5 s later than without the repeat. A caller with a
+shorter deadline is not held to it: its timeout interrupts the repeat, which releases its
+connection, and the caller gets its own timeout error instead.
+
+**Recorded.** Each repeat is its own client span, `sql.connection.repeat`, inside the caller's
+trace, with `db.connection.repeat` (`connection-lost`), `db.connection.repeat_reason` (the fixed
+driver message), `db.connection.lost_age_ms` and `db.connection.lost_idle_ms` (the lost
+connection's age and time since it last carried bytes), and `db.connection.repeat_outcome`
+(`succeeded` or `failed`). A repeat that cannot reach the database either gives the caller the
+first error with ` (one repeat on a fresh connection also failed)` appended; any other failure of
+the repeat is its own. `cloud-database-placement.spec.ts` checks each case through a proxy that
+drops connections this way (`apps/hosted/testing/connection-repeat-fixture.ts`).

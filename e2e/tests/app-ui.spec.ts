@@ -1,4 +1,3 @@
-/** The private app protocol is checked through each real hosted product and its browser runtime. */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Layer, Redacted, Schema } from "effect";
 import { FetchHttpClient, HttpClient, HttpClientRequest } from "effect/http";
@@ -26,6 +25,7 @@ import { managementApp } from "../support/management-app.ts";
 import { holdQuery } from "../support/query-transition.ts";
 import { appsManifest } from "../support/apps-release.ts";
 import { targetHosts } from "../support/role-hosts.ts";
+import { siteless } from "../support/failure-site.ts";
 
 const files = [
   {
@@ -96,7 +96,6 @@ const Completed = Schema.Struct({
   status: Schema.Literal("completed"),
   execution: Schema.Struct({ ok: Schema.Literal(true), value: Schema.Unknown }),
 });
-/** A declared Executor API error, as MCP returns it from a failed Executor app call. */
 const ApiFailure = Schema.Struct({
   status: Schema.Literal("completed"),
   execution: Schema.Struct({
@@ -116,7 +115,6 @@ const ApiFailure = Schema.Struct({
   }),
 });
 
-/** Sign-in is redirects only: no host-owned page renders and nothing says "Opening app…". */
 const expectNoSignInPages = (timeline: ReadonlyArray<Entry>) => {
   expect(screens(timeline)).not.toContain("Opening app…");
   expect(
@@ -149,7 +147,6 @@ const appFixture = Effect.gen(function* () {
   return { api, actors, browser, target, prefix, app, url, bookmark };
 });
 
-/** The owner's browser grants an MCP client that addresses the owner's Executor app. */
 const mcpSession = Effect.gen(function* () {
   const actors = yield* Actors,
     browser = yield* Browser,
@@ -218,7 +215,6 @@ layer(HostedLive, { excludeTestServices: true })("Private app pages", (it) => {
             }),
           ),
         )(configurationFile.content);
-        // The Executor app calls the API at its canonical origin.
         const apiOrigin = targetHosts(target).api;
         expect(configuration.source.url).toBe(`${apiOrigin}/openapi.json`);
         expect(configuration.baseUrl).toBe(apiOrigin);
@@ -239,7 +235,6 @@ layer(HostedLive, { excludeTestServices: true })("Private app pages", (it) => {
               {
                 name: "execute",
                 arguments: {
-                  // Every page of matches, so a tool cannot hide on a later page.
                   code: `const items = [];
 for (let page = await tools.search({ query: "executor", limit: 100 }); ; page = await tools.search(page.next)) {
   items.push(...page.items.map(({ path }) => ({ path })));
@@ -295,15 +290,14 @@ return { items };`,
             )
             .pipe(Effect.orDie),
         );
-        // The app's page has no address until its first deploy, and the error says so.
         const location = yield* run(
           "Get the URL of an app that has never been deployed",
           `return await ${tools}.appUi.location({ path: ${JSON.stringify({ ...organization, app: app.id })} });`,
         );
-        expect(
-          (yield* Schema.decodeUnknownEffect(ApiFailure)(location.structuredContent)).execution
-            .error,
-        ).toEqual({
+        const notDeployed = (yield* Schema.decodeUnknownEffect(ApiFailure)(
+          location.structuredContent,
+        )).execution.error;
+        expect({ ...notDeployed, message: siteless(notDeployed.message) }).toEqual({
           message:
             "AppNotDeployed (HTTP 409): The app has no active version to load. Recovery: Open Source and deploy the app before using its tools or accounts. Retryable (unchanged call): no.",
           response: {
@@ -314,15 +308,11 @@ return { items };`,
             retryable: false,
           },
         });
-        // A different name with the same generated address names the app that holds it.
         const taken = yield* run(
           "Create an app whose name produces an existing app's address",
           `return await ${tools}.appManagement.create(${JSON.stringify({ path: organization, body: { name: name.toLowerCase().replaceAll(" ", "-"), files } })});`,
         );
         const message = `The app “${name}” (${app.id}) already uses the address “${app.slug}”, which this name also produces. Choose a different name, or deploy to that app by its ID.`;
-        // Creating an app may write, so a failed create is reported as an unknown outcome even
-        // though Executor refuses a taken address before it creates anything. Accurate copy for
-        // such definite refusals is a separate follow-up; this is the conservative, safe text.
         const declared = {
           action: "Read the API’s error to determine the next step.",
           instructions:
@@ -333,11 +323,17 @@ return { items };`,
             "Do not automatically repeat this call or duplicate its change. Executor could not confirm its outcome.",
           instructions: `This call may have changed data or may still complete. A safe read can show effects but cannot rule out later completion. Tell the user what is known and get their agreement before repeating the change. ${readAdvice(`${declared.action} ${declared.instructions}`)} Repairing the cause does not establish whether the earlier call completed.`,
         };
-        expect(
-          (yield* Schema.decodeUnknownEffect(ApiFailure)(taken.structuredContent)).execution.error,
-        ).toEqual({
+        const slugTaken = (yield* Schema.decodeUnknownEffect(ApiFailure)(taken.structuredContent))
+          .execution.error;
+        expect({ ...slugTaken, message: siteless(slugTaken.message) }).toEqual({
           message: `AppSlugTaken (HTTP 409): ${message} Recovery: ${recovery.action} Retryable (unchanged call): no.`,
-          response: { code: "AppSlugTaken", status: 409, message, recovery, retryable: false },
+          response: {
+            code: "AppSlugTaken",
+            status: 409,
+            message,
+            recovery,
+            retryable: false,
+          },
         });
       }).pipe(Effect.provide(Layer.mergeAll(McpOAuth.layer, McpClient.layer))),
     ),
@@ -433,8 +429,6 @@ return { items };`,
         expect(yield* fetchAnonymously(known, "/")).toEqual(probe);
         expect(yield* fetchAnonymously(missingApp, "/.env")).toEqual(probe);
         expect(yield* fetchAnonymously(missingApp, "/admin")).toEqual(probe);
-        // Scanners send other methods to paths no app route accepts. They are not found, not a
-        // server failure (previously Cloud answered 503 "App unavailable.").
         for (const [origin, path, method] of [
           [known, "/wp-json/batch/v1", "POST"],
           [known, "/", "POST"],
@@ -444,7 +438,6 @@ return { items };`,
         ] as const) {
           const missing = yield* sendAnonymously(origin, path, method);
           expect(missing.outcome, `${method} ${path}`).toEqual({ status: 404, body: "" });
-          // Cloud's app-origin Worker answers with the app's private headers.
           if (target.metadata.target === "cloud") {
             expect(missing.headers["cache-control"], `${method} ${path}`).toBe("no-store");
           }
@@ -456,10 +449,7 @@ return { items };`,
         expect(page).toEqual(probe);
         const navigation = yield* read(known, "/", "text/html");
         expect(navigation.status).toBe(302);
-        // A nonexistent team's hostname is refused too.
         if (target.metadata.target === "cloud" && target.metadata.mode === "attached") {
-          // Cloudflare holds one wildcard certificate per team, so a host under an unknown
-          // organization fails the TLS handshake at the edge and never reaches the Worker.
           for (const [path, accept] of [
             ["/.env", "*/*"],
             ["/", "text/html"],
@@ -512,9 +502,6 @@ return { items };`,
                 page.getByRole("button", { name: "Sign in", exact: true }).click(),
               );
             } else {
-              // Cloud fixture users cannot receive sign-in codes; the session arrives as a cookie
-              // and the sign-in page is reloaded to continue its return navigation.
-              // Keep the app's pending sign-in cookie; only the product session is added.
               const cookies = yield* actors.owner.cookies;
               yield* browser.use("Add the owner's product session", (page) =>
                 page.context().addCookies([...Redacted.value(cookies)]),
@@ -552,7 +539,6 @@ return { items };`,
         const { result: opened, timeline } = yield* recordAppOpening(
           browser.use("Open app opens a new tab that signs in and renders the app", (page) => {
             const callbacks: string[] = [];
-            // Registered on the context so the new tab's first redirects are observed.
             page.context().on("response", (response) => {
               if (new URL(response.url()).pathname === "/_executor/auth/callback")
                 callbacks.push(response.url());
@@ -862,8 +848,6 @@ return { items };`,
           }),
         );
         yield* browser.login(actors.member);
-        // Keep the live revocation watcher pending while testing the mutation's
-        // own rejection. Starting a document navigation can cancel its response.
         const watcher = yield* holdQuery(["/_executor/version"], "continue");
         yield* openPrivateApp(bookmark);
         yield* watcher.requested;
@@ -919,7 +903,6 @@ return { items };`,
           live.getByText("App unavailable.", { exact: true }).waitFor(),
         );
         yield* watcher.release;
-        // Each app has its own complete DNS label, independent of the team slug length.
         const maxAppSlug = 63;
         expect(maxAppSlug).toBeGreaterThan(0);
         const boundaryName = "a".repeat(maxAppSlug);

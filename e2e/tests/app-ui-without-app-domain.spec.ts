@@ -1,4 +1,3 @@
-/** A self-host with no app domain says so when an agent asks where an app's UI is. */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Layer, Schema } from "effect";
 import { Api, body, SessionClients } from "../support/api.ts";
@@ -11,11 +10,6 @@ import { Target } from "../support/platform.ts";
 import { scenarios } from "../test-plan.ts";
 
 const Organizations = Schema.NonEmptyArray(Schema.Struct({ id: Schema.String }));
-/**
- * The public origin a reverse proxy serves the product on. Self-host derives an app domain only
- * from a localhost origin, so with no EXECUTOR_APP_UI_BASE_URL it has none. Requests reach the
- * product's loopback listener and carry this origin, as they would through the proxy.
- */
 const publicOrigin = "http://executor.example.test";
 
 layer(TestLive, { excludeTestServices: true })("App UI without an app domain", (it) => {
@@ -56,7 +50,6 @@ layer(TestLive, { excludeTestServices: true })("App UI without an app domain", (
         });
         expect(deployed.status).toBe(200);
         const app = yield* body(App, deployed);
-        // The app has a UI, so the only reason it has no address is the missing app domain.
         const location = yield* request("GET", `${prefix}/apps/${app.id}/ui`);
         expect(location.status).toBe(200);
         expect(yield* body(Schema.Unknown, location)).toEqual({

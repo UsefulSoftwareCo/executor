@@ -24,7 +24,6 @@ layer(HostedLive, { excludeTestServices: true })("Settings page loading", (it) =
           yield* Effect.scoped(
             Effect.gen(function* () {
               yield* browser.use("Set viewport", (page) => page.setViewportSize(viewport));
-              // A document load renders every settings value, member rows included, on the server.
               const reads: string[] = [];
               yield* browser.use("Watch member reads", (page) => {
                 page.on("request", (request) => {
@@ -39,11 +38,8 @@ layer(HostedLive, { excludeTestServices: true })("Settings page loading", (it) =
               if (response === null) throw new Error("Settings did not return a document");
               const html = yield* browser.use("Read the settings document", () => response.text());
               expect(html).toContain('aria-label="Members"');
-              // Each member row has a role control named for the member.
               expect(html).toMatch(/aria-label="Role for [^"@]+@[^"]+"/);
               expect(reads).toEqual([]);
-              // Opening settings from another page reads members in the browser; the cards around
-              // them keep their places while they load.
               const members = yield* holdQuery(
                 ["/api/auth/organization/list-members"],
                 "continue",
@@ -137,8 +133,6 @@ layer(HostedLive, { excludeTestServices: true })("Settings page loading", (it) =
           yield* Effect.scoped(
             Effect.gen(function* () {
               yield* browser.use("Set viewport", (page) => page.setViewportSize(viewport));
-              // A document load reads tokens on the server; opening the page from another one
-              // reads them in the browser, where they can be held.
               const tokens = yield* holdQuery(["/api/auth/api-key/list"], "continue", {
                 allRequests: true,
               });

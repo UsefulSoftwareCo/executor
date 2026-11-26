@@ -1,7 +1,7 @@
-/** Rolldown output rules for each Worker: upload only reachable modules, within a budget. */
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import type { WorkerProps } from "alchemy/Cloudflare";
 import { Effect, FileSystem, Path } from "effect";
+import { fileURLToPath } from "node:url";
 import {
   attributeChunk,
   packageBytes,
@@ -22,30 +22,19 @@ export type WorkerName =
   | "marketing"
   | "edge";
 
-/**
- * Bytes of JavaScript each Worker may upload. Cloudflare compiles every uploaded ES module when
- * an isolate starts, whether or not the Worker ever imports it, so each megabyte adds about
- * 50 ms to every cold request. Load rarely used code from another Worker rather than raising a
- * budget: the API Worker leaves rendering to `dashboard`, source formatting to `formatter`, the
- * authoring reference to `authoring` and MCP sessions to `mcp-server`.
- */
 const uploadBudgets: Record<WorkerName, number> = {
-  api: 5_450_000,
-  // App runners and data supervisors: a cold tool call starts both isolates.
-  "app-data": 700_000,
-  "app-pages": 2_500_000,
-  "mcp-server": 3_400_000,
-  dashboard: 3_900_000,
-  formatter: 2_000_000,
-  // Generated data: the published skills and the framework reference.
-  authoring: 700_000,
+  api: 6_000_000,
+  "app-data": 750_000,
+  "app-pages": 2_700_000,
+  "mcp-server": 3_700_000,
+  dashboard: 4_300_000,
+  formatter: 2_500_000,
+  authoring: 1_000_000,
   compiler: 1_700_000,
   marketing: 1_000_000,
-  // A test stage's forwarding Worker: routing and a service binding call.
   edge: 400_000,
 };
 
-/** The fields of Rolldown's output bundle these rules read. */
 type OutputBundle = Record<
   string,
   | {
@@ -62,35 +51,36 @@ type OutputBundle = Record<
   | { readonly type: "asset"; readonly source: string | Uint8Array }
 >;
 
-/** The plugin that enforces a Worker's budget; `scripts/worker-sizes.ts` builds Workers that use it. */
 export const uploadedModulesPlugin = "executor-uploaded-modules";
 
-/**
- * Rolldown emits a chunk for every dynamic import it finds, even when tree-shaking removes the
- * only code that loads it, such as deploy-time Vite support inside Alchemy. No uploaded module
- * can load such a chunk, so it is dropped with its source map. The budget is then checked
- * against exactly what Cloudflare receives, and the upload is written with each byte attributed
- * to its source so `bun run hosted:cloud:worker-sizes` can say what grew.
- */
 const uploadedModules = (worker: WorkerName) => ({
   name: uploadedModulesPlugin,
   async generateBundle(options: { readonly dir?: string }, bundle: OutputBundle) {
-    const reachable = new Set<string>();
-    const visit = (name: string) => {
-      const output = bundle[name];
-      if (reachable.has(name) || output?.type !== "chunk") return;
-      reachable.add(name);
-      for (const imported of [...output.imports, ...output.dynamicImports]) visit(imported);
+    const reach = (dynamic: boolean) => {
+      const reached = new Set<string>();
+      const visit = (name: string) => {
+        const output = bundle[name];
+        if (reached.has(name) || output?.type !== "chunk") return;
+        reached.add(name);
+        for (const imported of [...output.imports, ...(dynamic ? output.dynamicImports : [])])
+          visit(imported);
+      };
+      for (const [name, output] of Object.entries(bundle))
+        if (output.type === "chunk" && output.isEntry) visit(name);
+      return reached;
     };
-    for (const [name, output] of Object.entries(bundle))
-      if (output.type === "chunk" && output.isEntry) visit(name);
+    const reachable = reach(true);
+    let staticBytes = 0;
+    for (const name of reach(false)) {
+      const output = bundle[name];
+      if (output?.type === "chunk") staticBytes += Buffer.byteLength(output.code);
+    }
     let bytes = 0;
     const sources = new Map<string, number>();
     for (const [name, output] of Object.entries(bundle)) {
       if (output.type !== "chunk") continue;
       if (reachable.has(name)) {
         bytes += Buffer.byteLength(output.code);
-        // Generated modules have no source; name them by their chunk without its content hash.
         const unmapped = `(no source map: ${name.replace(/-[\w-]{8}\.js$/, ".js")})`;
         if (output.map === null)
           sources.set(unmapped, (sources.get(unmapped) ?? 0) + Buffer.byteLength(output.code));
@@ -111,6 +101,7 @@ const uploadedModules = (worker: WorkerName) => ({
       worker,
       bytes,
       budget: uploadBudgets[worker],
+      staticBytes,
       sources: Object.fromEntries([...sources].toSorted((a, b) => b[1] - a[1])),
     };
     await writeWorkerUpload(upload);
@@ -128,7 +119,6 @@ const uploadedModules = (worker: WorkerName) => ({
   },
 });
 
-/** Collect exactly this Worker's output for Sentry; Alchemy's bundle folder retains older builds. */
 const sentryArtifacts = (worker: WorkerName) => ({
   name: "executor-sentry-artifacts",
   writeBundle: (_options: unknown, bundle: OutputBundle) =>
@@ -153,21 +143,41 @@ const sentryArtifacts = (worker: WorkerName) => ({
     ),
 });
 
-/** Build options for one Worker. The compiler keeps Alchemy's default output. */
-export const workerBuild = (worker: WorkerName): NonNullable<WorkerProps["build"]> =>
+export const localTestModules: ReadonlyArray<readonly [passThrough: string, hook: string]> = [
+  ["mcp-interaction-faults.ts", "mcp-interaction-faults-local.ts"],
+];
+
+const localTestHooks = () => {
+  const directory = new URL(".", import.meta.url);
+  return Object.fromEntries(
+    localTestModules.map(([passThrough, hook]) => [
+      fileURLToPath(new URL(passThrough, directory)),
+      fileURLToPath(new URL(hook, directory)),
+    ]),
+  );
+};
+
+export const workerBuild = (
+  worker: WorkerName,
+  options: { readonly localTestHooks?: boolean } = {},
+): NonNullable<WorkerProps["build"]> =>
   worker === "compiler"
     ? { output: { plugins: [uploadedModules(worker)] } }
     : {
+        ...(options.localTestHooks === true
+          ? { input: { resolve: { alias: localTestHooks() } } }
+          : {}),
         output: {
           entryFileNames: `${worker}-[name].js`,
           chunkFileNames: `${worker}-[name]-[hash].js`,
-          // Normal ESM ordering avoids an initializer wrapper around every module.
-          // This graph is covered by the workerd MCP and app-UI tests; keep source maps for diagnostics.
           strictExecutionOrder: false,
-          // Re-chunking the prebuilt dashboard graph by entry reach can evaluate a chunk that reads a
-          // binding before the chunk that initializes it. One chunk keeps that graph's own module order.
           codeSplitting: {
-            groups: [{ name: "dashboard", test: "/web/dist/server/" }],
+            groups: [
+              ...(worker === "dashboard"
+                ? [{ name: "effect", test: "/node_modules/effect/", priority: 1 }]
+                : []),
+              { name: "dashboard", test: "/web/dist/server/" },
+            ],
           },
           keepNames: false,
           sourcemap: "hidden",

@@ -11,6 +11,7 @@ import {
   type WorkflowRunFailure,
 } from "apps/contracts";
 import { AppId, BuildId, VersionId } from "./shared.ts";
+import { HostApiCheck } from "./host-api.ts";
 
 /** Backend inspection is parsed before it affects a retained run. */
 export const WorkflowBackendState = Schema.Union([
@@ -40,6 +41,8 @@ const WorkflowSeedFields = Schema.Struct({
   runId: WorkflowRunId,
   app: AppId,
   build: BuildId,
+  /** The host API revision the app's cache belongs to, for an app that reads it; see `HostApiCheck`. */
+  hostApi: Schema.optionalKey(HostApiCheck),
   version: VersionId,
   name: Schema.NonEmptyString,
   input: WorkflowValue,
@@ -55,7 +58,10 @@ export interface WorkflowHost {
   readonly seed: (run: WorkflowRunId) => Effect.Effect<WorkflowSeed, WorkflowFailure>;
   readonly context: (
     run: WorkflowRunId,
-  ) => Effect.Effect<HostContext & { readonly database: boolean }, WorkflowFailure>;
+  ) => Effect.Effect<
+    HostContext & { readonly hostApi: HostApiCheck | undefined; readonly database: boolean },
+    WorkflowFailure
+  >;
   readonly invoke: (
     run: WorkflowRunId,
     input: {

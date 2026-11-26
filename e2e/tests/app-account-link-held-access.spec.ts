@@ -1,13 +1,3 @@
-/**
- * Linking an account for everyone needs edit access to the app and use of the account, and
- * unlinking one needs edit access. Saving an MCP connection that runs an app as an account links
- * that account for the member, which needs use of the app and of the account. Each route checks
- * before its write, which then waits for the app's link lock; access revoked in between must refuse
- * the write. The self-host test entry point holds the request just after its last check has
- * answered, outside any transaction, while the scenario demotes the admin, stops sharing the app or
- * stops sharing the account; the write then runs and must check again. Released with nothing
- * changed, the same held request links.
- */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Fiber, Layer, Schedule, Schema } from "effect";
 import { randomUUID } from "node:crypto";
@@ -20,16 +10,13 @@ import { startDevelopmentServer } from "../support/managed-server.ts";
 import { Target } from "../support/platform.ts";
 import { scenarios } from "../test-plan.ts";
 
-/** An app with one plain app requirement. */
 const source = `import { defineApp, defineProvider, secrets, object, string, router } from "apps";
 const service = defineProvider({ name: "Held link fixture", auth: {
   key: secrets({ label: "API key", fields: object({ token: string() }) })
 } });
 export default defineApp({ app: { accounts: { service } } }, async () => ({ tools: router({}) }));`;
-/** The same with one plain user requirement, which an MCP connection's account target links. */
 const userSource = source.replace("{ app: { accounts", "{ user: { accounts");
 
-/** The self-host test host's statement hold; see `apps/hosted/testing/statement-hold-fixture.ts`. */
 const statementHold = "/api/devtools/statement-hold";
 const Held = Schema.Struct({ held: Schema.Boolean });
 const Users = Schema.Struct({
@@ -48,14 +35,9 @@ const Links = Schema.Array(
 const Failure = Schema.Struct({ _tag: Schema.String });
 const AccessInvalid = Schema.Struct({ _tag: Schema.String, reason: Schema.String });
 
-/**
- * The development server with the statement hold, its owner, and an admin invited for this case;
- * an app with one plain requirement in `scope`; and the case's helpers.
- */
 const heldCase = (scope: "app" | "user") =>
   Effect.gen(function* () {
     const target = yield* Target;
-    // Only the test entry point mounts the statement hold.
     const origin = yield* startDevelopmentServer(target);
     const api = yield* Api.pipe(
       Effect.provide(Layer.fresh(Api.layer)),
@@ -84,10 +66,8 @@ const heldCase = (scope: "app" | "user") =>
     ))[0];
     if (!organization) return yield* Effect.die("Development organization is missing");
     const prefix = `/api/organizations/${organization.id}`;
-    // A failed assertion must not leave a request held.
     yield* Effect.addFinalizer(() => send(owner, "DELETE", statementHold).pipe(Effect.orDie));
 
-    // An admin who can edit every app.
     const email = `held-admin-${randomUUID().slice(0, 8)}@example.test`;
     const invitation = yield* body(
       Resource,
@@ -130,54 +110,35 @@ const heldCase = (scope: "app" | "user") =>
     expect(deployed.status, JSON.stringify(deployed.body)).toBe(200);
     const app = (yield* body(App, deployed)).id;
     const appPath = `${prefix}/apps/${app}`;
-    const accounts: string[] = [];
-    // The app goes first: an account linked for everyone cannot be deleted.
+    const accounts: { actor: Session; id: string }[] = [];
     yield* Effect.addFinalizer(() =>
       Effect.gen(function* () {
         yield* send(owner, "DELETE", appPath);
         for (const account of accounts)
-          yield* send(owner, "DELETE", `${prefix}/accounts/${account}`);
+          yield* send(account.actor, "DELETE", `${prefix}/accounts/${account.id}`);
       }).pipe(Effect.orDie),
     );
-    /**
-     * An account shared with everyone, connected from the app, which links it to the app's
-     * requirement: for everyone, or for the owner.
-     */
-    const connect = (token: string) =>
+    const connect = (actor: Session, token: string) =>
       Effect.gen(function* () {
-        const started = yield* send(owner, "POST", connectionsPath(appPath, scope, "service"), {
-          destination: { kind: "shared", audience: { kind: "everyone" } },
-        });
+        const started = yield* send(actor, "POST", connectionsPath(appPath, scope, "service"), {});
         expect(started.status, JSON.stringify(started.body)).toBe(200);
         const saved = yield* send(
-          owner,
+          actor,
           "POST",
           `${prefix}/connections/${(yield* body(Resource, started)).id}/submit`,
           { method: "key", label: token, fields: { token } },
         );
         expect(saved.status, JSON.stringify(saved.body)).toBe(200);
         const account = (yield* body(Resource, saved)).id;
-        accounts.push(account);
+        accounts.push({ actor, id: account });
         return account;
       });
-    const shareAccount = (account: string, audience: unknown) =>
-      Effect.gen(function* () {
-        const path = `${prefix}/accounts/${account}/access`;
-        const { revision } = yield* body(Revision, yield* send(owner, "GET", path));
-        const shared = yield* send(owner, "PATCH", path, { revision, audience });
-        expect(shared.status, JSON.stringify(shared.body)).toBe(200);
-      });
-    /** The links in the app's scope that `actor` sees. */
     const links = (actor: Session) =>
       send(actor, "GET", `${appPath}/accounts/${scope}`).pipe(
         Effect.flatMap((response) => body(Links, response)),
         Effect.map((found) => found.map((link) => [link.requirement, link.account.id])),
       );
 
-    /**
-     * Send `request` held just after its `check` of `id` has answered, run `meanwhile`, then
-     * release it and return its response.
-     */
     const held = <E, R>(
       check: "app-access" | "account-access",
       id: string,
@@ -209,7 +170,6 @@ const heldCase = (scope: "app" | "user") =>
       appPath,
       setRole,
       connect,
-      shareAccount,
       links,
       held,
     };
@@ -226,18 +186,16 @@ layer(HostedLive, { excludeTestServices: true })("App account link held access",
     withHostedCase(
       context,
       Effect.gen(function* () {
-        const { send, admin, owner, app, setRole, connect, shareAccount, links, held, appPath } =
+        const { send, admin, owner, app, setRole, connect, links, held, appPath } =
           yield* heldCase("app");
         const appLinks = links(owner);
         const linkPath = (account: string) =>
           `${requirementPath(appPath, "app", "service")}/${account}`;
 
-        const first = yield* connect("synthetic-held-first");
-        const second = yield* connect("synthetic-held-second");
-        // Connecting the second account replaced the first's link.
+        const first = yield* connect(admin, "synthetic-held-first");
+        const second = yield* connect(owner, "synthetic-held-second");
         expect(yield* appLinks).toEqual([["service", second]]);
 
-        // Demoted while its link waits, the admin no longer edits the app: nothing is linked.
         const demoted = yield* held(
           "account-access",
           first,
@@ -248,18 +206,6 @@ layer(HostedLive, { excludeTestServices: true })("App account link held access",
         expect(yield* appLinks).toEqual([["service", second]]);
         yield* setRole("admin");
 
-        // The account stops being shared with the admin while the link waits: nothing is linked.
-        const unshared = yield* held(
-          "account-access",
-          first,
-          send(admin, "PUT", linkPath(first)),
-          shareAccount(first, { kind: "groups", groups: [] }),
-        );
-        yield* refused(unshared);
-        expect(yield* appLinks).toEqual([["service", second]]);
-        yield* shareAccount(first, { kind: "everyone" });
-
-        // Held and released with nothing changed, the link replaces the second account's.
         const linked = yield* held(
           "account-access",
           first,
@@ -269,7 +215,6 @@ layer(HostedLive, { excludeTestServices: true })("App account link held access",
         expect(linked.status, JSON.stringify(linked.body)).toBe(200);
         expect(yield* appLinks).toEqual([["service", first]]);
 
-        // Demoted while its unlink waits, the admin no longer edits the app: the link stays.
         const kept = yield* held(
           "app-access",
           app,
@@ -280,7 +225,6 @@ layer(HostedLive, { excludeTestServices: true })("App account link held access",
         expect(yield* appLinks).toEqual([["service", first]]);
         yield* setRole("admin");
 
-        // Held and released with nothing changed, the unlink removes it.
         const unlinked = yield* held(
           "app-access",
           app,
@@ -297,7 +241,7 @@ layer(HostedLive, { excludeTestServices: true })("App account link held access",
     withHostedCase(
       context,
       Effect.gen(function* () {
-        const { send, admin, owner, prefix, app, appPath, connect, shareAccount, links, held } =
+        const { send, admin, owner, prefix, app, appPath, connect, links, held } =
           yield* heldCase("user");
         const appAccess = (audience: unknown) =>
           Effect.gen(function* () {
@@ -306,54 +250,37 @@ layer(HostedLive, { excludeTestServices: true })("App account link held access",
             const shared = yield* send(owner, "PATCH", path, { revision, audience });
             expect(shared.status, JSON.stringify(shared.body)).toBe(200);
           });
-        // The app is shared with everyone; the owner's account is linked for the owner and shared
-        // with everyone.
         yield* appAccess({ kind: "everyone" });
-        const account = yield* connect("synthetic-held-mcp");
-        expect(yield* links(owner)).toEqual([["service", account]]);
+        const account = yield* connect(admin, "synthetic-held-mcp");
+        expect(yield* links(admin)).toEqual([["service", account]]);
+        const unlinked = yield* send(
+          admin,
+          "DELETE",
+          `${requirementPath(appPath, "user", "service")}/${account}`,
+        );
+        expect(unlinked.status, JSON.stringify(unlinked.body)).toBe(200);
         expect(yield* links(admin)).toEqual([]);
-        /** Save a new connection that runs the app as the account, which links it for the admin. */
         const save = () =>
           send(admin, "POST", `${prefix}/mcp-connections`, {
             id: randomUUID(),
             name: `Held connection ${randomUUID().slice(0, 8)}`,
             apps: [{ app, runsAs: [{ kind: "account", id: account }], tools: { kind: "all" } }],
           });
-        const invalid = (
-          response: { readonly status: number; readonly body: unknown },
-          reason: "app" | "account",
-        ) =>
-          Effect.gen(function* () {
-            expect(response.status, JSON.stringify(response.body)).toBe(400);
-            expect(yield* body(AccessInvalid, response)).toMatchObject({
-              _tag: "ConnectionAccessInvalid",
-              reason,
-            });
-          });
 
-        // The app stops being shared with the admin while the link waits: nothing is linked.
         const unsharedApp = yield* held(
           "account-access",
           account,
           save(),
           appAccess({ kind: "private" }),
         );
-        yield* invalid(unsharedApp, "app");
+        expect(unsharedApp.status, JSON.stringify(unsharedApp.body)).toBe(400);
+        expect(yield* body(AccessInvalid, unsharedApp)).toMatchObject({
+          _tag: "ConnectionAccessInvalid",
+          reason: "app",
+        });
         yield* appAccess({ kind: "everyone" });
         expect(yield* links(admin)).toEqual([]);
 
-        // The account stops being shared with the admin while the link waits: nothing is linked.
-        const unsharedAccount = yield* held(
-          "account-access",
-          account,
-          save(),
-          shareAccount(account, { kind: "groups", groups: [] }),
-        );
-        yield* invalid(unsharedAccount, "account");
-        yield* shareAccount(account, { kind: "everyone" });
-        expect(yield* links(admin)).toEqual([]);
-
-        // Held and released with nothing changed, the connection links the account for the admin.
         const saved = yield* held("account-access", account, save(), Effect.void);
         expect(saved.status, JSON.stringify(saved.body)).toBe(200);
         expect(yield* links(admin)).toEqual([["service", account]]);

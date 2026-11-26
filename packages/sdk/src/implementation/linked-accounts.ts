@@ -1,8 +1,3 @@
-/**
- * The accounts an operation a caller starts runs with, from the accounts the caller linked to the
- * app. Products decide which accounts are linked and usable; these rules decide nothing about
- * access. Calls never choose accounts.
- */
 import { Effect } from "effect";
 import {
   AccountRequired,
@@ -16,28 +11,19 @@ import {
 import type { AccountId, AppId, VersionId } from "../contracts/shared.ts";
 import type { ToolInvocation } from "../contracts/tools.ts";
 
-/** One requirement's cardinality and the caller's linked accounts for it, oldest link first. */
 export interface LinkedRequirement<A extends AccountChoice = AccountChoice> {
   readonly cardinality: AccountRequirement["cardinality"];
   readonly accounts: readonly A[];
 }
-/** Every requirement of an app, with the caller's linked accounts for each. */
 export type LinkedAccounts<A extends AccountChoice = AccountChoice> = Readonly<
   Record<string, LinkedRequirement<A>>
 >;
 
-/** One account linked to a requirement: an app link or a caller's user link. */
 export interface RequirementLink<A> {
   readonly requirement: string;
   readonly account: A;
 }
 
-/**
- * Group one scope's links by the requirement each names, keeping their order, oldest first. A link
- * names its requirement; one whose requirement is not a requirement of this scope in the version
- * is left out, so an app requirement is filled only by app links and a user requirement only by the
- * caller's user links, even when they share a provider or an account.
- */
 export const linkedRequirements = <A extends AccountChoice>(
   requirements: AppRequirements["accounts"],
   scope: AccountScope,
@@ -55,14 +41,8 @@ export const linkedRequirements = <A extends AccountChoice>(
       ]),
   );
 
-/**
- * The account a plain requirement uses: its newest link. Linking another account replaces the one
- * before, so a plain requirement has at most one, unless a deploy turned a many() requirement into
- * a plain one while several were linked.
- */
 export const plainAccount = <A>(accounts: readonly A[]): A | undefined => accounts.at(-1);
 
-/** One scope's requirements resolved: plain ones to their account, many() to every one. */
 const resolveScope = (
   app: AppId,
   version: VersionId,
@@ -83,13 +63,6 @@ const resolveScope = (
     return resolved;
   });
 
-/**
- * Resolve every requirement of the version for one call: app requirements from the app links,
- * user requirements from the caller's user links (see {@link linkedRequirements}). A plain
- * requirement uses its account (see {@link plainAccount}); with none it fails with
- * `AccountRequired`. many() uses every account. An app with requirements and no active version
- * fails with `AppNotDeployed`.
- */
 export const resolveLinkedAccounts = (input: {
   readonly app: AppId;
   readonly version: VersionId | null;
@@ -107,10 +80,6 @@ export const resolveLinkedAccounts = (input: {
     } satisfies AppAccounts;
   });
 
-/**
- * A reviewed invocation's account identities as the accounts it names, by scope. A call without a
- * caller names no `user`.
- */
 export const invocationAccounts = (invocation: Pick<ToolInvocation, "accounts">): AppAccounts => {
   const ids = (slots: ToolInvocation["accounts"]["app"]) =>
     Object.fromEntries(

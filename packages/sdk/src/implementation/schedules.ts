@@ -1,9 +1,10 @@
-/** Persisted scheduling transitions. App code and external effects run only after a claim commits. */
-import { Clock, Cron, Effect, Option, Result, Schema, SchemaAST, type Crypto } from "effect";
+import { Clock, Cron, Effect, Option, Result, Schema, SchemaAST } from "effect";
+import type { HostCrypto } from "./host-crypto.ts";
 import { ScheduleTiming } from "apps/contracts";
 import { CurrentActor, type Executor, type ResourceLifecycle } from "../contracts/executor.ts";
 import { AccountRequired } from "../contracts/apps.ts";
 import {
+  CredentialsError,
   StorageError,
   RequestInvalid,
   type AccountId,
@@ -23,7 +24,7 @@ import {
   ScheduleConflict,
   ScheduleInvalid,
 } from "../contracts/schedules.ts";
-import { InvocationRun } from "../contracts/runtime.ts";
+import { CallFailureSources, InvocationRun, type CallFailureSource } from "../contracts/runtime.ts";
 import { ScheduleObservation } from "../contracts/scheduler.ts";
 import type { ScheduleDispatcher } from "../contracts/scheduler.ts";
 import type { Credentials } from "../contracts/storage.ts";
@@ -34,7 +35,6 @@ import { backgroundAccounts } from "./background-accounts.ts";
 import { makeToolApprovals } from "./tool-approvals.ts";
 import type { makeTools } from "./tools.ts";
 
-/** Why an enabled schedule skips its occurrences until the owner acts. */
 type Waiting = { readonly reconnectAccount: AccountId } | { readonly accountRequired: string };
 const terminal = (status: ScheduledRun["status"]) =>
   !["running", "ready", "awaiting-approval"].includes(status);
@@ -42,6 +42,17 @@ const diagnostic = (error: unknown) =>
   error instanceof Error && Schema.isSchema(error.constructor)
     ? (SchemaAST.resolveIdentifier(error.constructor.ast) ?? "ExecutionFailed")
     : "ExecutionFailed";
+const failureSource = (error: unknown): CallFailureSource =>
+  Schema.is(StorageError)(error) || Schema.is(CredentialsError)(error) ? "storage" : "other";
+const observedSources = () => {
+  let observed: CallFailureSource | undefined;
+  return {
+    observe: (source: CallFailureSource) => {
+      observed = source;
+    },
+    source: (error: unknown) => observed ?? failureSource(error),
+  };
+};
 const sameTiming = Schema.toEquivalence(ScheduleTiming);
 const nextOccurrence = (timing: ScheduleTiming, after: Date) =>
   Effect.try({
@@ -58,20 +69,19 @@ const nextOccurrence = (timing: ScheduleTiming, after: Date) =>
     catch: () => new ScheduleInvalid(),
   });
 
-/** Compose settings and lifecycle over ordinary app discovery, calls and persisted SDK approvals. */
 export const makeSchedules = (
   storage: ExecutorDatabase,
   apps: Pick<Executor["apps"], "get">,
   tools: Pick<Executor["tools"], "call" | "resume"> &
     Pick<ReturnType<typeof makeTools>, "scheduled" | "accountNeedingReconnect">,
   credentials: Credentials,
-  crypto: Crypto.Crypto,
+  crypto: HostCrypto,
   lifecycle: ResourceLifecycle | undefined,
 ) => {
   const db = database(storage);
   const approvals = makeToolApprovals(db, credentials, crypto, storage.reactivity.inTransaction);
   const now = Effect.map(Clock.currentTimeMillis, (value) => new Date(value));
-  const uuid = crypto.randomUUIDv4.pipe(Effect.mapError(() => new StorageError()));
+  const uuid = crypto.random.uuidV4();
   const parse = <A>(schema: Schema.Decoder<A>, value: unknown) =>
     Schema.decodeUnknownEffect(schema)(value).pipe(Effect.mapError(() => new StorageError()));
   const readSettings = (id: ScheduleId, owner?: OwnerId) =>
@@ -97,19 +107,11 @@ export const makeSchedules = (
       return yield* parse(StoredScheduledRun, row);
     });
   const publicRun = (run: StoredScheduledRun) => ScheduledRun.make(run);
-  /**
-   * The accounts a schedule runs with now: the app links, and for a member's copy its actor's user
-   * links. An app schedule has no actor and runs without a caller.
-   */
   const accountsFor = (setting: Pick<ScheduleSettings, "app" | "actor">) =>
     backgroundAccounts(db, lifecycle, {
       app: setting.app,
       actor: setting.actor ?? undefined,
     }).pipe(Effect.provideService(CurrentActor, setting.actor ?? undefined));
-  /**
-   * What a schedule waits on: a plain requirement its actor links no account for, or a stored
-   * grant that must reconnect. Any other problem is left to the run, which reports it.
-   */
   const waitingOn = (setting: ScheduleSettings) =>
     accountsFor(setting).pipe(
       Effect.flatMap((accounts) => tools.accountNeedingReconnect({ app: setting.app, accounts })),
@@ -136,7 +138,6 @@ export const makeSchedules = (
       const results: AppSchedule[] = declared.items.map((schedule) => ({
         ...schedule,
         app: input.app,
-        // An app declaration has one schedule; a user declaration, the actor's copy.
         settings:
           settings.find(
             (setting) =>
@@ -148,11 +149,6 @@ export const makeSchedules = (
       }));
       return results.sort((left, right) => left.name.localeCompare(right.name));
     });
-  /**
-   * A declaration evaluated with the accounts its runs use. A schedule without an actor is the app
-   * schedule of an app declaration; one with an actor, a copy of a user declaration. A declaration
-   * of the other scope is not this schedule's.
-   */
   const definition = (input: {
     readonly app: AppId;
     readonly name: string;
@@ -169,7 +165,6 @@ export const makeSchedules = (
       if (found === undefined) return yield* new ScheduleNotFound();
       return found;
     });
-  /** The actor's copy of a user declaration, or without an actor the app schedule, or null. */
   const findOwn = (input: {
     readonly app: AppId;
     readonly name: string;
@@ -187,7 +182,6 @@ export const makeSchedules = (
     ).pipe(
       Effect.flatMap((row) => (row === null ? Effect.succeed(null) : parse(ScheduleSettings, row))),
     );
-  /** One copy of a declaration of the app. */
   const readCopy = (input: {
     readonly app: AppId;
     readonly name: string;
@@ -207,6 +201,7 @@ export const makeSchedules = (
     run: StoredScheduledRun,
     status: ScheduledRun["status"],
     failure: string | null = null,
+    source: CallFailureSource | null = null,
   ) =>
     transaction(db, () =>
       Effect.gen(function* () {
@@ -237,8 +232,6 @@ export const makeSchedules = (
           const saved = yield* query(() =>
             db.findFirst("schedules", { where: (b) => b("id", "=", run.scheduleId) }),
           );
-          // An activation removed this schedule while the run was in flight. Its history goes
-          // with it, as it did for the schedule's earlier runs.
           if (saved === null) {
             yield* query(() =>
               db.deleteMany("scheduledRuns", {
@@ -254,7 +247,6 @@ export const makeSchedules = (
                   Effect.mapError(() => new StorageError()),
                 )
               : settings.nextAt;
-          // Reconcile timing only if configuration did not change while finishing.
           yield* query(() =>
             db.updateMany("schedules", {
               where: (b) =>
@@ -290,6 +282,7 @@ export const makeSchedules = (
                     ? "cancelled"
                     : "failed",
               ...(failure === null ? {} : { "error.type": failure }),
+              ...(source === null ? {} : { "executor.failure.source": source }),
             }).pipe(
               Effect.andThen(
                 Effect.flatMap(ScheduleObservation, (observer) => observer.completed(completed)),
@@ -298,11 +291,6 @@ export const makeSchedules = (
       ),
       Effect.catchTag("ScheduleNotFound", () => Effect.void),
     );
-  /**
-   * Delete a copy and its run history, in the caller's transaction. A waiting approval would run a
-   * call nobody schedules any more, so it is withdrawn. A running mutation finishes; finish then
-   * removes its record.
-   */
   const deleteCopy = (id: ScheduleId) =>
     Effect.gen(function* () {
       const runs = yield* query(() =>
@@ -326,18 +314,8 @@ export const makeSchedules = (
       );
       yield* query(() => db.deleteMany("schedules", { where: (b) => b("id", "=", id) }));
     });
-  /**
-   * Bring saved settings to the active version's declarations: delete those of every schedule
-   * it no longer declares, with their run history, and give each schedule whose timing changed the
-   * new timing and its next occurrence. Declarations can depend on accounts, so each schedule is
-   * checked against the app evaluated as its own actor, with the accounts its runs use; schedules
-   * that resolve the same accounts share one evaluation. Only a successful evaluation changes
-   * anything: a schedule whose app is broken, or whose actor links no account or one that cannot
-   * be used, keeps its settings.
-   */
   const reconcile = (app: AppId) =>
     Effect.gen(function* () {
-      /** A failed resolution or evaluation keeps the schedule; a storage failure stops the cleanup. */
       const unlessEvaluated = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
         effect.pipe(
           Effect.map(Option.some),
@@ -353,7 +331,6 @@ export const makeSchedules = (
         Effect.gen(function* () {
           const accounts = yield* unlessEvaluated(accountsFor(setting));
           if (Option.isNone(accounts)) return undefined;
-          // The evaluation also checks the actor's access, so it is shared only by one actor.
           const key = JSON.stringify([
             setting.actor,
             Object.entries(accounts.value).toSorted(([left], [right]) => left.localeCompare(right)),
@@ -367,7 +344,6 @@ export const makeSchedules = (
             ));
           evaluations.set(key, declared);
           if (Option.isNone(declared)) return undefined;
-          // A declaration that changed scope no longer declares this schedule.
           const found = declared.value.items.find(
             (schedule) =>
               schedule.name === setting.name &&
@@ -383,8 +359,6 @@ export const makeSchedules = (
         Effect.gen(function* () {
           const locked = yield* lockApp(db, { app });
           for (const { setting, version, timing } of changed) {
-            // A later activation reconciles against its own declarations, and a schedule
-            // configured or claimed since it was evaluated is checked again by the next one.
             if (locked.activeVersion !== version) continue;
             const current = yield* query(() =>
               db.findFirst("schedules", {
@@ -393,10 +367,6 @@ export const makeSchedules = (
             );
             if (current === null) continue;
             if (timing !== undefined) {
-              // An enabled schedule's next occurrence follows the new timing; an invalid timing
-              // keeps it, and the run path pauses the schedule. A running occurrence keeps its
-              // claim, so only an idle schedule consumes the scanned revision as a claim does: a
-              // dispatch holding the earlier due snapshot cannot run on the old timing.
               const nextAt = setting.enabled
                 ? Option.getOrElse(
                     yield* nextOccurrence(timing, yield* now).pipe(Effect.option),
@@ -429,7 +399,6 @@ export const makeSchedules = (
         .pipe(Effect.catchTag("ToolApprovalNotFound", () => new ScheduleNotFound()));
       return { run: publicRun(run), invocation, expiresAt };
     });
-  /** Save a copy's new state, unless it changed since it was read. */
   const save = (
     previous: ScheduleSettings,
     next: {
@@ -466,15 +435,17 @@ export const makeSchedules = (
       Effect.gen(function* () {
         yield* apps.get(input);
         const settings = yield* savedFor(input.app);
-        // Enabled schedules report what they wait on, so the owner sees why none run.
-        return yield* Effect.forEach(settings, (setting) =>
-          setting.enabled
-            ? waitingOn(setting).pipe(
-                Effect.map((waiting) =>
-                  waiting === undefined ? setting : { ...setting, ...waiting },
-                ),
-              )
-            : Effect.succeed(setting),
+        return yield* Effect.forEach(
+          settings,
+          (setting) =>
+            setting.enabled
+              ? waitingOn(setting).pipe(
+                  Effect.map((waiting) =>
+                    waiting === undefined ? setting : { ...setting, ...waiting },
+                  ),
+                )
+              : Effect.succeed(setting),
+          { concurrency: 4 },
         );
       }),
     configure: (input: typeof ScheduleInputs.configure.Type) =>
@@ -485,7 +456,6 @@ export const makeSchedules = (
         const app = yield* apps.get(parsed);
         const target = { app: app.id, name: parsed.name, actor: parsed.actor ?? null };
         const saved = yield* findOwn(target);
-        // Pausing saved work never depends on evaluating broken app code or refreshing a revoked account.
         const timing =
           !parsed.enabled && saved !== null ? saved.timing : (yield* definition(target)).timing;
         const nextAt = parsed.enabled ? yield* nextOccurrence(timing, yield* now) : null;
@@ -547,7 +517,6 @@ export const makeSchedules = (
       Effect.gen(function* () {
         yield* apps.get(input);
         const settings = yield* readCopy(input);
-        // The app must still declare it for the accounts a run uses.
         yield* definition(settings);
         if (!settings.enabled || settings.activeRun !== null) return yield* new ScheduleConflict();
         const { id, revision: expectedRevision } = settings;
@@ -578,7 +547,6 @@ export const makeSchedules = (
         yield* apps.get(input);
         return yield* transaction(db, () =>
           Effect.gen(function* () {
-            // Serialized with dispatch's approval handoff, which also holds the app lock.
             yield* lockApp(db, { app: input.app });
             const saved = yield* readCopy(input);
             yield* deleteCopy(saved.id);
@@ -617,27 +585,27 @@ export const makeSchedules = (
   const complete = (
     run: StoredScheduledRun,
     result: Awaited<Effect.Success<ReturnType<typeof tools.resume>>>,
+    source: (error: unknown) => CallFailureSource,
   ) => {
     switch (result.status) {
       case "completed":
         return result.toolError === true
-          ? finish(run, "failed", "McpToolError")
+          ? finish(run, "failed", "McpToolError", "upstream")
           : finish(run, "succeeded");
       case "denied":
-        return finish(run, "denied");
+        return finish(run, "denied", null, "approval");
       case "cancelled":
         return finish(run, "cancelled");
       case "already-consumed":
-        return finish(run, "interrupted", "AlreadyConsumed");
+        return finish(run, "interrupted", "AlreadyConsumed", "approval");
       case "failed":
-        // A resumed call that failed records its own error, as a live call's failure does.
         return result.reason === "execution-failed"
-          ? finish(run, "failed", diagnostic(result.error))
-          : finish(run, result.reason === "expired" ? "expired" : "failed", result.reason);
+          ? finish(run, "failed", diagnostic(result.error), source(result.error))
+          : result.reason === "expired"
+            ? finish(run, "expired", result.reason, "approval")
+            : finish(run, "failed", result.reason, "other");
     }
   };
-  // Retire only the scanned occurrence. A concurrent configuration or claim owns
-  // its newer revision and must not be paused by stale dispatch work.
   const retireMissingTarget = (setting: ScheduleSettings) =>
     query(() =>
       db.updateMany("schedules", {
@@ -659,7 +627,7 @@ export const makeSchedules = (
           }),
         );
         const runs = yield* parse(Schema.Array(StoredScheduledRun), rows);
-        for (const run of runs) yield* finish(run, "interrupted", "RunnerStopped");
+        for (const run of runs) yield* finish(run, "interrupted", "RunnerStopped", "runtime");
       }),
     nextWake: Effect.gen(function* () {
       const settings = yield* query(() =>
@@ -704,7 +672,7 @@ export const makeSchedules = (
             execute(
               Effect.gen(function* () {
                 if (pending.expiresAt !== null && pending.expiresAt <= time) {
-                  yield* finish(pending, "expired", "ApprovalExpired");
+                  yield* finish(pending, "expired", "ApprovalExpired", "approval");
                   return;
                 }
                 if (pending.requestId === null || pending.answer === null) return;
@@ -726,6 +694,7 @@ export const makeSchedules = (
                   }),
                 );
                 if (claim === null) return;
+                const sources = observedSources();
                 yield* Effect.gen(function* () {
                   const settings = yield* readSettings(claim.scheduleId);
                   yield* authorize({ ...settings, phase: "resume" });
@@ -736,11 +705,14 @@ export const makeSchedules = (
                       response: { action: answer },
                     })
                     .pipe(Effect.provideService(CurrentActor, settings.actor ?? undefined));
-                  yield* complete(claim, response);
+                  yield* complete(claim, response, sources.source);
                 }).pipe(
                   Effect.withErrorReporting,
-                  Effect.catch((error) => finish(claim, "failed", diagnostic(error))),
-                  Effect.onInterrupt(() => finish(claim, "interrupted", "Interrupted")),
+                  Effect.catch((error) =>
+                    finish(claim, "failed", diagnostic(error), sources.source(error)),
+                  ),
+                  Effect.onInterrupt(() => finish(claim, "interrupted", "Interrupted", "runtime")),
+                  Effect.provideService(CallFailureSources, sources.observe),
                   Effect.provideService(InvocationRun, claim.id),
                   Effect.withSpan("schedule.run", {
                     attributes: {
@@ -767,6 +739,13 @@ export const makeSchedules = (
             orderBy: ["nextAt", "asc"],
           }),
         ).pipe(Effect.flatMap((rows) => parse(Schema.Array(ScheduleSettings), rows)));
+        const oldest = due.at(0)?.nextAt;
+        yield* Effect.annotateCurrentSpan({
+          "executor.schedule.due": due.length,
+          ...(oldest instanceof Date
+            ? { "executor.schedule.oldest_due_ms": Math.max(0, time.getTime() - oldest.getTime()) }
+            : {}),
+        });
         yield* Effect.forEach(
           due,
           (setting) =>
@@ -774,13 +753,8 @@ export const makeSchedules = (
               Effect.gen(function* () {
                 if (setting.nextAt === null) return yield* new StorageError();
                 const scheduledAt = setting.nextAt;
-                // A run cannot use an account whose sign-in must reconnect, or run without an
-                // account its actor has not linked. Skip the occurrence without recording a run or
-                // contacting the service; the owner sees why on the schedule, and the first
-                // occurrence after reconnecting or linking runs as usual.
                 const waiting = yield* waitingOn(setting);
                 if (waiting !== undefined) {
-                  // Invalid timing is left to the run path, which pauses the schedule.
                   const following = yield* nextOccurrence(setting.timing, time).pipe(Effect.option);
                   if (Option.isSome(following)) {
                     const revision = yield* uuid;
@@ -793,9 +767,6 @@ export const makeSchedules = (
                             b("activeRun", "is", null),
                             b("enabled", "=", true),
                           ),
-                        // Consume the scanned revision as a claim does. Another dispatch holding
-                        // the same due snapshot must not run the skipped occurrence once the
-                        // account reconnects.
                         set: { nextAt: following.value, revision },
                       }),
                     ).pipe(
@@ -831,8 +802,6 @@ export const makeSchedules = (
                             b("activeRun", "is", null),
                             b("enabled", "=", true),
                           ),
-                        // Consume the scanned revision even after this run finishes, so another
-                        // dispatch holding the same due snapshot cannot claim it a second time.
                         set: { activeRun: id, revision: id },
                       }),
                     );
@@ -860,6 +829,7 @@ export const makeSchedules = (
                   }),
                 ).pipe(Effect.catchTags({ AppNotFound: () => retireMissingTarget(setting) }));
                 if (claim === null) return;
+                const sources = observedSources();
                 yield* Effect.gen(function* () {
                   const nextKnownAt = yield* nextOccurrence(setting.timing, yield* now);
                   yield* query(() =>
@@ -892,13 +862,12 @@ export const makeSchedules = (
                     app: setting.app,
                     accounts,
                     tool: declared.tool,
-                    // Schedules only target mutations; defineApp checks this.
                     kind: "mutation",
                     input: declared.input,
                   });
                   if (response.status === "completed") {
                     yield* response.toolError === true
-                      ? finish(claim, "failed", "McpToolError")
+                      ? finish(claim, "failed", "McpToolError", "upstream")
                       : finish(claim, "succeeded");
                     return;
                   }
@@ -911,10 +880,9 @@ export const makeSchedules = (
                         owner: setting.owner,
                         response: { action: "accept" },
                       }),
+                      sources.source,
                     );
                   } else {
-                    // Serialized with reconcile by the app lock: a schedule removed while this
-                    // run started never leaves an approval waiting for review.
                     const waiting = yield* transaction(db, () =>
                       Effect.gen(function* () {
                         yield* lockApp(db, { app: setting.app });
@@ -948,23 +916,21 @@ export const makeSchedules = (
                           owner: setting.owner,
                           response: { action: "decline" },
                         }),
+                        sources.source,
                       );
                   }
                 }).pipe(
-                  // The account's sign-in ended during this run. That is an account state the
-                  // owner resolves by reconnecting, not a fault to report; later occurrences are
-                  // skipped until then.
                   Effect.catchIf(Schema.is(OAuthReconnectRequired), () =>
                     Effect.annotateCurrentSpan(
                       "executor.schedule.skip_reason",
                       "account_reconnect",
-                    ).pipe(Effect.andThen(finish(claim, "failed", "OAuthReconnectRequired"))),
+                    ).pipe(
+                      Effect.andThen(finish(claim, "failed", "OAuthReconnectRequired", "other")),
+                    ),
                   ),
                   Effect.withErrorReporting,
                   Effect.catch((error) =>
                     Effect.gen(function* () {
-                      // Removed/invalid declarations require an explicit re-enable. Other
-                      // failures leave the next ordinary occurrence, with no automatic retry.
                       yield* query(() =>
                         db.updateMany("schedules", {
                           where: (b) =>
@@ -980,13 +946,12 @@ export const makeSchedules = (
                           set: { enabled: false, nextAt: null },
                         }),
                       );
-                      yield* finish(claim, "failed", diagnostic(error));
+                      yield* finish(claim, "failed", diagnostic(error), sources.source(error));
                     }),
                   ),
-                  Effect.onInterrupt(() => finish(claim, "interrupted", "Interrupted")),
-                  // Every account the run resolves is checked against the saved actor; an app
-                  // schedule has none and runs with the app's accounts.
+                  Effect.onInterrupt(() => finish(claim, "interrupted", "Interrupted", "runtime")),
                   Effect.provideService(CurrentActor, setting.actor ?? undefined),
+                  Effect.provideService(CallFailureSources, sources.observe),
                   Effect.provideService(InvocationRun, claim.id),
                   Effect.withSpan("schedule.run", {
                     attributes: {
@@ -1007,6 +972,5 @@ export const makeSchedules = (
         );
       }),
   };
-  /** Reconcile the app's schedules after an activation. */
   return { operations, dispatcher, activated: reconcile };
 };

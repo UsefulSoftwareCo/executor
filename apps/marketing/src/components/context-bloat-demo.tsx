@@ -6,9 +6,6 @@
 
 import React, { useEffect, useRef, useState } from "react";
 
-// Brand logos are imported so Vite emits them as hashed build assets (served
-// from /_astro/...) instead of relying on /public, which the deploy pipeline
-// does not pick up for newly added files.
 import githubLogo from "../assets/logos/github.svg?url";
 import stripeLogo from "../assets/logos/stripe.svg?url";
 import jiraLogo from "../assets/logos/jira.svg?url";
@@ -29,15 +26,6 @@ const LOGOS: Record<string, string> = {
   slack: slackLogo,
 };
 
-/**
- * Interactive "no context bloat" demo, laid out like Effect's "Production-grade
- * TypeScript" section: a complexity gauge + service checklist on top, then two
- * code windows below. Check services to connect them. The naive side grows a
- * system prompt that lists every tool name, ballooning into the thousands (tall
- * + scrollable); the Executor side stays at one `execute` tool with a short,
- * fixed description. Figures are illustrative; the shape is accurate.
- */
-
 type Integration = {
   readonly slug: string;
   readonly name: string;
@@ -47,9 +35,6 @@ type Integration = {
   readonly summary: string;
 };
 
-// Each integration imports its whole API surface as tools (OpenAPI ops, MCP
-// tools, GraphQL fields), so a handful already stacks into the thousands.
-// naiveTok ~= tools * 170 (one tool definition with its JSON schema).
 const INTEGRATIONS: ReadonlyArray<Integration> = [
   {
     slug: "github",
@@ -181,12 +166,9 @@ const INTEGRATIONS: ReadonlyArray<Integration> = [
   },
 ];
 
-// The execute tool's description is a fixed preamble (workflow + rules) plus one
-// short prefix line per connected integration. It stays flat as you add
-// integrations, no matter how many tools each one carries.
-const EXECUTOR_BASE = 980; // fixed workflow + rules preamble, served once
-const EXECUTOR_PER = 16; // one connection-prefix line per integration
-const NAIVE_MAX = INTEGRATIONS.reduce((s, i) => s + i.naiveTok, 0); // bar scale
+const EXECUTOR_BASE = 980;
+const EXECUTOR_PER = 16;
+const NAIVE_MAX = INTEGRATIONS.reduce((s, i) => s + i.naiveTok, 0);
 
 const fmt = (n: number) => n.toString().replace(/\B(?=(\d{3})+(?!\d))/g, ",");
 
@@ -202,7 +184,6 @@ function usePrefersReducedMotion(): boolean {
   return reduced;
 }
 
-/** Eases a displayed integer toward `target` with requestAnimationFrame. */
 function useAnimatedNumber(target: number): number {
   const reduced = usePrefersReducedMotion();
   const [display, setDisplay] = useState(target);
@@ -240,8 +221,6 @@ function useAnimatedNumber(target: number): number {
   return display;
 }
 
-// Full-color svgl.app brand marks, rendered as <img> so each keeps its own
-// colors. svgl has no Jira icon, so jira.svg is the Jira mark in Jira blue.
 function IntegrationIcon({ slug }: { readonly slug: string }) {
   const src = LOGOS[slug];
   if (!src) return null;
@@ -317,7 +296,6 @@ export function ContextBloatDemo() {
       </p>
 
       <div className="cbloat-top grid grid-cols-[1fr] gap-[2rem] min-[880px]:grid-cols-[0.82fr_1fr] min-[880px]:gap-[3rem] min-[880px]:items-start">
-        {/* Complexity gauge */}
         <div className="cbloat-gauge">
           <div className="cbloat-gauge__title text-[13px] font-semibold text-ink">
             Context window
@@ -351,7 +329,6 @@ export function ContextBloatDemo() {
           </div>
         </div>
 
-        {/* Service checklist */}
         <div
           className="cbloat-checklist grid grid-cols-2 gap-[0.5rem]"
           role="group"
@@ -387,7 +364,6 @@ export function ContextBloatDemo() {
       </div>
 
       <div className="cbloat-grid grid grid-cols-[1fr] gap-[1.25rem] min-[880px]:grid-cols-[1fr_1fr]">
-        {/* Without Executor: a system prompt that lists every tool, scrollable */}
         <div className="cbloat-col flex flex-col min-w-0">
           <div className="cbloat-col__title text-center text-[15px] font-semibold tracking-[-0.01em] text-ink mb-[0.75rem]">
             Without Executor
@@ -438,7 +414,6 @@ export function ContextBloatDemo() {
           </div>
         </div>
 
-        {/* With Executor: one tool, the same trimmed description */}
         <div className="cbloat-col flex flex-col min-w-0">
           <div className="cbloat-col__title text-center text-[15px] font-semibold tracking-[-0.01em] text-ink mb-[0.75rem]">
             With Executor

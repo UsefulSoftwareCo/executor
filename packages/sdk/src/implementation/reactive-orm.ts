@@ -1,13 +1,12 @@
-/** Bind one SQL client and track coarse dependencies at the ORM boundary. */
 import { Context, Effect, Option } from "effect";
 import { SqlClient } from "effect/sql";
 import { SqlError, UnknownError } from "effect/sql/SqlError";
 import type { ReactiveStore } from "@executor-js/reactivity";
+import { withFailureAttributes } from "@executor-js/telemetry/failed-span";
 import type { Orm, OrmError } from "fumadb-effect";
 import type { AnySchema, AnyTable } from "fumadb-effect/schema";
 import type { UpsertOptions, TableToColumnValues } from "fumadb-effect/query";
 
-/** Private app storage adapter override. Unpartitioned ORM writes still invalidate every app reader. */
 export const AppRecordPartition = Context.Reference<ReadonlyArray<string> | undefined>(
   "executor/storage/AppRecordPartition",
   {
@@ -15,7 +14,6 @@ export const AppRecordPartition = Context.Reference<ReadonlyArray<string> | unde
   },
 );
 
-/** Conservatively include reachable relations whenever a query has joins. */
 function reads(table: AnyTable | undefined, joined: boolean): ReadonlyArray<string> {
   const found = new Set<string>();
   const visit = (table: AnyTable | undefined) => {
@@ -27,7 +25,6 @@ function reads(table: AnyTable | undefined, joined: boolean): ReadonlyArray<stri
   return [...found];
 }
 
-/** Include transitive database cascades, even though they bypass ORM calls. */
 function writes(
   schema: AnySchema,
   name: string,
@@ -56,12 +53,19 @@ function writes(
   return [...found];
 }
 
-/**
- * Capture the host driver without starting another Effect runtime. Transactions
- * keep their fiber-local SQL connection and publish only after commit. App record
- * operations use finer app/table keys in app-storage.ts. Unpartitioned writes
- * invalidate all app readers; direct SQL writes are intentionally outside this API.
- */
+const located = <A>(
+  operation: string,
+  table: PropertyKey,
+  effect: Effect.Effect<A, OrmError, SqlClient.SqlClient>,
+) =>
+  Effect.mapError(effect, (error) =>
+    withFailureAttributes(error, {
+      "executor.storage.operation": operation,
+      "executor.storage.table": String(table),
+      "executor.storage.reason": error._tag === "SqlError" ? error.reason._tag : error.reason,
+    }),
+  );
+
 export function bindOrm<S extends AnySchema>(
   orm: Orm<S, SqlClient.SqlClient>,
   sql: SqlClient.SqlClient,
@@ -83,8 +87,6 @@ export function bindOrm<S extends AnySchema>(
             }),
           });
         }
-        // Preserve the caller's cancellation policy. Cleanup transactions run in
-        // finalizers and must not be made interruptible by this adapter.
         return yield* reactive.transaction(sql.withTransaction(restore(effect)));
       }),
     );
@@ -137,21 +139,42 @@ export function bindOrm<S extends AnySchema>(
     options: UpsertOptions<S["tables"][T], boolean>,
   ): Effect.Effect<void | TableToColumnValues<S["tables"][T]>, OrmError> {
     return options.returning === true
-      ? write(table, "onUpdate", orm.upsert(table, { ...options, returning: true }))
-      : write(table, "onUpdate", orm.upsert(table, { ...options, returning: false }));
+      ? write(
+          table,
+          "onUpdate",
+          located("upsert", table, orm.upsert(table, { ...options, returning: true })),
+        )
+      : write(
+          table,
+          "onUpdate",
+          located("upsert", table, orm.upsert(table, { ...options, returning: false })),
+        );
   }
   return {
     schema: orm.schema,
     transaction: (effect) => provide(trackedTransaction(effect)),
-    count: (table, options) => read(table, false, orm.count(table, options)),
+    count: (table, options) =>
+      read(table, false, located("count", table, orm.count(table, options))),
     findFirst: (table, options) =>
-      read(table, options?.join !== undefined, orm.findFirst(table, options)),
+      read(
+        table,
+        options?.join !== undefined,
+        located("findFirst", table, orm.findFirst(table, options)),
+      ),
     findMany: (table, options) =>
-      read(table, options?.join !== undefined, orm.findMany(table, options)),
-    create: (table, values) => write(table, "insert", orm.create(table, values)),
-    createMany: (table, values) => write(table, "insert", orm.createMany(table, values)),
-    updateMany: (table, options) => write(table, "onUpdate", orm.updateMany(table, options)),
-    deleteMany: (table, options) => write(table, "onDelete", orm.deleteMany(table, options)),
+      read(
+        table,
+        options?.join !== undefined,
+        located("findMany", table, orm.findMany(table, options)),
+      ),
+    create: (table, values) =>
+      write(table, "insert", located("create", table, orm.create(table, values))),
+    createMany: (table, values) =>
+      write(table, "insert", located("createMany", table, orm.createMany(table, values))),
+    updateMany: (table, options) =>
+      write(table, "onUpdate", located("updateMany", table, orm.updateMany(table, options))),
+    deleteMany: (table, options) =>
+      write(table, "onDelete", located("deleteMany", table, orm.deleteMany(table, options))),
     upsert,
   };
 }
