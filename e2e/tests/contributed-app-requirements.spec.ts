@@ -4,12 +4,7 @@ import { body } from "../support/api.ts";
 import { ok, refused } from "../support/app-links.ts";
 import { appsManifest } from "../support/apps-release.ts";
 import { HostedLive, withHostedCase } from "../support/case.ts";
-import {
-  Contribution,
-  Health,
-  contributedApp,
-  contributedSource,
-} from "../support/contributed-app.ts";
+import { Contribution, contributedApp, contributedSource } from "../support/contributed-app.ts";
 import { Resource } from "../support/contracts.ts";
 import { scenarios } from "../test-plan.ts";
 
@@ -51,12 +46,19 @@ layer(HostedLive, { excludeTestServices: true })("Contributed app requirements",
           403,
           "OrganizationForbidden",
         );
-        const sameLink = yield* f.link(actors.admin, "shared", account);
-        yield* ok(sameLink);
-        expect(sameLink.body).toMatchObject({ linkedBy: { id: ids.member }, canRemove: false });
+        yield* refused(
+          yield* f.link(actors.admin, "shared", account),
+          403,
+          "OrganizationForbidden",
+        );
         const personal = yield* f.connect(actors.member, "user", "own", "Personal account");
         yield* refused(
           yield* f.link(actors.admin, "shared", personal),
+          403,
+          "OrganizationForbidden",
+        );
+        yield* refused(
+          yield* api.request(actors.admin, "DELETE", `${prefix}/accounts/${account}`),
           403,
           "OrganizationForbidden",
         );
@@ -95,57 +97,42 @@ layer(HostedLive, { excludeTestServices: true })("Contributed app requirements",
           email: "upstream@example.test",
         });
         const detail = yield* api.request(actors.admin, "GET", `${prefix}/accounts/${account}`);
-        expect(detail.body).toMatchObject({
-          account: {
-            label: "Member's typed label",
-            description: "A person typed this description",
-          },
-          health: { info: null },
-        });
-        const checked = yield* body(
-          Health,
+        yield* refused(detail, 403, "OrganizationForbidden");
+        yield* refused(
           yield* api.request(actors.admin, "POST", `${prefix}/accounts/${account}/health`),
+          403,
+          "OrganizationForbidden",
         );
-        expect(checked.info).toBeNull();
-        expect(checked.apps.some((entry) => entry.check?.status === "healthy")).toBe(true);
         for (const endpoint of ["inventory", "resources"]) {
           const directory = yield* api.request(actors.admin, "GET", `${prefix}/${endpoint}`);
           const entries = yield* body(
             Schema.Struct({ accounts: Schema.Array(Schema.Unknown) }),
             directory,
           );
-          expect(entries.accounts).toContainEqual(
+          expect(entries.accounts).not.toContainEqual(
             expect.objectContaining(
               endpoint === "resources"
                 ? {
                     account: expect.objectContaining({
                       id: account,
-                      label: "Member's typed label",
                     }),
-                    health: expect.objectContaining({ info: null }),
                   }
-                : {
-                    id: account,
-                    label: "Member's typed label",
-                    health: expect.objectContaining({ info: null }),
-                  },
+                : { id: account },
             ),
           );
         }
         yield* f.role(ids.admin, "admin");
-        yield* ok(yield* f.unlink(actors.owner, "shared", account));
-        const managed = yield* api.request(actors.admin, "GET", `${prefix}/accounts/${account}`);
-        expect(managed.body).toMatchObject({
+        const [managed] = yield* readLinks(actors.admin);
+        expect(managed).toMatchObject({
           health: { info: { email: "upstream@example.test" } },
         });
+        yield* ok(yield* f.unlink(actors.owner, "shared", account));
 
-        yield* ok(yield* f.link(actors.owner, "shared", account));
         yield* refused(
-          yield* api.request(actors.member, "DELETE", `${prefix}/accounts/${account}`),
+          yield* f.link(actors.owner, "shared", account),
           403,
           "OrganizationForbidden",
         );
-        yield* ok(yield* f.unlink(actors.owner, "shared", account));
         yield* ok(yield* f.link(actors.member, "shared", account));
         yield* ok(yield* api.request(actors.member, "DELETE", `${prefix}/accounts/${account}`));
         expect(yield* readLinks()).toEqual([]);
@@ -164,16 +151,13 @@ layer(HostedLive, { excludeTestServices: true })("Contributed app requirements",
         });
 
         const held = yield* f.connect(actors.member, "user", "own", "Member's ordinary account");
-        yield* ok(yield* f.link(actors.owner, "ordinary", held));
+        yield* refused(yield* f.link(actors.owner, "ordinary", held), 403, "OrganizationForbidden");
         yield* ok(yield* f.link(actors.member, "shared", held));
         yield* ok(yield* api.request(actors.member, "POST", `${prefix}/accounts/${held}/health`));
         const heldLinks = (yield* readLinks(actors.member)).filter(
           (link) => link.account.id === held,
         );
-        expect(heldLinks.find((link) => link.requirement === "ordinary")?.health).toMatchObject({
-          info: null,
-          infoCheckedAt: null,
-        });
+        expect(heldLinks.map((link) => link.requirement)).toEqual(["shared"]);
         expect(heldLinks.find((link) => link.requirement === "shared")?.health).toMatchObject({
           info: { email: "upstream@example.test" },
           infoCheckedAt: expect.any(String),
