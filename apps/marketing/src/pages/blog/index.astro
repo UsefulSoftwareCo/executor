@@ -12,8 +12,6 @@ const fmt = (date: Date) =>
     year: "numeric",
     month: "long",
     day: "numeric",
-    // Frontmatter dates are bare YYYY-MM-DD (UTC midnight); format in UTC so
-    // the displayed day matches what the author wrote regardless of timezone.
     timeZone: "UTC",
   });
 ---

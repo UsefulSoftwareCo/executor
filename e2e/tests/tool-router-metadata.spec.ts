@@ -1,4 +1,3 @@
-/** Tool groups that are routers, such as one MCP server each, show the router's own metadata. */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Redacted, Schema } from "effect";
 import { randomUUID } from "node:crypto";
@@ -35,7 +34,6 @@ export default defineApp({}, async () => ({
 }));`,
 };
 
-/** The Tools tree labels routers by title, shows their descriptions, and keeps plain groups. */
 const checkTree = Effect.gen(function* () {
   const browser = yield* Browser;
   const tree = "App tools";

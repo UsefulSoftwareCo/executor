@@ -1,4 +1,3 @@
-/** Repository labels have a separate lifecycle from CI credentials and deployment settings. */
 import * as Alchemy from "alchemy";
 import * as Cloudflare from "alchemy/Cloudflare";
 import * as GitHub from "alchemy/GitHub";

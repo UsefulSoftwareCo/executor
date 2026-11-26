@@ -1,4 +1,3 @@
-/** Persistent Sentry projects and ingestion keys, managed by Alchemy v2. */
 import * as Api from "@distilled.cloud/sentry/sentry";
 import { Credentials } from "@distilled.cloud/sentry/Credentials";
 import { Resource } from "alchemy";
@@ -8,7 +7,6 @@ import * as Provider from "alchemy/Provider";
 import { Config, Effect, Layer, Redacted, Schema } from "effect";
 import { FetchHttpClient } from "effect/http";
 
-/** Existing organization and team are explicit inputs; this resource owns only its project. */
 export interface SentryProjectProps {
   readonly organization: string;
   readonly team: string;
@@ -16,7 +14,6 @@ export interface SentryProjectProps {
   readonly name: string;
   readonly platform: string;
 }
-/** Project identity and the configuration read back from Sentry. */
 export interface SentryProjectAttributes {
   readonly id: string;
   readonly organization: string;
@@ -25,37 +22,30 @@ export interface SentryProjectAttributes {
   readonly platform: string | null;
   readonly teams: ReadonlyArray<string>;
 }
-/** Project replacement retains the old project's data when the declaration uses retain(). */
 export type SentryProject = Resource<
   "Executor.SentryProject",
   SentryProjectProps,
   SentryProjectAttributes
 >;
-/** Declare a Sentry project. Existing matching slugs require explicit adoption. */
 export const SentryProject = Resource<SentryProject>("Executor.SentryProject");
 
-/** A separate named client key supplies a public DSN to runtime code. */
 export interface SentryClientKeyProps {
   readonly organization: string;
   readonly project: string;
   readonly name: string;
 }
-/** Secret DSNs and management credentials never enter resource outputs. */
 export interface SentryClientKeyAttributes extends SentryClientKeyProps {
   readonly id: string;
   readonly dsn: string;
   readonly active: boolean;
 }
-/** The key's stable ID survives project settings and application updates. */
 export type SentryClientKey = Resource<
   "Executor.SentryClientKey",
   SentryClientKeyProps,
   SentryClientKeyAttributes
 >;
-/** Declare the public ingestion key used by one product surface. */
 export const SentryClientKey = Resource<SentryClientKey>("Executor.SentryClientKey");
 
-/** Keep API response bodies, which may contain secret DSNs, out of deployment diagnostics. */
 export class SentryProvisioningFailed extends Schema.TaggedError<SentryProvisioningFailed>()(
   "SentryProvisioningFailed",
   { operation: Schema.String, detail: Schema.Redacted(Schema.Unknown) },
@@ -69,7 +59,6 @@ const protect = (operation: string) =>
     (detail: unknown) => new SentryProvisioningFailed({ operation, detail: Redacted.make(detail) }),
   );
 
-/** Project lifecycle uses Sentry's unique slug and an explicit team association. */
 export const sentryProjectProvider = () =>
   Provider.effect(
     SentryProject,
@@ -154,7 +143,6 @@ export const sentryProjectProvider = () =>
     }),
   );
 
-/** Named-key reconciliation preserves the DSN across deploys and recovers interrupted creates. */
 export const sentryClientKeyProvider = () =>
   Provider.effect(
     SentryClientKey,
@@ -226,7 +214,6 @@ export const sentryClientKeyProvider = () =>
     }),
   );
 
-/** Resolve management authorization only for provider operations. */
 export const sentryProviderCredentials = <A, E, R>(providers: Layer.Layer<A, E, R | Credentials>) =>
   providers.pipe(
     Layer.provide(

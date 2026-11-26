@@ -198,7 +198,6 @@ export default defineApp({user: { accounts:{service} }},async()=>({tools: router
         yield* browser.use("Reopen the client fields", (page) =>
           page.getByRole("link", { name: "Update client details", exact: true }).click(),
         );
-        // Pasted secrets often carry surrounding whitespace; the issuer compares secrets exactly.
         yield* browser.use("Correct the client and finish connecting", (page) =>
           page
             .getByLabel("Client ID", { exact: true })
@@ -218,14 +217,11 @@ export default defineApp({user: { accounts:{service} }},async()=>({tools: router
               }),
             ),
         );
-        // Connecting from the app linked the new account to it.
         const linked = yield* linkedAccountIds(actors.owner, `${prefix}/apps/${app.id}`);
         expect(linked).toHaveLength(1);
         savedAccount = linked[0];
         expect(savedAccount).toBeDefined();
-        // A client entered for one account signs in that account only; nobody else is offered it.
         expect(yield* setup()).toEqual({ mode: "client-required", clients: [] });
-        // A reconnect without a client choice keeps the client the account's grant holds.
         const reconnectStart = () =>
           Effect.gen(function* () {
             const started = yield* body(
@@ -261,8 +257,6 @@ export default defineApp({user: { accounts:{service} }},async()=>({tools: router
             },
           ),
         );
-        // A client registered for the service is another one to sign in with, but a reconnect still
-        // keeps the account's own. The service publishes no metadata, so its token endpoint names it.
         const registered = yield* body(
           Registered,
           yield* api.request(actors.owner, "POST", `${prefix}/oauth-clients`, {
@@ -278,8 +272,6 @@ export default defineApp({user: { accounts:{service} }},async()=>({tools: router
         yield* browser.use("Open the existing account for reconnection", (page) =>
           page.goto(`/org/${actors.organization.slug}/connections/${reconnect.id}`),
         );
-        // A reconnect uses the account's own client without asking; replacing it, with a
-        // registered client or entered details, stays under Advanced.
         expect(
           yield* browser.use("A reconnect offers no client choice up front", (page) =>
             page
@@ -344,7 +336,6 @@ export default defineApp({user: { accounts:{service} }},async()=>({tools: router
                 .waitFor({ state: "visible" }),
             ),
         );
-        // The rejected replacement never reached the account's grant.
         expect(yield* reconnectStart()).toBe(recoveryClients.original.clientId);
         yield* browser.use("Correct the replacement client", (page) =>
           page
@@ -367,7 +358,6 @@ export default defineApp({user: { accounts:{service} }},async()=>({tools: router
             )
             .then(() =>
               page
-                // A reconnect through the app returns to that app's accounts.
                 .waitForURL(
                   (url) =>
                     url.pathname === `/org/${actors.organization.slug}/apps/${app.id}` &&
@@ -380,7 +370,6 @@ export default defineApp({user: { accounts:{service} }},async()=>({tools: router
                 ),
             ),
         );
-        // Reconnecting with a replacement client keeps the same account linked.
         expect(yield* linkedAccountIds(actors.owner, `${prefix}/apps/${app.id}`)).toEqual([
           savedAccount,
         ]);

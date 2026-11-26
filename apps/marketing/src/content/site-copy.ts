@@ -1,16 +1,3 @@
-// ---------------------------------------------------------------------------
-// Shared marketing copy. One source for text that must read the same in the
-// HTML homepage and in the machine-readable Markdown endpoints
-// (`/index.md`, `/setup-prompt.md`, `/pricing.md`).
-//
-// Import from here rather than duplicating strings: the homepage renders the
-// human view, the endpoints render the agent view, and both must stay in step.
-// ---------------------------------------------------------------------------
-
-/**
- * Copied by the hero CTA and served verbatim at `/setup-prompt.md`.
- * Helps an agent turn the user's need into a small, useful Executor app.
- */
 export const setupPrompt = (origins: {
   readonly site: string;
   readonly app: string;
@@ -28,23 +15,17 @@ Explain what the app can read or change, and ask before actions that send, delet
 
 Docs: ${origins.site}/docs`;
 
-/** Canonical GitHub repository. */
 export const GITHUB_URL = "https://github.com/UsefulSoftwareCo/executor";
 
-/** One-line description of the product, used as the Markdown tagline. */
 export const tagline = "Everything you use, connected in one place.";
 
-/** The hero's third beat: what you do once it is all connected. */
 export const taglineBuild = "Then build whatever you need on top.";
 
-/** Shared introduction for metadata and Markdown. */
 export const introduction =
   "Executor connects the tools you use to the agent you already use, through one MCP server. Then your agent can build whatever you need on top: custom tools, automations, storage, and interfaces.";
 
-/** The hero subhead's lead sentence. */
 export const heroLead = "Executor is your agents' cloud.";
 
-/** What Executor holds, in the order the hero subhead lists them. */
 export const heroItems = [
   { label: "connectors" },
   { label: "skills" },
@@ -54,13 +35,11 @@ export const heroItems = [
   { label: "computer", comingSoon: true },
 ] as const;
 
-/** The subhead as plain text, listing only what ships today. */
 export const heroSubhead = `${heroLead} All of your ${heroItems
   .filter((item) => !("comingSoon" in item))
   .map((item) => item.label)
   .join(", ")}, all in one place.`;
 
-/** Capabilities an app can include, with tools first. */
 export const appParts = [
   { title: "Tools", body: "Call anything, it's just JavaScript." },
   { title: "Skills", body: "Give your agent instructions it can use again." },
@@ -70,10 +49,6 @@ export const appParts = [
   { title: "Workflows", body: "Durable work across multiple steps." },
 ] as const;
 
-/**
- * The homepage teaches the tagline one clause at a time: everything you use,
- * connected in one place, then built on.
- */
 export const homepageStory = {
   everything: {
     title: "Everything you use.",
@@ -96,7 +71,6 @@ export const homepageStory = {
   },
 } as const;
 
-/** One service, extended a step at a time. The homepage animates through it. */
 export const gmailLadder = [
   {
     piece: "Tools",
@@ -130,7 +104,6 @@ export const gmailLadder = [
   },
 ] as const;
 
-/** Short examples beyond Gmail, each naming the pieces it uses. */
 export const moreExamples = [
   {
     prompt: "Every three hours, copy new Stripe customers into Notion.",
@@ -158,7 +131,6 @@ export const moreExamples = [
   },
 ] as const;
 
-/** The questions people ask first, answered plainly. */
 export const differences: ReadonlyArray<{ readonly question: string; readonly answer: string }> = [
   {
     question: "Is it an agent?",
@@ -182,13 +154,10 @@ export const differences: ReadonlyArray<{ readonly question: string; readonly an
   },
 ];
 
-/** Plain definition shared by the illustrated section and Markdown overview. */
 export const appDefinition = homepageStory.apps.body;
 
-/** Cache-Control for the Markdown endpoints. Short, so copy edits land fast. */
 export const MARKDOWN_CACHE_CONTROL = "public, max-age=300";
 
-/** Content-Type for the Markdown endpoints. */
 export const MARKDOWN_CONTENT_TYPE = "text/markdown; charset=utf-8";
 
 export type PricingTier = {
@@ -200,10 +169,6 @@ export type PricingTier = {
   readonly cta: string;
 };
 
-/**
- * Pricing tiers. The `/pricing` page and `/pricing.md` both read this list,
- * so it is the single source of truth.
- */
 export const pricingTiers = (appOrigin: string): ReadonlyArray<PricingTier> => [
   {
     name: "Free",
@@ -244,7 +209,6 @@ export type Capability = {
   readonly comingSoon?: boolean;
 };
 
-/** Benefits shared by the homepage and the Markdown overview. */
 export const capabilities: ReadonlyArray<Capability> = [
   {
     title: "Start with what you have.",
@@ -266,7 +230,6 @@ export const capabilities: ReadonlyArray<Capability> = [
 
 export type Faq = { readonly question: string; readonly answer: string };
 
-/** Product questions for the machine-readable overview. */
 export const faqs: ReadonlyArray<Faq> = [
   {
     question: "What is personal software?",
@@ -295,7 +258,6 @@ export const faqs: ReadonlyArray<Faq> = [
   },
 ];
 
-/** Response helper shared by the Markdown endpoints. */
 export const markdownResponse = (body: string): Response =>
   new Response(body, {
     headers: {

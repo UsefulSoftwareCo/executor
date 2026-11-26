@@ -16,7 +16,6 @@ layer(HostedLive, { excludeTestServices: true })("Live OpenAPI example ids", (it
       Effect.gen(function* () {
         const fixture = yield* openapiExampleIdsFixture;
 
-        // The examples are listed as the description wrote them, ids included.
         const listed = yield* fixture.tools;
         expect(listed.status).toBe(200);
         const [tool] = (yield* body(Listing, listed)).items;
@@ -28,7 +27,6 @@ layer(HostedLive, { excludeTestServices: true })("Live OpenAPI example ids", (it
           },
         });
 
-        // Their repeated id does not stop the input from validating, so the call reaches the API.
         const called = yield* fixture.call({ incident: "PINC1", filter: "open" });
         expect(called.status, JSON.stringify(called.body)).toBe(200);
         expect(yield* body(Schema.Json, called)).toEqual({ incident: "PINC1", filter: "open" });

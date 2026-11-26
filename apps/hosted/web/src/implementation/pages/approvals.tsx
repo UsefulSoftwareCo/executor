@@ -3,9 +3,13 @@ import { ApprovalsPage as SharedApprovalsPage } from "@executor-js/ui/dashboard/
 import { BrowserApprovalCard } from "@executor-js/ui/dashboard/browser-approval";
 import { pendingApprovalsAtom, scheduledReviewAtoms } from "../../contracts/schedules.ts";
 import { HostedFailure } from "../components/dashboard-bindings.tsx";
-import { useOrganizationRoute } from "../components/organization.tsx";
+import { type OrganizationPageReads, useOrganizationRoute } from "../components/organization.tsx";
 import { ScheduledApprovalFrame } from "../components/page-pending.tsx";
-/** Pending runs are reviewed by a signed-in human through the product's normal auth boundary. */
+
+export const approvalsPageReads: OrganizationPageReads = (organization) => [
+  pendingApprovalsAtom(organization),
+];
+
 export function ApprovalsPage() {
   const { organization, slug: organizationSlug } = useOrganizationRoute();
   return (
@@ -23,7 +27,6 @@ export function ApprovalsPage() {
     />
   );
 }
-/** Scheduled answers continue in the background; no MCP client is required. */
 export function ScheduledApprovalPage({ runId }: { readonly runId: string }) {
   const { organization, slug: organizationSlug } = useOrganizationRoute();
   return (

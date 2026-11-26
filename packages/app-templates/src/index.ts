@@ -1,4 +1,3 @@
-/** Effect-native source generators. The host owns catalog lookup, auth discovery and deploying. */
 export { TemplateError, TemplateErrorCode } from "./contracts/templates.ts";
 export {
   generateMcpSource,

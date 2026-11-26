@@ -2,7 +2,6 @@ import { useRef, useState, type ReactNode } from "react";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "./tooltip.tsx";
 import { cn } from "../lib/utils.ts";
 
-/** Explain an already disabled control on hover, keyboard focus, or tap. */
 export function DisabledTooltip({
   reason,
   children,
@@ -20,8 +19,6 @@ export function DisabledTooltip({
       <Tooltip
         open={open}
         onOpenChange={(next) => {
-          // Focusing an offscreen tab scrolls it into view. Keep its explanation
-          // open through that scroll; blur, Escape, and outside clicks dismiss it.
           if (next || !trigger.current?.matches(":focus")) setOpen(next);
         }}
       >

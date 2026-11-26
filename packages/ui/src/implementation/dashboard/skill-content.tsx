@@ -5,7 +5,6 @@ import { Code } from "./code.tsx";
 import { MarkdownCodeBlock } from "./markdown.tsx";
 import { markdownProse } from "./markdown-prose.ts";
 
-/** Render a skill document and resolve links to its other files. */
 export function SkillContent({
   document,
   onFile,

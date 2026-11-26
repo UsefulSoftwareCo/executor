@@ -38,13 +38,13 @@ interface Skill {
 type Creating = { readonly kind: "skill" } | { readonly kind: "file"; readonly skill: string };
 type Selection = { readonly skill: string; readonly file: string };
 
-/** Working source is editable before deploying; app-provided skills remain available read-only. */
 export function SkillWorkspace<E>({
   app,
   source,
   catalog,
   editing,
   Failure,
+  status,
   onCommitted,
 }: {
   readonly app: App;
@@ -52,6 +52,7 @@ export function SkillWorkspace<E>({
   readonly catalog?: AppSkillBundle;
   readonly editing: SkillEditing<E>;
   readonly Failure: ComponentType<FailureProps<E>>;
+  readonly status: ReactNode;
   readonly onCommitted: (result: Committed) => void;
 }) {
   const [selection, setSelection] = useState<Selection>();
@@ -95,7 +96,6 @@ export function SkillWorkspace<E>({
     setSelection({ skill, file });
   };
   const create = (next: Creating) => {
-    // Opening the form does not replace the current draft.
     setCreating(next);
   };
   const header = (actions?: ReactNode) => (
@@ -108,7 +108,10 @@ export function SkillWorkspace<E>({
         </span>
         {file !== undefined && <SkillSize contents={[file.content]} className="shrink-0" />}
       </div>
-      <div className="ml-auto flex items-center gap-1">{actions}</div>
+      <div className="ml-auto flex items-center gap-1">
+        {status}
+        {actions}
+      </div>
     </div>
   );
   return (

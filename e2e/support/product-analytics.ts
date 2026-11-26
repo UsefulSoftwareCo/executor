@@ -1,4 +1,3 @@
-/** Decode the real browser transport at the external PostHog boundary. */
 import type { Page } from "playwright";
 import { driver, type DriverFailed } from "./platform.ts";
 import { Effect, Schema } from "effect";
@@ -28,7 +27,25 @@ const unpack = (value: Schema.Json): Effect.Effect<Schema.Json, DriverFailed> =>
     }
     return value;
   });
-/** Intercept only the synthetic ingestion path; the bundled SDK recorder runs in the product page. */
+const remoteConfig =
+  'window._POSTHOG_REMOTE_CONFIG = {"synthetic-ingestion-key": {config: {hasFeatureFlags: false, sessionRecording: {endpoint: "/s/", sampleRate: 1, minimumDurationMilliseconds: 0}}}};';
+const compressedRemoteConfig =
+  'window._POSTHOG_REMOTE_CONFIG = {"synthetic-ingestion-key": {config: {hasFeatureFlags: false, supportedCompression: ["gzip-js"], sessionRecording: {endpoint: "/s/", sampleRate: 1, minimumDurationMilliseconds: 0}}}};';
+const flagsResponse = {
+  featureFlags: {},
+  sessionRecording: { endpoint: "/s/", sampleRate: 1, minimumDurationMilliseconds: 0 },
+};
+
+export const enableSessionRecording = (page: Page) =>
+  page.route("**/api/0123456789abcdef/**", (route) => {
+    const path = new URL(route.request().url()).pathname;
+    if (path.endsWith("/config.js"))
+      return route.fulfill({ contentType: "application/javascript", body: compressedRemoteConfig });
+    if (path.includes("/flags") || path.includes("/decide"))
+      return route.fulfill({ json: { ...flagsResponse, supportedCompression: ["gzip-js"] } });
+    return route.fallback();
+  });
+
 export const captureBrowserAnalytics = (page: Page) => {
   const events: Schema.Json[] = [];
   const failures: string[] = [];
@@ -45,13 +62,12 @@ export const captureBrowserAnalytics = (page: Page) => {
             yield* driver("respond with public SDK configuration", () =>
               route.fulfill({
                 contentType: "application/javascript",
-                body: 'window._POSTHOG_REMOTE_CONFIG = {"synthetic-ingestion-key": {config: {hasFeatureFlags: false, sessionRecording: {endpoint: "/s/", sampleRate: 1, minimumDurationMilliseconds: 0}}}};',
+                body: remoteConfig,
               }),
             );
             return;
           }
           if (path.includes("/static/")) {
-            // The dashboard bundles its recorder; ad blockers reject SDK script names like posthog-recorder.js.
             yield* driver("reject SDK script", () =>
               route.fulfill({ status: 404, body: "Blocked SDK script" }),
             );
@@ -59,17 +75,7 @@ export const captureBrowserAnalytics = (page: Page) => {
           }
           if (path.includes("/flags") || path.includes("/decide") || path.includes("/array/")) {
             yield* driver("respond to ingestion", () =>
-              route.fulfill({
-                json: {
-                  featureFlags: {},
-                  sessionRecording: {
-                    endpoint: "/s/",
-                    sampleRate: 1,
-                    minimumDurationMilliseconds: 0,
-                  },
-                  supportedCompression: [],
-                },
-              }),
+              route.fulfill({ json: { ...flagsResponse, supportedCompression: [] } }),
             );
             return;
           }
@@ -97,7 +103,6 @@ export const captureBrowserAnalytics = (page: Page) => {
     .then(() => ({ events, failures, requests }));
 };
 
-/** Rebuild the captured browser transport in rrweb, without the live page's CSS or session. */
 export const renderBrowserReplay = (page: Page, snapshots: readonly Schema.Json[]) => {
   const snapshotData = Schema.decodeUnknownSync(
     Schema.Struct({

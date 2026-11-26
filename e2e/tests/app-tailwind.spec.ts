@@ -1,4 +1,3 @@
-/** Raw Tailwind source deploys through the product and styles real React components. */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Schema } from "effect";
 import { randomUUID } from "node:crypto";

@@ -53,13 +53,11 @@ const Failure = Schema.Struct({
   }),
 });
 
-/** Executor's recovery for an API's declared error that states no recovery of its own. */
 const declaredRecovery = (code: string, status: number) => ({
   action: "Read the API’s error to determine the next step.",
   instructions: `An API the app calls returned an error its OpenAPI document declares (${code}, HTTP ${status}). Read its message to decide whether the input, the account's access or the API is at fault.`,
 });
 
-/** The running product's published memory and OAuth error schemas, which the fixture API uses. */
 const publishedErrorSchemas = Effect.gen(function* () {
   const api = yield* Api,
     actors = yield* Actors;
@@ -106,7 +104,6 @@ layer(HostedLive, { excludeTestServices: true })("OpenAPI errors", (it) => {
         }
         const origin = yield* openapiErrorUpstream(memory, oauthFailure);
         const prefix = `/api/organizations/${actors.organization.id}/apps`;
-        // Hosted authorization deliberately hides apps outside the caller's accessible set.
         const denied = yield* api.request(
           actors.owner,
           "GET",
@@ -165,7 +162,6 @@ layer(HostedLive, { excludeTestServices: true })("OpenAPI errors", (it) => {
         expect(siteless(error.message)).toBe(
           `BuildMemoryExceeded (HTTP 422): ${openapiMemoryMessage} Recovery: ${openapiMemoryRecovery.action} Retryable (unchanged call): no.`,
         );
-        // A declared 4xx error is not one a repeat of the same call can fix.
         expect(error.response?.retryable).toBe(false);
         expect(JSON.stringify(known)).not.toContain(openapiSecretMarker);
         const dynamic = yield* invoke("dynamic");
@@ -196,8 +192,6 @@ layer(HostedLive, { excludeTestServices: true })("OpenAPI errors", (it) => {
           },
         });
         expect(JSON.stringify(extras)).not.toContain(openapiSecretMarker);
-        // A malformed optional recovery keeps the declared error and is not forwarded; the agent
-        // gets Executor's own explanation of the declared error instead.
         const extrasError = (yield* Schema.decodeUnknownEffect(Failure)(extras.structuredContent))
           .execution.error;
         expect(extrasError.response?.recovery).toEqual(declaredRecovery("Conflict", 422));
@@ -222,7 +216,6 @@ layer(HostedLive, { excludeTestServices: true })("OpenAPI errors", (it) => {
             },
           },
         });
-        // A declared 403 body explains the refusal instead of the generic provider rejection.
         const denied403 = yield* invoke("declared-forbidden");
         yield* evidence.json("openapi-declared-403.json", denied403);
         const deniedError = (yield* Schema.decodeUnknownEffect(Failure)(
@@ -239,13 +232,11 @@ layer(HostedLive, { excludeTestServices: true })("OpenAPI errors", (it) => {
           retryable: false,
         });
         expect(JSON.stringify(denied403)).not.toContain("We could not identify the cause");
-        // Rate-limit headers remain authoritative even when the body matches a declared error.
         const limited403 = (yield* Schema.decodeUnknownEffect(Failure)(
           (yield* invoke("declared-limited")).structuredContent,
         )).execution.error;
         expect(limited403.response).toMatchObject({ code: "AppProviderFailed", status: 502 });
         expect(limited403.message).toContain("limiting requests");
-        // A declared 401 keeps the credential refusal and quotes the service's own explanation.
         const session401 = (yield* Schema.decodeUnknownEffect(Failure)(
           (yield* invoke("declared-unauthorized")).structuredContent,
         )).execution.error;
@@ -253,8 +244,6 @@ layer(HostedLive, { excludeTestServices: true })("OpenAPI errors", (it) => {
         expect(session401.response?.message).toContain(
           `The service reported SessionExpired: ${JSON.stringify(openapiSessionMessage)}.`,
         );
-        // A Bearer challenge's error takes precedence, so the declared body is not read: a body
-        // that never finishes does not hold the failure for the 2-second error-body read bound.
         const challengedAt = yield* Clock.currentTimeMillis;
         const challenged = yield* invoke("challenged-stalled");
         const challengedMs = (yield* Clock.currentTimeMillis) - challengedAt;
@@ -267,7 +256,6 @@ layer(HostedLive, { excludeTestServices: true })("OpenAPI errors", (it) => {
           `invalid_token: ${JSON.stringify(openapiChallengeMessage)}.`,
         );
         expect(challengedMs).toBeLessThan(2_000);
-        // Input validation names the failing field and expected type without echoing the value.
         const invalidInput = yield* client.use(
           "Call the OpenAPI tool with invalid input",
           (client, signal) =>
@@ -291,8 +279,6 @@ layer(HostedLive, { excludeTestServices: true })("OpenAPI errors", (it) => {
         );
         expect(inputError.response).toMatchObject({ code: "InputInvalid", status: 422 });
         expect(JSON.stringify(invalidInput)).not.toContain(openapiSecretMarker);
-        // A request body that fits none of its media types names each alternative, the key that
-        // selects one, and what the closest alternative needs, without the declared media types.
         const invalidBody = yield* client.use(
           "Call the OpenAPI tool with a request body for no media type",
           (client, signal) =>
@@ -313,15 +299,11 @@ layer(HostedLive, { excludeTestServices: true })("OpenAPI errors", (it) => {
         const bodyError = (yield* Schema.decodeUnknownEffect(Failure)(
           invalidBody.structuredContent,
         )).execution.error;
-        // The generated tool is a mutation, and the app's code refused the input after it received
-        // the call, so the refusal leads with the instruction not to repeat the call.
         expect(siteless(bodyError.message)).toBe(
           `InputInvalid (HTTP 422): Input failed validation: input: Expected object {path, cookie?, body, contentType?} or object {path, cookie?, body, contentType}, told apart by contentType. Closest is alternative 1, whose problems follow; input.body.ids: Expected array Recovery: ${unknownOutcomeAction} Retryable (unchanged call): no.`,
         );
         expect(JSON.stringify(invalidBody)).not.toContain(openapiSecretMarker);
         expect(bodyError.message).not.toContain("application/");
-        // The discriminator's mapping picks the closest alternative, even though every alternative
-        // declares the discriminator as a plain string. Mapped values are not listed.
         const invalidPet = yield* client.use(
           "Call the OpenAPI tool with a discriminated body missing a field",
           (client, signal) =>
@@ -343,7 +325,6 @@ layer(HostedLive, { excludeTestServices: true })("OpenAPI errors", (it) => {
           `InputInvalid (HTTP 422): Input failed validation: input.body: Expected object {petType, meow, ...} or object {petType, bark, ...}, told apart by petType. Closest is alternative 2, whose problems follow; input.body.bark: Missing key. Expected boolean Recovery: ${unknownOutcomeAction} Retryable (unchanged call): no.`,
         );
         expect(petError.message.toLowerCase()).not.toContain("dog");
-        // The interpreter only exposes Error.message inside catch; its JSON envelope retains the same fields.
         const caught = yield* client.use(
           "Catch the declared API error in agent code",
           (client, signal) =>
@@ -448,8 +429,6 @@ layer(HostedLive, { excludeTestServices: true })("OpenAPI errors", (it) => {
           expect(failure.kind).toBe("ToolFailure");
           expect(JSON.stringify(result)).not.toContain(openapiSecretMarker);
           if (mode === "bad-gateway") {
-            // A service's server error says a retry may help and how far to take it, so an agent
-            // stops instead of repeating the call in a loop. It does not claim who caused it.
             expect(failure.response).toMatchObject({
               code: "AppProviderFailed",
               status: 502,
@@ -492,7 +471,6 @@ layer(HostedLive, { excludeTestServices: true })("OpenAPI errors", (it) => {
               },
             });
             expect(failure.message).toContain("Recovery:");
-            // Only the rate limit can clear by waiting; the refusals need a change first.
             expect(failure.response?.retryable).toBe(mode === "limited");
             expect(failure.response?.message).toContain(
               `(HTTP ${mode === "unauthorized" ? 401 : mode === "limited" ? 429 : 403})`,
@@ -515,8 +493,6 @@ layer(HostedLive, { excludeTestServices: true })("OpenAPI errors", (it) => {
                     : "rejected",
             });
           } else {
-            // Undeclared failures name the failed operation and response without its body, and
-            // do not claim whether the request, the service or Executor caused them.
             expect(failure.response).toMatchObject({
               code: "ToolCallFailed",
               status: 502,
@@ -536,7 +512,6 @@ layer(HostedLive, { excludeTestServices: true })("OpenAPI errors", (it) => {
             expect(failure.message).not.toContain("then retry");
           }
         }
-        // An undeclared 404 names the method and templated path, never the parameter values or body.
         const missing = yield* client.use(
           "Call an operation the API does not serve",
           (client, signal) =>
@@ -561,8 +536,6 @@ layer(HostedLive, { excludeTestServices: true })("OpenAPI errors", (it) => {
           `ToolCallFailed (HTTP 502): The app's API call failed: GET /items/{item} responded with HTTP 404 (text/plain, ${openapiSecretMarker.length} bytes), which matches no error with a message in the API's OpenAPI document. Recovery: Read the reported error and check the corresponding request or configuration. Retryable (unchanged call): no.`,
         );
         expect(JSON.stringify(missing)).not.toContain(openapiSecretMarker);
-        // The service saves the record, then fails with a server error. The call may have
-        // written, so the agent is told not to repeat it, unlike the same error on a read above.
         const records = `tools[${JSON.stringify(app.slug)}].records`;
         const created = yield* client.use(
           "Create a record the service saves before failing",
@@ -587,8 +560,6 @@ layer(HostedLive, { excludeTestServices: true })("OpenAPI errors", (it) => {
           retryable: false,
           message: "The connected service returned a server error (HTTP 502) while calling a tool.",
         });
-        // The read's bounded retry advice is quoted as a read's, never offered for a call that
-        // may have written.
         expectUnknownOutcome(
           write.response?.recovery,
           "For a call that only reads, the advice for this failure is: “Wait at least 30 seconds before trying again, at most twice.",
@@ -597,8 +568,6 @@ layer(HostedLive, { excludeTestServices: true })("OpenAPI errors", (it) => {
           `AppProviderFailed (HTTP 502): ${write.response?.message} Recovery: ${unknownOutcomeAction} Retryable (unchanged call): no.`,
         );
         expect(JSON.stringify(created)).not.toContain(openapiSecretMarker);
-        // The HTTP API records that this call may have written; the same failure of a call named a
-        // read does not. A call that names no kind stays outcome unknown whatever the catalog says.
         const writeOverHttp = yield* api.request(
           actors.owner,
           "POST",
@@ -628,7 +597,6 @@ layer(HostedLive, { excludeTestServices: true })("OpenAPI errors", (it) => {
           },
         });
         expect(readOverHttp.body).not.toHaveProperty("mayHaveWritten");
-        // A safe read shows why a repeat would be wrong: the service kept both records.
         const listed = yield* client.use(
           "Read the records after the failed writes",
           (client, signal) =>
@@ -688,7 +656,6 @@ export default defineApp({}, async () => {
             }),
           ),
         )(evaluation?.reason);
-        // The factory's own error explains why the tools could not load.
         expect(detail).toMatchObject({
           code: "AppEvaluationFailed",
           status: 502,
@@ -757,10 +724,6 @@ export default defineApp({}, async () => {
           execution: { ok: true, value: { saved: ["alpha"] } },
         });
 
-        // The service saves "beta", then refuses with its own declared error and its own advice
-        // to try again. Repeating the request would save "beta" twice, so the declared code,
-        // status and message stay, but Executor's recovery leads and the API's advice follows
-        // only quoted as the API's words, never as a step to take.
         const conflicted = yield* save("Save records the service partly saves before a conflict", [
           "beta",
           "conflict",
@@ -783,7 +746,6 @@ export default defineApp({}, async () => {
         expect(siteless(conflict.message)).toBe(
           `StoreConflict (HTTP 409): ${openapiConflictMessage} Recovery: ${unknownOutcomeAction} Retryable (unchanged call): no.`,
         );
-        // A program can read the same from a caught error.
         const caught = yield* execute(
           "Read the declared conflict from a caught error",
           `try { await ${records}.createRecords({ body: { names: ["conflict"] } }); return "saved"; } catch (error) { const { retryable, recovery } = JSON.parse(error.message); return { retryable, action: recovery.action }; }`,
@@ -792,7 +754,6 @@ export default defineApp({}, async () => {
           execution: { ok: true, value: { retryable: false, action: unknownOutcomeAction } },
         });
 
-        // A declared error without the service's own advice keeps Executor's explanation of it.
         const rejected = yield* save(
           "Save records the service partly saves before an invalid one",
           ["gamma", ""],
@@ -814,7 +775,6 @@ export default defineApp({}, async () => {
           `InvalidRecord (HTTP 422): Record names must not be empty. Recovery: ${unknownOutcomeAction} Retryable (unchanged call): no.`,
         );
 
-        // The HTTP API keeps the declared error and records that the call may have written.
         const overHttp = yield* api.request(
           actors.owner,
           "POST",
@@ -832,7 +792,6 @@ export default defineApp({}, async () => {
           recovery: { action: unknownOutcomeAction },
         });
 
-        // Every failed request saved its records before the error.
         const listed = yield* execute(
           "Read the records after the failed writes",
           `return await ${records}.listRecords({});`,

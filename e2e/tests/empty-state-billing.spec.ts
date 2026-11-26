@@ -14,9 +14,6 @@ layer(HostedLive, { excludeTestServices: true })("Billing empty state", (it) => 
           browser = yield* Browser;
         yield* browser.login(actors.owner);
         yield* browser.use("Use dark theme", (page) => page.emulateMedia({ colorScheme: "dark" }));
-        // A full page load renders billing on the server from the stage's real catalog, and the
-        // settings page reads it too. Load a page that does not read billing and navigate in the
-        // browser, so the browser makes the first read and this route answers it.
         yield* browser.use("Open apps", (page) =>
           page.goto(`/org/${actors.organization.slug}/apps`),
         );

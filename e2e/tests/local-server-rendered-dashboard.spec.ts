@@ -1,4 +1,3 @@
-/** Local dashboard pages arrive rendered and hydrate to the same markup. */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Redacted, Schema } from "effect";
 import { randomUUID } from "node:crypto";
@@ -9,8 +8,8 @@ import { connectLocalAccount } from "../support/app-accounts.ts";
 import { Target } from "../support/platform.ts";
 import { scenarios } from "../test-plan.ts";
 import { appsManifest } from "../support/apps-release.ts";
+import { noPageErrors } from "../support/page-errors.ts";
 
-/** React reports a server/browser markup difference with one of these messages or codes. */
 const hydrationFailure = /hydrat|Minified React error #(418|419|423|425)/i;
 const ProviderApp = Schema.Struct({
   app: Schema.Struct({
@@ -31,7 +30,6 @@ layer(TestLive, { excludeTestServices: true })("Local server-rendered dashboard"
           target = yield* Target,
           session = yield* api.session();
         const headers = { authorization: `Bearer ${Redacted.value(target.apiKey)}` };
-        // Agent calls carry the API key and no browser origin.
         const agent: Session = {
           ...session,
           send: (method, path, data, extra = {}) => {
@@ -83,7 +81,6 @@ export default defineApp({user: { accounts:{service} }},async()=>({tools:router(
           page.getByRole("heading", { name: /^Apps/ }).waitFor(),
         );
 
-        // Local reports errors through its logger, so any console message type can carry one.
         const failures: string[] = [];
         yield* browser.use("Watch hydration", (page) => {
           page.on("console", (message) => {
@@ -103,7 +100,6 @@ export default defineApp({user: { accounts:{service} }},async()=>({tools:router(
           ["App skills", `/apps/${app.id}?view=skills`, "greeting"],
           ["App source", `/apps/${app.id}?view=source`, "index.ts"],
           ["App versions", `/apps/${app.id}?view=versions`, "index.ts"],
-          // Links saved before versions were renamed still open them.
           ["App versions (former link)", `/apps/${app.id}?view=deployments`, "index.ts"],
           ["Accounts", "/accounts", "Rendered account"],
           ["Linked account", `/accounts?account=${account.id}`, "Rendered account"],
@@ -116,7 +112,7 @@ export default defineApp({user: { accounts:{service} }},async()=>({tools:router(
           yield* browser.use(`${label} shows its content after hydration`, (page) =>
             page.getByText(content).first().waitFor(),
           );
-          expect(failures, `${label} hydrates to the server's markup`).toEqual([]);
+          yield* noPageErrors(failures, `${label} hydrates to the server's markup`);
         }
         yield* browser.checkpoint("Local pages hydrate to their server-rendered markup");
       }),

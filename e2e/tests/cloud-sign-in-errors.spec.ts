@@ -10,7 +10,6 @@ layer(TestLive, { excludeTestServices: true })("Cloud sign-in errors", (it) => {
       context,
       Effect.gen(function* () {
         const browser = yield* Browser;
-        // Better Auth returns a refused social sign-in to the login page with only its code.
         for (const [error, message] of [
           [
             "account_not_linked",

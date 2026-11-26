@@ -1,4 +1,3 @@
-/** Organization-scoped group reads and confirmed mutations share one reconciled view. */
 import { hydrated } from "@executor-js/ui/contracts/http";
 import { revalidated } from "@executor-js/ui/contracts/refresh";
 import { Atom } from "effect/reactivity";
@@ -8,7 +7,6 @@ import type { Group, GroupInput, GroupId } from "@executor-js/hosted-server/grou
 import { acknowledge, acknowledgedQuery, upsert } from "@executor-js/ui/contracts/mutations";
 import { HostedClient } from "./api.ts";
 
-/** Keep confirmed groups visible while background reconciliation runs. */
 export const groupsAtom = Atom.family((organization: OrganizationReference) =>
   HostedClient.query("groups", "list", hydrated({ params: { organization } })).pipe(
     revalidated,
@@ -19,7 +17,6 @@ type Save = {
   readonly input: typeof GroupInput.Type;
   readonly existing: Pick<Group, "id" | "revision"> | null;
 };
-/** An edit submits its original revision; failed writes never replace local drafts. */
 export const saveGroupAtom = Atom.family((organization: OrganizationReference) =>
   HostedClient.runtime.fn((input: Save, get) =>
     Effect.flatMap(HostedClient, (client) =>
@@ -41,7 +38,6 @@ export const saveGroupAtom = Atom.family((organization: OrganizationReference) =
     ),
   ),
 );
-/** Delete only the reviewed revision and remove its row after server confirmation. */
 export const removeGroupAtom = Atom.family((organization: OrganizationReference) =>
   HostedClient.runtime.fn((group: Pick<Group, "id" | "revision">, get) =>
     Effect.flatMap(HostedClient, (client) =>

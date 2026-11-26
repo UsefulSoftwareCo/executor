@@ -32,12 +32,9 @@ import {
 import { GrantId } from "../contracts/grant.ts";
 import { authCall, parse, runAuth } from "./auth-call.ts";
 
-/** How long a person has to approve a request, and the polling interval the client starts with. */
 const requestSeconds = 600;
 const pollSeconds = 5;
-/** The most token requests one device request's client makes polling at the interval. */
 export const devicePollsPerRequest = requestSeconds / pollSeconds;
-/** Requests outlive their expiry this long so a late poll learns `expired_token`. */
 const expiredSeconds = 600;
 const deviceAuthorizationPath = "/oauth2/device-authorization";
 
@@ -48,7 +45,6 @@ const Decision = Schema.Union([
     status: Schema.Literal("approved"),
     userId: Schema.NonEmptyString,
     grant: GrantId,
-    /** The approving browser session, which tokens name as the browser flow's do. */
     sessionId: Schema.NonEmptyString,
   }),
 ]);
@@ -56,7 +52,6 @@ const DeviceRequest = Schema.Struct({
   clientId: Schema.NonEmptyString,
   resource: Schema.NonEmptyString,
   scopes: Schema.Array(Schema.String),
-  /** The user code's key, so finishing the request also forgets it. */
   userCode: Schema.NonEmptyString,
   expiresAt: Schema.Number,
   decision: Decision,
@@ -74,13 +69,11 @@ const deviceIdentifier = (key: string) => `device-code:${key}`;
 const userCodeIdentifier = (key: string) => `device-user-code:${key}`;
 const pollIdentifier = (key: string) => `device-poll:${key}`;
 
-/** Keyed so stored identifiers neither reveal nor let anyone guess the codes offline. */
 const codeKey = (ctx: GenericEndpointContext, kind: "device" | "user", code: string) =>
   authCall(() => makeSignature(`${kind}:${code}`, ctx.context.secret));
 
 const randomUserCode = () => {
   const letters: string[] = [];
-  // Reject bytes past the last whole multiple of the alphabet so every letter is equally likely.
   const limit = 256 - (256 % userCodeAlphabet.length);
   while (letters.length < userCodeLength)
     for (const byte of crypto.getRandomValues(new Uint8Array(userCodeLength)))
@@ -90,17 +83,12 @@ const randomUserCode = () => {
 };
 
 export interface DeviceAuthorizationOptions {
-  /** The browser origin that serves the verification page. */
   readonly origin: string;
-  /** The provider's options, as the token endpoint uses them. */
   readonly provider: OAuthOptions<Scope[]>;
-  /** Whether a resource is one this host issues tokens for. */
   readonly accepts: (resource: string) => boolean;
-  /** The signed-in browser user and session, refusing cross-origin and bearer requests. */
   readonly session: (
     ctx: GenericEndpointContext,
   ) => Effect.Effect<{ readonly userId: string; readonly sessionId: string }, APIError>;
-  /** Create and record the grant one approval authorizes, as consent does. */
   readonly approve: (
     ctx: GenericEndpointContext,
     request: {
@@ -110,7 +98,6 @@ export interface DeviceAuthorizationOptions {
       readonly scopes: readonly string[];
     },
   ) => Effect.Effect<GrantId, APIError>;
-  /** Withdraw a grant whose approval lost a race with another decision. */
   readonly revoke: (ctx: GenericEndpointContext, grant: GrantId) => Effect.Effect<void, APIError>;
 }
 
@@ -126,7 +113,6 @@ export const deviceAuthorizationPlugin = (settings: DeviceAuthorizationOptions) 
             ),
       ),
     );
-  /** The request a device code names, with the row it was read from. */
   const read = (ctx: GenericEndpointContext, key: string) =>
     find(ctx, deviceIdentifier(key)).pipe(
       Effect.flatMap(
@@ -140,7 +126,6 @@ export const deviceAuthorizationPlugin = (settings: DeviceAuthorizationOptions) 
         }),
       ),
     );
-  /** The request a typed user code names. */
   const locate = (ctx: GenericEndpointContext, input: string) =>
     Effect.gen(function* () {
       const code = normalizeUserCode(input);
@@ -150,7 +135,6 @@ export const deviceAuthorizationPlugin = (settings: DeviceAuthorizationOptions) 
       const found = yield* read(ctx, pointer.value.value);
       return Option.map(found, (found) => ({ ...found, key: pointer.value.value }));
     });
-  /** Compare-and-set, so concurrent decisions and redemptions cannot both win. */
   const replace = (
     ctx: GenericEndpointContext,
     row: typeof VerificationRow.Type,
@@ -209,7 +193,6 @@ export const deviceAuthorizationPlugin = (settings: DeviceAuthorizationOptions) 
         );
     });
 
-  /** The token endpoint's `urn:ietf:params:oauth:grant-type:device_code` grant. */
   const exchange = ({ ctx, provider }: OAuthExtensionGrantHandlerInput) =>
     runAuth(
       Effect.gen(function* () {
@@ -242,7 +225,6 @@ export const deviceAuthorizationPlugin = (settings: DeviceAuthorizationOptions) 
           yield* forget(ctx, key, request);
           return yield* Effect.fail(oauthError("access_denied", "The request was denied."));
         }
-        // Single use: only the poll that consumes the approved row receives tokens.
         const consumed = yield* authCall(() =>
           ctx.context.internalAdapter.consumeVerificationValue(deviceIdentifier(key)),
         );
@@ -365,7 +347,6 @@ export const deviceAuthorizationPlugin = (settings: DeviceAuthorizationOptions) 
             }),
           ),
       ),
-      /** The pending request a user code names, for the signed-in person reviewing it. */
       getDeviceRequest: createAuthEndpoint(
         "/device/request",
         { method: "GET", requireHeaders: true },
@@ -392,10 +373,6 @@ export const deviceAuthorizationPlugin = (settings: DeviceAuthorizationOptions) 
             }),
           ),
       ),
-      /**
-       * Approve or deny a request. Approval creates the grant for the organization the page sends,
-       * exactly as consent does; the device's next poll redeems it once.
-       */
       decideDeviceRequest: createAuthEndpoint(
         "/device/decide",
         { method: "POST", requireHeaders: true },
@@ -446,7 +423,6 @@ export const deviceAuthorizationPlugin = (settings: DeviceAuthorizationOptions) 
           ),
       ),
     },
-    // Ten guesses a minute against ten-minute codes from 20^8 make guessing a live code hopeless.
     rateLimit: [
       { pathMatcher: (path) => path === deviceAuthorizationPath, window: 60, max: 10 },
       {

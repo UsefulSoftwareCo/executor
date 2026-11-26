@@ -3,7 +3,6 @@ import { GrantId, permitsBrowserApproval } from "@executor-js/mcp-auth";
 import { localMcpBackend } from "./mcp.ts";
 import type { LocalMcpOAuth } from "./mcp-oauth.ts";
 import { invocationAccounts, type Executor } from "@executor-js/sdk/core";
-/** Browser approval access uses paired dashboard cookies, never the programmatic bearer key. */
 import {
   BrowserApprovalAddress,
   BrowserApprovalAnswer,
@@ -15,7 +14,6 @@ import { HttpServerRequest, HttpServerResponse } from "effect/http";
 import { localRequest, requestOrigin, sessionCookie, type LocalAuth } from "./auth.ts";
 import type { ServerConfig } from "../contracts/config.ts";
 
-/** Local endpoints share the execution manager with /mcp while retaining separate cookie/Origin checks. */
 export const localMcpApproval = (
   approvals: BrowserApprovals,
   auth: LocalAuth,
@@ -64,7 +62,6 @@ export const localMcpApproval = (
               accounts: invocationAccounts(view.request.invocation),
             }
           : view.request.tool;
-      // The same grant checks as the MCP route, including runs-as targets and read-only tools.
       const allowed = yield* localMcpBackend(sql, executor, grant.id, Effect.succeed(grant))
         .authorizeElicitation(tool)
         .pipe(

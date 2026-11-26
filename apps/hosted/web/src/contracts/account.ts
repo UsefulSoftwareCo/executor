@@ -6,7 +6,6 @@ import { observeBrowserUsage } from "./product-analytics.ts";
 import { accountOperations, authCallOptions, sessionAtom, type AuthCallOptions } from "./auth.ts";
 import { BrowserAtoms } from "./telemetry.ts";
 
-/** Safe account errors; raw auth errors are not rendered. */
 export class AccountFailed extends Schema.TaggedError<AccountFailed>()("AccountFailed", {
   message: Schema.String,
 }) {}
@@ -47,7 +46,6 @@ const request = <A>(
     Effect.withSpan(`ui.account.${operation}`),
   );
 
-/** Rename, then show the new name everywhere the session is displayed. */
 export const renameUserAtom = BrowserAtoms.fn((name: string, get) =>
   request("rename", (options) => accountOperations(options).rename(name)).pipe(
     Effect.tap(() =>
@@ -61,7 +59,6 @@ export const renameUserAtom = BrowserAtoms.fn((name: string, get) =>
   ),
 );
 
-/** A signed-in browser or client; the token is kept only to address a revocation. */
 export const SessionSummary = Schema.Struct({
   id: Schema.String,
   token: Schema.RedactedFromValue(Schema.NonEmptyString),
@@ -81,7 +78,6 @@ export const Sessions = Schema.Struct({
 });
 export type Sessions = typeof Sessions.Type;
 
-/** Every active session of the signed-in user, newest first, with this browser's marked. */
 const sessionsQuery = BrowserAtoms.atom((get) => {
   const session = get(sessionAtom);
   if (!AsyncResult.isSuccess(session) || session.value === null)
@@ -106,7 +102,6 @@ const sessionsQuery = BrowserAtoms.atom((get) => {
 }).pipe(revalidated);
 export const sessionsAtom = acknowledgedQuery(sessionsQuery);
 
-/** Sign one other device out; its row leaves the list once the server confirms. */
 export const revokeSessionAtom = Atom.family((sessionId: string) =>
   BrowserAtoms.fn((token: string, get) =>
     request("revokeSession", (options) => accountOperations(options).revokeSession(token)).pipe(
@@ -123,7 +118,6 @@ export const revokeSessionAtom = Atom.family((sessionId: string) =>
   ),
 );
 
-/** Keep this browser signed in and end every other session. */
 export const revokeOtherSessionsAtom = BrowserAtoms.fn((_: void, get) =>
   request("revokeOtherSessions", (options) =>
     accountOperations(options).revokeOtherSessions(),
@@ -140,7 +134,6 @@ export const revokeOtherSessionsAtom = BrowserAtoms.fn((_: void, get) =>
   ),
 );
 
-/** Password sign-in hosts only; the server verifies the current password. */
 export const changePasswordAtom = BrowserAtoms.fn(
   (input: { readonly currentPassword: string; readonly newPassword: string }) =>
     request("changePassword", (options) => accountOperations(options).changePassword(input)).pipe(

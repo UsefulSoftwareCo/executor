@@ -14,7 +14,6 @@ import { AppIcon, Empty, Failure, LoadingRows } from "../components/common.tsx";
 import { Button } from "@executor-js/ui/components/button";
 import { Link, useNavigate } from "@tanstack/react-router";
 
-/** Confirm a specific app on its own page; deletion never includes saved account credentials. */
 export function DeleteAppPage({ id }: { readonly id: AppId }) {
   return (
     <div className="page setup-page w-full shrink-0 [padding:24px_24px_48px] my-0 mx-auto max-[1000px]:[padding:20px_20px_40px] max-w-212.5 max-[740px]:[padding:18px_max(16px,_env(safe-area-inset-right))_max(32px,_env(safe-area-inset-bottom))_max(16px,_env(safe-area-inset-left))]">

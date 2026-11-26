@@ -1,9 +1,3 @@
-/**
- * Removing an app removes its event subscriptions. A client that subscribes again by the same
- * name after the app was re-created under that name gets a subscription bound to the new app,
- * with the same id, and receives the new app's events. A caller who can no longer see a
- * subscription's app is told its event does not exist.
- */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Schema } from "effect";
 import { randomUUID } from "node:crypto";
@@ -60,7 +54,6 @@ layer(HostedLive, { excludeTestServices: true })("MCP event app removal", (it) =
           );
           expect(removed.status, JSON.stringify(removed.body)).toBe(200);
 
-          // The same name gives the same slug, so the event name the client holds resolves again.
           const created: { app?: string } = {};
           yield* Effect.addFinalizer(() =>
             Effect.gen(function* () {
@@ -140,7 +133,6 @@ layer(HostedLive, { excludeTestServices: true })("MCP event app removal", (it) =
               delivery: { mode: "webhook", url: callbackUrl, secret: secrets[0] },
               ttlMs: 60 * 60_000,
             });
-          // Apps start private to their creator; sharing lets the administrator subscribe.
           const share = (kind: "everyone" | "private") =>
             Effect.gen(function* () {
               const access = yield* body(

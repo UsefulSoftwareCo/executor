@@ -9,7 +9,6 @@ import { appsManifest } from "../support/apps-release.ts";
 
 const App = Schema.Struct({ id: Schema.String });
 
-/** MCP servers often namespace every tool with their own name, repeating the router's key. */
 const source = `import { defineApp, object, query, router } from "apps";
 const tool = (description: string) => query({ description, input: object({}) }, async () => "ok");
 export default defineApp({}, async () => ({
@@ -61,7 +60,6 @@ layer(HostedLive, { excludeTestServices: true })("Tool tree prefixes", (it) => {
             .locator("button[aria-expanded]")
             .allInnerTexts(),
         );
-        // The repeated prefix does not become a second Planetscale group; List groups directly.
         expect(groups.map((text) => text.replace(/\s+/g, " ").trim())).toEqual([
           "Cloudflare 2",
           "D1 2",

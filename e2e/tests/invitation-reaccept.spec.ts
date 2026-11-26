@@ -1,4 +1,3 @@
-/** Opening an invitation link again after joining must not report a failed organization update. */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Schema } from "effect";
 import { Api, body } from "../support/api.ts";
@@ -82,8 +81,12 @@ layer(HostedLive, { excludeTestServices: true })("Invitation reaccept", (it) => 
         );
         expect(access.status).toBe(200);
         yield* browser.checkpoint("Joined the organization");
+        expect(
+          (yield* api.request(actors.owner, "POST", "/api/auth/organization/cancel-invitation", {
+            invitationId: invitation,
+          })).status,
+        ).toBe(400);
 
-        // The recipient opens the same link again, as from the email or the back button.
         const reopened = yield* accept("Second visit", invitation);
         yield* browser.checkpoint("Reopened an accepted invitation");
         expect(reopened).toBe("already a member");

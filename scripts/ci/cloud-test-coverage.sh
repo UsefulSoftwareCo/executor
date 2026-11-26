@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Summarizes which merges a "Cloud tests on main" run tests. The baseline is the
 # nearest ancestor of SHA whose run reached the deployed scenarios, shown by its
-# deployed-neon-results artifact. A run that failed during checkout, install or
+# deployed-<database>-results artifact (neon before November 13, 2026, planetscale since). A run that failed during checkout, install or
 # deploy, or that was replaced while pending, tested nothing and is not a baseline.
 #
 # Inputs: REPO (owner/name) and SHA (the commit under test). Writes Markdown to
@@ -40,7 +40,8 @@ while IFS=$'\t' read -r id sha conclusion url; do
   ancestry=$(api "repos/$REPO/compare/$sha...$SHA?per_page=1" --jq .status) ||
     unknown "comparing ${sha:0:9} failed"
   [ "$ancestry" = ahead ] || continue
-  started=$(api "repos/$REPO/actions/runs/$id/artifacts?name=deployed-neon-results" --jq .total_count) ||
+  started=$(api "repos/$REPO/actions/runs/$id/artifacts" \
+    --jq '[.artifacts[].name | select(test("^deployed-(neon|planetscale)-results$"))] | length') ||
     unknown "reading artifacts of run $id failed"
   if [ "$started" -gt 0 ]; then
     baseline_sha=$sha
@@ -55,7 +56,7 @@ done <<< "$runs"
 
 if [ ${#not_started[@]} -gt 0 ]; then
   {
-    echo "Later runs with no record that the scenarios ran (no deployed-neon-results artifact):"
+    echo "Later runs with no record that the scenarios ran (no deployed-*-results artifact):"
     echo
     printf '%s\n' "${not_started[@]}"
     echo

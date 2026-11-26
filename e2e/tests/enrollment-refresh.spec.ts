@@ -1,4 +1,3 @@
-/** Real Cloud onboarding keeps local work through background read transitions. */
 import { expect, layer } from "@effect/vitest";
 import { Effect } from "effect";
 import { Browser } from "../support/browser.ts";

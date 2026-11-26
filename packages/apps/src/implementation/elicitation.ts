@@ -29,7 +29,6 @@ export const prepareElicitation = (input: unknown) =>
           ),
         );
         if (response.action === "accept") {
-          // MCP permits omitted content for an empty form. Required fields still fail validation.
           const fields = response.content === undefined ? {} : response.content;
           yield* Schema.decodeUnknownEffect(content)(fields).pipe(
             Effect.mapError(() => new ElicitationFailed({ reason: "invalid-response" })),
@@ -55,7 +54,6 @@ export const makeElicit = (
       Effect.gen(function* () {
         if (handler === undefined) return yield* new ElicitationFailed({ reason: "unavailable" });
         const form = yield* prepareElicitation(input);
-        // Waiting for the answer is the person's time, wherever the question came from.
         return yield* handler(form.request, signal).pipe(
           owned("person", elicitationWaitSpan),
           Effect.flatMap(form.respond),
