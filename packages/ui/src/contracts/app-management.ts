@@ -38,7 +38,6 @@ export const makeAppManagementAtoms = <R, E>(
   const published = runtime
     .atom(Effect.flatMap(client, (api) => api.published({ params })))
     .pipe(hydrate("published", params), (source) => acknowledgedQuery(source, retainFailure));
-  // A host setting rather than a permission, so it changes only with a deploy.
   const publishing = runtime
     .atom(Effect.flatMap(client, (api) => api.publishing({ params })))
     .pipe(hydrate("publishing", params), Atom.setIdleTTL("30 minutes"));

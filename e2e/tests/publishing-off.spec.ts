@@ -1,4 +1,3 @@
-/** A host that does not publish says so, refuses publications and leaves no Publish control. */
 import { expect, layer } from "@effect/vitest";
 import { Effect } from "effect";
 import { randomUUID } from "node:crypto";
@@ -21,7 +20,6 @@ layer(HostedLive, { excludeTestServices: true })("Publishing off", (it) => {
         const actors = yield* Actors;
         const browser = yield* Browser;
         const prefix = `/api/organizations/${actors.organization.id}`;
-        // Self-host reads another host's catalog and keeps none of its own, so it never publishes.
         const status = yield* api.request(actors.owner, "GET", `${prefix}/app-publications/status`);
         expect(status.status).toBe(200);
         expect(yield* body(PublishingStatus, status)).toEqual({ publishing: false });

@@ -40,7 +40,6 @@ layer(HostedLive, { excludeTestServices: true })("Member controls", (it) => {
             browser = yield* Browser;
           const prefix = `/api/organizations/${actors.organization.id}`;
           const name = `Member controls ${randomUUID().slice(0, 8)}`;
-          // A host that does not publish shows no Publish control, not even a disabled one.
           const { publishing } = yield* body(
             PublishingStatus,
             yield* api.request(actors.member, "GET", `${prefix}/app-publications/status`),

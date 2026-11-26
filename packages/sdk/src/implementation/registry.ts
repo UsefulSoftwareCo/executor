@@ -171,7 +171,6 @@ export const makeRegistry = (
     snapshot: (input) => reads.snapshot(input.name, input.commit),
     file: (input) => reads.file(input.name, input.commit, input.path),
   };
-  // An operator may turn publishing off; the stored catalog stays readable.
   const writable = "storage" in options && options.publishing !== false ? stored : undefined;
   if (writable === undefined)
     return {
@@ -181,7 +180,6 @@ export const makeRegistry = (
         status: () => Effect.succeed({ publishing: false, origin: reads.origin }),
         preview: () => Effect.fail(unsupported()),
         publish: () => Effect.fail(unsupported()),
-        // Listings published before publishing was turned off stay visible to their owner.
         owned: (input) => (stored === undefined ? Effect.succeed([]) : stored.owned(input.owner)),
         unpublish: () => Effect.fail(unsupported()),
       },

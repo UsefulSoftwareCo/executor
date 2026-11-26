@@ -281,10 +281,6 @@ const publishingPending = (
   <Skeleton className="h-9 w-26 max-[740px]:h-11" aria-label="Loading publishing access" />
 );
 
-/**
- * Render a Publish control only on a host that publishes; one that does not shows none. If the
- * check fails, the control stays and the host still refuses the publication.
- */
 export function WhenPublishing<E>({
   atoms,
   children,
@@ -294,7 +290,6 @@ export function WhenPublishing<E>({
   return AsyncResult.isFailure(result) ? children : publishingPending;
 }
 
-/** Make publishing available from every app tab; the host still owns permission. */
 export function PublishApp<E>({
   app,
   atoms,

@@ -198,7 +198,6 @@ export function AppDetailPage({
       }
       actions={
         app === undefined || access === undefined ? (
-          // Hold no place for a Publish control on a host that does not publish.
           <WhenPublishing atoms={appManagement(organization)}>
             <Skeleton className="h-9 w-28 max-[740px]:h-11" />
           </WhenPublishing>

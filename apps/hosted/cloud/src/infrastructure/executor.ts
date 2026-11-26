@@ -55,16 +55,10 @@ export const cloudEgress = Effect.gen(function* () {
   return { policy, client } satisfies HostEgress;
 });
 
-/** `off` keeps the catalog readable and refuses new publications, from people and agents alike. */
 const appPublishing = Config.Literals(["on", "off"], "EXECUTOR_APP_PUBLISHING").pipe(
   Config.withDefault("on"),
 );
 
-/**
- * The operator's OAuth clients whose credentials this stage has. Only an emulated Cloud, which E2E
- * runs against, reads test client definitions. Production requires the GitHub App and fails the
- * deploy without it.
- */
 const cloudFirstPartyOAuthClients = Effect.gen(function* () {
   const emulated = Option.isSome(yield* cloudEmulators);
   const clients = yield* firstPartyOAuthClients({
@@ -108,7 +102,6 @@ export const cloudExecutor = Effect.fn(function* (
   const workflows = yield* cloudWorkflows;
   const blobs = yield* cloudBlobs;
   const publishing = (yield* appPublishing.pipe(Effect.orDie)) === "on";
-  // App storage, hosted permission checks and Better Auth share the event's client.
   const database = (yield* InvocationDatabase).pipe(Effect.mapError(() => new StorageError()));
   const backgroundWork = yield* makeExecutionMemo(
     Effect.gen(function* () {
