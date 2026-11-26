@@ -7,7 +7,6 @@ const files = Flag.Path("files", { pathType: "either", mustExist: true }).pipe(
   Flag.withDescription("App source directory or JSON file to check without contacting a host"),
 );
 
-/** Offline metadata and source checks. readSource enforces the same limits used before uploads. */
 export const checkCommand = Command.make("check", { files }).pipe(
   Command.withDescription("Check an app's package manifest and source limits without a host"),
   Command.withExamples([

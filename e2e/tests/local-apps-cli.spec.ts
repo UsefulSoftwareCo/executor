@@ -370,7 +370,6 @@ layer(TestLive, { excludeTestServices: true })("Local apps CLI", (it) => {
         expect(checked.code, checked.stderr).toBe(0);
         expect(JSON.parse(checked.stdout)).toMatchObject({ ok: true, files: 2, issues: [] });
 
-        // An exact pin stays as tested. Offline check does not compare it with this host or rewrite it.
         const testedPin = "0.0.1-beta.90";
         yield* fs.writeFileString(`${hello}/package.json`, `${helloPackage(testedPin)}\n`);
         const preserved = yield* run(["check", "--files", "."], false, hello);
@@ -392,8 +391,6 @@ layer(TestLive, { excludeTestServices: true })("Local apps CLI", (it) => {
 
         yield* fs.writeFileString(`${hello}/package.json`, `${helloPackage(version)}\n`);
 
-        // The shared config loads the published package by specifier, checks only the root entry,
-        // and permits browser HTTP under ui/.
         const localRoot = yield* fs.makeTempDirectoryScoped({
           directory: process.cwd() + "/.local",
           prefix: "executor-apps-oxlint-",
@@ -460,8 +457,6 @@ export const approved = write({ approval: undefined }, async (ctx) => {
         yield* evidence.json("oxlint-valid.json", accepted);
         expect(accepted.code, accepted.stderr).toBe(0);
 
-        // CommonJS loader globals are rejected in server and browser helpers. A local `module`
-        // parameter remains legal, and the ordinary ESM helper controls above stay valid.
         yield* fs.writeFileString(
           `${localRoot}/src/commonjs.cjs`,
           'const direct = require("apps");\nconst loaded = module.require("apps");\nconst alias = module;\nalias.require("apps");\nvoid [direct, loaded];\n',

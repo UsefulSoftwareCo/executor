@@ -9,9 +9,6 @@ import {
 const contextTypes = new Set(["QueryContext", "MutationContext"]);
 const guardedExports = new Set([...frameworkFunctions, ...contextTypes]);
 
-// Inspect each shipped module at its imports. Rejecting escapes here also covers
-// consumers of local barrels, default exports and dynamic helper imports, without
-// reading another module or inferring what an arbitrary helper returns.
 export const plainFrameworkBindingsRule = {
   meta: {
     type: "problem",
@@ -58,7 +55,6 @@ export const plainFrameworkBindingsRule = {
             }
             for (const reference of variable.references) {
               let value = reference.identifier;
-              // A type query observes the signature; it cannot forward the function.
               if (value.parent?.type === "TSTypeQuery") continue;
               while (
                 value.parent?.expression === value &&

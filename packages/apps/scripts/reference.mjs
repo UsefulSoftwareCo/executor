@@ -16,7 +16,6 @@ const modules = {
   "./openapi": "integrations.md",
   "./skills": "tools.md",
 };
-/** Host and authoring utility subpaths that do not describe the app runtime API. */
 const hostModules = new Set([
   "./contracts",
   "./host",

@@ -107,8 +107,6 @@ export function createBindings(context) {
     return null;
   }
 
-  // Framework identities have one supported source. The plain-bindings rule rejects
-  // escaping these imports, so helpers never need a second binding resolver.
   function resolveSymbol(expression) {
     const node = unwrapExpression(expression);
     if (node?.type !== "Identifier") return null;
