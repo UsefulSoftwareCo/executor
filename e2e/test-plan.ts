@@ -4572,7 +4572,8 @@ export const scenarios = plan({
   catalogOAuthClients: {
     fixtures: "actors",
     file: "catalog-oauth-clients.spec.ts",
-    title: "Reviewed catalog OAuth clients preserve personal choices and refuse mismatched providers",
+    title:
+      "Reviewed catalog OAuth clients preserve personal choices and refuse mismatched providers",
     targets: {
       "self-host": scheduled,
       cloud: na("Restarts a runner-owned product with optional client credentials."),

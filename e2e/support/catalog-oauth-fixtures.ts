@@ -1,4 +1,3 @@
-/** Public catalog declarations used as independent inputs to the hosted OAuth scenarios. */
 export const catalogOAuthFixtures = [
   {
     id: "NOTION",

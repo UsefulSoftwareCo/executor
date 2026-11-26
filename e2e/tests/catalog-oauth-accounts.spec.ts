@@ -1,4 +1,3 @@
-/** Canonical eligibility is covered separately; only issuer URLs and placement change here. */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Schema } from "effect";
 import { FetchHttpClient, HttpClient } from "effect/http";
@@ -12,10 +11,7 @@ import { connectionsPath } from "../support/app-accounts.ts";
 import type { OperatorSettings } from "../support/managed-server.ts";
 import { oauthSetupIssuer } from "../support/oauth-setup-issuer.ts";
 import { serverControl } from "../support/server-control.ts";
-import {
-  catalogOAuthFixtures,
-  catalogOAuthCallback,
-} from "../support/catalog-oauth-fixtures.ts";
+import { catalogOAuthFixtures, catalogOAuthCallback } from "../support/catalog-oauth-fixtures.ts";
 import { scenarios } from "../test-plan.ts";
 
 const Redirect = Schema.Struct({ authorizationUrl: Schema.String, redirectUri: Schema.String });
@@ -58,7 +54,6 @@ layer(HostedLive, { excludeTestServices: true })("Catalog OAuth accounts", (it) 
                 authorizationUrl: `${issuer.origin}/authorize`,
                 tokenUrl: `${issuer.origin}/token`,
               };
-              // The existing operator fixture seam retains the vendor's format, auth and scopes.
               yield* restartWith({
                 EXECUTOR_OAUTH_CALLBACK_URL: catalogOAuthCallback,
                 EXECUTOR_TEST_OAUTH_CLIENT_DEFINITIONS: JSON.stringify([
@@ -129,10 +124,13 @@ layer(HostedLive, { excludeTestServices: true })("Catalog OAuth accounts", (it) 
                 });
                 const callback = yield* Effect.scoped(
                   Effect.gen(function* () {
-                    const consent = yield* HttpClient.withScope(http).get(redirect.authorizationUrl);
+                    const consent = yield* HttpClient.withScope(http).get(
+                      redirect.authorizationUrl,
+                    );
                     expect(consent.status).toBe(302);
                     const location = consent.headers.location;
-                    if (location === undefined) return yield* Effect.die("Missing consent callback");
+                    if (location === undefined)
+                      return yield* Effect.die("Missing consent callback");
                     return location;
                   }),
                 ).pipe(Effect.provideService(FetchHttpClient.RequestInit, { redirect: "manual" }));
@@ -155,10 +153,12 @@ layer(HostedLive, { excludeTestServices: true })("Catalog OAuth accounts", (it) 
               expect(accounts).toHaveLength(2);
               expect(accounts[0]).not.toBe(accounts[1]);
               expect([403, 404]).toContain(
-                (yield* api.request(actors.owner, "GET", `${prefix}/accounts/${accounts[1]}`)).status,
+                (yield* api.request(actors.owner, "GET", `${prefix}/accounts/${accounts[1]}`))
+                  .status,
               );
               expect([403, 404]).toContain(
-                (yield* api.request(actors.member, "GET", `${prefix}/accounts/${accounts[0]}`)).status,
+                (yield* api.request(actors.member, "GET", `${prefix}/accounts/${accounts[0]}`))
+                  .status,
               );
               const metrics = yield* issuer.metrics;
               expect(metrics.tokenExchanges).toBe(2);

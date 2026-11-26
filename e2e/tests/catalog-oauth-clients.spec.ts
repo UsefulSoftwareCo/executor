@@ -1,4 +1,3 @@
-/** Reviewed catalog endpoints select an optional operator client without contacting the vendor. */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Schema } from "effect";
 import { randomUUID } from "node:crypto";
@@ -107,7 +106,6 @@ export default defineApp({ user: { accounts: { service } } }, { tools: router({}
             return { setup, open, start };
           });
 
-        // Without credentials, the reviewed clients are not offered.
         yield* restartWith({ ...cleared, EXECUTOR_OAUTH_CALLBACK_URL: catalogOAuthCallback });
         for (const client of clients) {
           const absent = yield* deploy(client);
@@ -149,7 +147,6 @@ export default defineApp({ user: { accounts: { service } } }, { tools: router({}
           expect(own.searchParams.get("redirect_uri")).toBe(catalogOAuthCallback);
           expect(own.searchParams.get("client_id")).toBe("personal-client");
           expect(own.searchParams.get("state")).not.toBe(sent.searchParams.get("state"));
-          // The existing token method still saves a private account with a shared client enabled.
           const tokenConnection = yield* matched.open;
           const saved = yield* api.request(
             actors.owner,

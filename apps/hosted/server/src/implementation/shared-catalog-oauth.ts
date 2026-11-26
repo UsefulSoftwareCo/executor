@@ -15,7 +15,6 @@ const trelloScopes = [
   "offline_access",
 ];
 
-/** Reviewed catalog clients; credentials stay in the host's optional settings. */
 export const catalogOAuthClientDefinitions: readonly FirstPartyOAuthClientDefinition[] = [
   {
     id: "notion",
