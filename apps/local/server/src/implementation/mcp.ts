@@ -30,7 +30,7 @@ import {
 import { appVersion, versionRequirementAccounts } from "./app-accounts.ts";
 import { localOwner } from "./owners.ts";
 import type { SqlClient } from "effect/sql";
-import { Context, Effect, Schema } from "effect";
+import { Clock, Config, Context, Duration, Effect, Schema } from "effect";
 import { HttpServerResponse } from "effect/http";
 
 const grantedBackend = (sql: SqlClient.SqlClient, executor: Executor, principal: string) =>
@@ -206,6 +206,11 @@ export const localMcp = (
       limits,
       annotateSkillRead,
     });
+    const clock = yield* Clock.Clock;
+    const idleTtlMillis = yield* Config.Number("EXECUTOR_MCP_SESSION_IDLE_TTL_MS").pipe(
+      Config.withDefault(Duration.toMillis(Duration.minutes(30))),
+    );
+    const sessionLastSeen = new Map<string, number>();
     const authorized = (authorization: string | undefined, headers: Headers, address: McpAddress) =>
       Effect.gen(function* () {
         if (localBearer(config, authorization)) {
@@ -239,6 +244,27 @@ export const localMcp = (
       );
       const grant = yield* current;
       const backend = localMcpBackend(sql, executor, grant.id, current);
+      const sessionId = request.headers["mcp-session-id"];
+      if (sessionId !== undefined) {
+        const now = clock.currentTimeMillisUnsafe();
+        const lastSeen = sessionLastSeen.get(sessionId);
+        if (lastSeen !== undefined && now - lastSeen >= idleTtlMillis) {
+          sessionLastSeen.delete(sessionId);
+          return HttpServerResponse.jsonUnsafe(
+            {
+              jsonrpc: "2.0",
+              id: null,
+              error: {
+                code: -32600,
+                message:
+                  "Session not found: this Mcp-Session-Id is unknown or has expired, for example after a server restart. Start a new session by sending initialize without an Mcp-Session-Id header",
+              },
+            },
+            { status: 404 },
+          );
+        }
+        sessionLastSeen.set(sessionId, now);
+      }
       return yield* host.http.pipe(
         Effect.provideService(RequestBackend, backend),
         Effect.provideService(Caller, grant.id),

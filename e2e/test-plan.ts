@@ -8680,6 +8680,24 @@ export const scenarios = plan({
       cloud: na("Hosted's own scenario is mcpOfflineGrantOutlivesSession."),
     },
   },
+  localMcpSessionIdle: {
+    file: "local-mcp-session-idle.spec.ts",
+    title: "local daemon forgets an MCP session once it has been idle past its TTL",
+    targets: {
+      local: scheduled,
+      "self-host": na("Self-host sessions are bounded and idle-expiring in their own scenarios."),
+      cloud: na("Cloud sessions have their own eviction scenarios."),
+    },
+  },
+  localMcpSessionIdleRefreshed: {
+    file: "local-mcp-session-idle.spec.ts",
+    title: "local daemon keeps an MCP session that stays active inside its TTL",
+    targets: {
+      local: scheduled,
+      "self-host": na("Self-host sessions are bounded and idle-expiring in their own scenarios."),
+      cloud: na("Cloud sessions have their own eviction scenarios."),
+    },
+  },
   bearerAuthRefusals: {
     fixtures: "actors",
     file: "bearer-auth-refusals.spec.ts",
