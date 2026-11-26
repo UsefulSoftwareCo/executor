@@ -1,6 +1,6 @@
 # MCP events in the Effect MCP server
 
-`effect@4.0.1.patch` also adds the draft MCP events extension's webhook methods to
+`effect@4.1.4.patch` also adds the draft MCP events extension's webhook methods to
 the `2026-07-28` adapter, in source and distributed JavaScript:
 
 - `McpSchema` gains the public event schemas (`EventDefinition`,
@@ -9,7 +9,8 @@ the `2026-07-28` adapter, in source and distributed JavaScript:
   (`-32011`) through `CALLBACK_ENDPOINT_ERROR_CODE` (`-32015`).
 - `McpServer.registerEvents(handler)` and the `McpServer.events(handler)` layer
   register one handler for `events/list`, `events/subscribe` and
-  `events/unsubscribe`. Each runs with the request's `McpRequestContext`, like
+  `events/unsubscribe`. The layer needs `McpServer`, as `McpServer.toolkit` does
+  since 4.1; a transport's `registrations` option or a layer above it provides it. Each runs with the request's `McpRequestContext`, like
   tool handlers, so it can authorize the principal. A handler fails with an MCP
   error whose code and data reach the client unchanged.
 - With a handler registered, `server/discover` advertises `capabilities.events`

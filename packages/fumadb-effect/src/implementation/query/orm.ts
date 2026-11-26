@@ -1,10 +1,3 @@
-/**
- * The adapter-facing side of the query interface.
- *
- * `toOrm` turns an {@link OrmAdapter}, which works on resolved tables and
- * compiled conditions, into the typed {@link Orm} surface. It resolves table
- * names, folds constant conditions, and compiles joins.
- */
 import { Effect } from "effect";
 import { QueryError } from "../../contracts/errors.ts";
 import type { AnyColumn } from "../../contracts/schema/column.ts";
@@ -53,7 +46,6 @@ const compileOrderBy = (
   });
 };
 
-/** Evaluate a `where` callback, folding `true` to "no condition". Returns `false` when nothing can match. */
 const compileWhere = (
   table: AnyTable,
   where: FindManyOptions["where"],
@@ -169,10 +161,6 @@ const compileJoin = (
   return compiled;
 };
 
-/**
- * Run a synchronous compile step, turning a thrown `QueryError` into a typed failure.
- * Any other throw is a defect.
- */
 const compile = <A>(thunk: () => A): Effect.Effect<A, QueryError> =>
   Effect.try({
     try: thunk,
@@ -182,7 +170,6 @@ const compile = <A>(thunk: () => A): Effect.Effect<A, QueryError> =>
     },
   });
 
-/** Build the typed query interface over an adapter. */
 export const toOrm = <S extends AnySchema, R>(schema: S, adapter: OrmAdapter<R>): Orm<S, R> => {
   const resolveTable = (name: unknown): Effect.Effect<AnyTable, QueryError> => {
     const found = adapter.tables[String(name)];

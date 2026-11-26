@@ -1,4 +1,3 @@
-/** Generated package metadata and installed labels remain independent through real imports. */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Schema } from "effect";
 import { randomUUID } from "node:crypto";
@@ -25,7 +24,6 @@ layer(HostedLive, { excludeTestServices: true })("App package metadata", (it) =>
       Effect.gen(function* () {
         const api = yield* Api;
         const actors = yield* Actors;
-        // The public MCP server is a fixture; quick add still checks it through the real server.
         const origin = yield* publicTemplateUpstream;
         const suffix = randomUUID().slice(0, 8);
         const prefix = `/api/organizations/${actors.organization.id}`;
@@ -63,7 +61,6 @@ layer(HostedLive, { excludeTestServices: true })("App package metadata", (it) =>
           if (manifest === undefined) return yield* Effect.die("Package manifest missing");
           const metadata = yield* Schema.decodeUnknownEffect(Package)(manifest.content);
           expect(metadata.name).toBe(fixture.package);
-          // New apps pin the exact apps release the host ships, and the MCP SDK it is built with.
           expect(metadata.dependencies).toEqual({
             apps: appsVersion,
             "@modelcontextprotocol/sdk": mcpSdkVersion,

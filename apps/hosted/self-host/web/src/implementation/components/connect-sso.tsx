@@ -15,11 +15,6 @@ import { accountSettingClass } from "@executor-js/hosted-web/account";
 import { configurationAtom, connectSsoAtom, ssoConnectedAtom } from "../../contracts/auth.ts";
 import { ssoLinkRefusalExplanation } from "../../contracts/sso.ts";
 
-/**
- * Connect the operator's SSO to an account that signs in with a password. SSO never links itself
- * to a password account, so its owner does it here while signed in. Shown only when the operator
- * enabled SSO; `refused` is the code the instance returned the provider's sign-in with.
- */
 export function ConnectSso({ refused }: { readonly refused: string | undefined }) {
   const configuration = useAtomValue(configurationAtom);
   const connected = useAtomValue(ssoConnectedAtom);
@@ -63,7 +58,6 @@ export function ConnectSso({ refused }: { readonly refused: string | undefined }
               disabled={!AsyncResult.isSuccess(connected)}
               onClick={async () => {
                 setError(undefined);
-                // On success the browser leaves for the identity provider.
                 if (Exit.isFailure(await connect()))
                   setError("SSO could not be started. Try again.");
               }}

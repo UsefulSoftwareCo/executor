@@ -1,10 +1,3 @@
-/**
- * Provision the declared catalog against an Autumn endpoint that has no management API.
- *
- * Autumn itself is provisioned by the retained `executor-next-billing` stack through its SDK.
- * A private drop-in instance has no such API; it accepts the same catalog as seed data. Only
- * the transport differs, so both paths publish the identical `BillingCatalog` identities.
- */
 import { Effect, Redacted, Schema } from "effect";
 import { FetchHttpClient, HttpClient, HttpClientRequest } from "effect/http";
 import type {
@@ -12,7 +5,6 @@ import type {
   BillingPlanDeclaration,
 } from "../contracts/billing-catalog.ts";
 
-/** Seeding is deployment provisioning; its failures never carry the endpoint or its key. */
 export class BillingCatalogSeedFailed extends Schema.TaggedError<BillingCatalogSeedFailed>()(
   "BillingCatalogSeedFailed",
   { status: Schema.optionalKey(Schema.Int) },
@@ -22,12 +14,10 @@ export class BillingCatalogSeedFailed extends Schema.TaggedError<BillingCatalogS
   }
 }
 
-/** The wire shape the instance accepts, derived from the same declaration Autumn receives. */
 const seedPlan = (plan: BillingPlanDeclaration) => ({
   id: plan.planId,
   name: plan.name,
   group: plan.group,
-  // Plans are never global defaults; each customer selects this catalog's free plan explicitly.
   auto_enable: false,
   add_on: false,
   price: null,
@@ -66,10 +56,6 @@ export const billingCatalogSeed = (declaration: BillingCatalogDeclaration) => ({
   plans: Object.values(declaration.plans).map(seedPlan),
 });
 
-/**
- * Runs while the deployment resolves the catalog binding, never inside a Worker request.
- * Seeding is an upsert keyed by ID, so repeating a deployment converges on the declaration.
- */
 export const seedBillingCatalog = (
   serverUrl: Redacted.Redacted<string>,
   secretKey: Redacted.Redacted<string>,

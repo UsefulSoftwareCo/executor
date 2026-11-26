@@ -1,4 +1,3 @@
-/** Authored failures use the real app origin, host bootstrap, and telemetry receiver. */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Schedule, Schema } from "effect";
 import { randomUUID } from "node:crypto";
@@ -264,7 +263,6 @@ layer(HostedLive, { excludeTestServices: true })("App failure recovery", (it) =>
         yield* browser.login(actors.owner);
         yield* openPrivateApp(`${url}/#boot`);
         yield* browser.use("Open crash details", (page) =>
-          // The first app visit includes the cross-origin sign-in journey.
           page.getByText("Error details", { exact: true }).click({ timeout: 60_000 }),
         );
         const details = yield* browser.use("Get the diagnostic trace ID", (page) =>

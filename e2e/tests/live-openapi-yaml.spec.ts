@@ -20,7 +20,6 @@ layer(HostedLive, { excludeTestServices: true })("Live OpenAPI YAML", (it) => {
       Effect.gen(function* () {
         const fixture = yield* openapiYamlFixture;
 
-        // Every place an anchor is used gets the anchored parameter, with its constraints.
         const aliased = yield* fixture.deploy("aliased");
         const listed = yield* aliased.tools;
         expect(listed.status).toBe(200);
@@ -33,7 +32,6 @@ layer(HostedLive, { excludeTestServices: true })("Live OpenAPI YAML", (it) => {
             },
           });
 
-        // Aliases that expand without bound are refused as an invalid definition, not expanded.
         const bomb = yield* fixture.deploy("bomb");
         const refused = yield* bomb.tools;
         expect(refused.status).toBe(502);

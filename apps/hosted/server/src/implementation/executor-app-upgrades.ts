@@ -2,14 +2,6 @@ import { Effect } from "effect";
 import { SqlClient } from "effect/sql";
 import { StorageError, type App, type VersionId } from "@executor-js/sdk/core";
 
-/**
- * One-off, kept for its recorded migration steps: queued member setup for every organization when
- * member setup still redeployed the default Executor app to the current template. Member setup no
- * longer changes the app, so these jobs only link missing keys. Do not append new steps.
- *
- * Jobs start after a delay so the replacement server, not the one still serving during the
- * deployment, runs them.
- */
 export const queueExecutorAppUpgrades = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   yield* sql`insert into hosted_provisioning (kind, organization_id, user_id, available_at)
@@ -21,12 +13,6 @@ export const queueExecutorAppUpgrades = Effect.gen(function* () {
     order by organization.id, "user"."emailVerified" desc, member.role = 'owner' desc, member."createdAt"`;
 });
 
-/**
- * After a data step redeploys an organization's default Executor app, record the new version
- * where the replaced one was recorded. Member setup trusts only the recorded version as
- * Executor's own; a copy recorded under another version, or none, stays as it was. The host
- * names how the step wakes webhook source reconciliation, which the new version leaves pending.
- */
 export const executorDefaultRedeployed =
   (wake: Effect.Effect<void>) => (app: App, replaced: VersionId, version: VersionId) =>
     Effect.gen(function* () {
@@ -38,6 +24,5 @@ export const executorDefaultRedeployed =
         and metadata::jsonb -> 'executorDefaults' ->> 'deployment' = ${replaced}`.pipe(
         Effect.mapError(() => new StorageError()),
       );
-      // Polling recovers a missed wake.
       yield* wake;
     });

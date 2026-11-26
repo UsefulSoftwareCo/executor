@@ -1,9 +1,3 @@
-/**
- * The accounts an app runs with are the caller's links to it, made per requirement and changed
- * only in its Accounts tab: a plain requirement uses its one linked account, which linking or
- * connecting another replaces, even when a many() requirement shares its provider; many() uses
- * every account linked to it. No call, tab or page chooses accounts.
- */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Schema } from "effect";
 import { randomUUID } from "node:crypto";
@@ -28,21 +22,17 @@ import { advanceToReconciliation, installBrowserClock } from "../support/query-t
 import { scenarios } from "../test-plan.ts";
 import { appsManifest } from "../support/apps-release.ts";
 
-/** Inbox has a plain and a many() requirement on one provider, each linked on its own. */
 const source = `import {defineApp,defineProvider,secrets,query,object,string, router} from "apps";
 const service=defineProvider({name:"Inbox",auth:{key:secrets({label:"Key",fields:object({token:string()})})}});
 export const who=query({input:object({})},async ctx=>({context:{auth:"auth" in ctx},account:ctx.user.accounts.service.id,extra:ctx.user.accounts.extra.map(a=>a.id)}));
 export default defineApp({user: { accounts:{service,extra:service.many()} }},{tools: router({ who })});`;
-/** What the `who` tool and the authored page report about the accounts a call ran with. */
 const Identity = Schema.Struct({
   context: Schema.Struct({ auth: Schema.Boolean }),
   account: Schema.String,
   extra: Schema.Array(Schema.String),
 });
 const identity = Schema.decodeUnknownEffect(Schema.fromJsonString(Identity));
-/** The Mailbox `who` tool's result: the account a call ran as and the credential it received. */
 const Mailbox = Schema.Struct({ account: Schema.String, token: Schema.String });
-/** A dashboard tool run's response, which carries the completed call's value. */
 const Ran = Schema.fromJsonString(
   Schema.Struct({ status: Schema.Literal("completed"), value: Schema.Json }),
 );
@@ -54,10 +44,8 @@ const ranMailbox = (text: string) =>
   Schema.decodeUnknownEffect(Ran)(text).pipe(
     Effect.flatMap((run) => Schema.decodeUnknownEffect(Mailbox)(run.value)),
   );
-/** The account search parameter tabs used to carry; nothing reads it any more. */
 const urlChoice = (url: string) => new URL(url).searchParams.get("accounts");
 
-/** Deploy `files` as the owner and let everyone in the organization use the app. */
 const sharedApp = (
   name: string,
   files: ReadonlyArray<{ readonly path: string; readonly content: string }>,
@@ -96,14 +84,11 @@ const sharedApp = (
           yield* api.request(account.actor, "DELETE", `${prefix}/accounts/${account.id}`);
       }).pipe(Effect.orDie),
     );
-    /** Connect an account for `requirement` from the app, which links it to that one for `actor`. */
     const connect = (actor: Session, requirement: string, label: string, token: string) =>
       Effect.gen(function* () {
         const connection = yield* body(
           Resource,
-          yield* api.request(actor, "POST", connectionsPath(path, "user", requirement), {
-            destination: { kind: "personal" },
-          }),
+          yield* api.request(actor, "POST", connectionsPath(path, "user", requirement), {}),
         );
         const account = yield* api.request(
           actor,
@@ -116,7 +101,6 @@ const sharedApp = (
         owned.push({ actor, id });
         return id;
       });
-    /** The IDs of the accounts `actor` has saved, linked to an app or not. */
     const saved = (actor: Session) =>
       Effect.gen(function* () {
         const inventory = yield* body(
@@ -143,10 +127,6 @@ const client=createAppClient();client.query(queryReference<typeof who>("who"),{}
   appsManifest,
 ]);
 
-/**
- * The member connects two Inbox accounts for many() from the app, which links both to it, and
- * links the newer one to the plain requirement too.
- */
 const linkedFixture = Effect.gen(function* () {
   const fixture = yield* inboxFixture;
   const { actors, path, connect } = fixture;
@@ -161,10 +141,8 @@ const linkedFixture = Effect.gen(function* () {
   return { ...fixture, personal, work };
 });
 
-/** The tool runner's read-only line naming the accounts a call runs with. */
 const runningAs = (page: Page) => page.getByText(/^Running as/).textContent();
 
-/** Run the selected tool and return the call's JSON result once the page shows it. */
 const runTool = (page: Page) =>
   Promise.all([
     page.waitForResponse(
@@ -180,11 +158,6 @@ const runTool = (page: Page) =>
       .then(() => response.text()),
   );
 
-/**
- * A requirement's linked account labels (its checked radios or checkboxes, in the order shown),
- * read once they are `expected`. A timeout falls through so the assertion reports the accounts
- * actually checked.
- */
 const linkedRows = (region: Locator, provider: string, expected: readonly string[]) =>
   region
     .elementHandle()
@@ -209,7 +182,6 @@ const linkedRows = (region: Locator, provider: string, expected: readonly string
     })
     .then(() => linkedLabels(region, provider));
 
-/** Every account a requirement lists, with whether its control is checked, in the order shown. */
 const choiceStates = (region: Locator, provider: string) =>
   accountChoices(region, provider)
     .locator('[role="radio"], [role="checkbox"]')
@@ -260,7 +232,6 @@ layer(HostedLive, { excludeTestServices: true })("App account links", (it) => {
               nameConnectedAccount(page, label),
             );
           });
-        /** Run `who` from the Tools tab, reading the runner's account line first. */
         const runWho = (step: string) =>
           Effect.gen(function* () {
             yield* browser.use(`${step}: open the tool`, (page) =>
@@ -277,8 +248,6 @@ layer(HostedLive, { excludeTestServices: true })("App account links", (it) => {
         if (personal === undefined)
           return yield* Effect.die("The connected account was not linked");
         owned.push({ actor: actors.member, id: personal });
-        // Connecting from the plain requirement links the account to it only, not to the many()
-        // requirement that shares its provider.
         expect(yield* accountLinks(actors.member, path)).toEqual([["service", personal]]);
         const alone = yield* runWho("Run with the one linked account");
         expect(alone.line).toBe("Running asPersonal inbox (Inbox)");
@@ -308,10 +277,7 @@ layer(HostedLive, { excludeTestServices: true })("App account links", (it) => {
         expect((yield* saved(actors.member)).sort()).toEqual([...before, personal].sort());
         expect(yield* accountLinks(actors.member, path)).toEqual([["service", personal]]);
 
-        // Connecting another account from the many() requirement links it there only; the plain
-        // requirement keeps its account.
         const plainOne = yield* region("service");
-        // The closing dialog hides the page from role queries until it unmounts.
         yield* browser.use("The plain requirement's actions are shown", () =>
           plainOne.getByRole("button", { name: "Connect new account", exact: true }).waitFor(),
         );
@@ -339,8 +305,6 @@ layer(HostedLive, { excludeTestServices: true })("App account links", (it) => {
             ),
           ).toEqual([label]);
         yield* browser.checkpoint("Two linked accounts");
-        // The plain requirement runs with its link, many() with its own. The runner names the
-        // plain requirement's account first, then the many() links.
         const both = yield* runWho("Run with both linked accounts");
         expect(both.line).toBe("Running asPersonal inbox (Inbox), Work inbox (Inbox)");
         expect(both.ran).toEqual({
@@ -365,7 +329,6 @@ layer(HostedLive, { excludeTestServices: true })("App account links", (it) => {
     withHostedCase(
       context,
       Effect.gen(function* () {
-        // Only a plain requirement uses Mailbox, so each member keeps one linked account.
         const { actors, browser, path, url, owned, connect, saved, api } = yield* sharedApp(
           "Mailbox",
           [
@@ -389,7 +352,6 @@ export default defineApp({user: { accounts:{service} }},{tools: router({ who })}
             expect(called.status, JSON.stringify(called.body)).toBe(200);
             return yield* body(Mailbox, called);
           });
-        // Connecting Personal after Work from the app replaced Work, which stays saved.
         const work = yield* connect(actors.member, "service", "Work mailbox", "synthetic-work");
         const personal = yield* connect(
           actors.member,
@@ -399,7 +361,6 @@ export default defineApp({user: { accounts:{service} }},{tools: router({ who })}
         );
         expect(yield* linkedAccountIds(actors.member, path)).toEqual([personal]);
         expect(yield* saved(actors.member)).toEqual(expect.arrayContaining([work, personal]));
-        // Another member links their own account to the same app.
         const other = yield* connect(actors.admin, "service", "Admin mailbox", "synthetic-admin");
         expect(yield* linkedAccountIds(actors.admin, path)).toEqual([other]);
         expect(yield* call(actors.member)).toEqual({
@@ -412,7 +373,6 @@ export default defineApp({user: { accounts:{service} }},{tools: router({ who })}
         const mailbox = yield* browser.use("Find the Mailbox requirement", (page) =>
           Promise.resolve(page.getByRole("region", { name: "Mailbox", exact: true })),
         );
-        // The member's saved accounts are offered once the requirement's choices load.
         yield* browser.use("The member's other saved account is offered", () =>
           accountChoices(mailbox, "Mailbox")
             .getByRole("radio", { name: "Work mailbox", exact: true })
@@ -435,7 +395,6 @@ export default defineApp({user: { accounts:{service} }},{tools: router({ who })}
         ).toEqual([
           ["Personal mailbox"],
           1,
-          // Only the member's accounts are offered; the admin's account is not.
           [
             ["Personal mailbox", "true"],
             ["Work mailbox", "false"],
@@ -463,7 +422,6 @@ export default defineApp({user: { accounts:{service} }},{tools: router({ who })}
           ),
         ).toEqual([
           ["Work mailbox"],
-          // The replaced account stays saved and offered.
           [
             ["Personal mailbox", "false"],
             ["Work mailbox", "true"],
@@ -475,7 +433,6 @@ export default defineApp({user: { accounts:{service} }},{tools: router({ who })}
         );
         expect(yield* call(actors.member)).toEqual({ account: work, token: "synthetic-work" });
 
-        // Connecting a new account replaces the linked one too.
         yield* browser.use("Connect a new account", () =>
           mailbox.getByRole("button", { name: "Connect new account", exact: true }).click(),
         );
@@ -503,7 +460,6 @@ export default defineApp({user: { accounts:{service} }},{tools: router({ who })}
         );
         yield* browser.checkpoint("A connected account replaced the linked one");
 
-        // Later calls run as the new account, from the Tools tab and through the API.
         yield* browser.use("Open the tool", (page) => page.goto(`${url}?view=tools&tool=who`));
         expect(yield* browser.use("The runner names the account it runs as", runningAs)).toBe(
           "Running asNew mailbox (Mailbox)",
@@ -513,7 +469,6 @@ export default defineApp({user: { accounts:{service} }},{tools: router({ who })}
           token: "synthetic-new",
         });
         expect(yield* call(actors.member)).toEqual({ account: created, token: "synthetic-new" });
-        // The other member's link to the same app is untouched.
         expect(yield* linkedAccountIds(actors.admin, path)).toEqual([other]);
         expect(yield* call(actors.admin)).toEqual({ account: other, token: "synthetic-admin" });
       }),
@@ -524,7 +479,6 @@ export default defineApp({user: { accounts:{service} }},{tools: router({ who })}
     withHostedCase(
       context,
       Effect.gen(function* () {
-        // The skill's description counts the many() accounts it was evaluated with.
         const { actors, browser, path, url, owned, api, saved } = yield* sharedApp("Inbox set", [
           {
             path: "index.ts",
@@ -538,7 +492,6 @@ export default defineApp({user: { accounts:{extra:service.many()} }},async ctx=>
           },
           appsManifest,
         ]);
-        /** The accounts a call's many() requirement received. */
         const used = Effect.gen(function* () {
           const called = yield* api.request(actors.member, "POST", `${path}/tools/call`, {
             tool: "ids",
@@ -578,7 +531,6 @@ export default defineApp({user: { accounts:{extra:service.many()} }},async ctx=>
               .getByRole("link", { name, exact: true })
               .click(),
           );
-        /** The Skills tab shows the count for the current links, and no other count. */
         const skillsCount = (count: number) =>
           Effect.gen(function* () {
             const listed = yield* api.request(actors.member, "GET", `${path}/skills`);
@@ -606,11 +558,9 @@ export default defineApp({user: { accounts:{extra:service.many()} }},async ctx=>
         const first = yield* connect("First inbox");
         expect(yield* used).toEqual([first]);
         yield* skillsCount(1);
-        // Connecting another many() account adds it: every call now uses both.
         const second = yield* connect("Second inbox");
         expect(yield* linkedAccountIds(actors.member, path)).toEqual([first, second]);
         expect(yield* used).toEqual([first, second]);
-        // The closing naming dialog hides the page from role and text queries until it unmounts.
         yield* browser.use("The Inbox requirement is shown again", () =>
           inbox.getByRole("button", { name: "Connect new account", exact: true }).waitFor(),
         );
@@ -625,7 +575,6 @@ export default defineApp({user: { accounts:{extra:service.many()} }},async ctx=>
         ).toEqual([["First inbox", "Second inbox"], 1, 0]);
         yield* skillsCount(2);
 
-        // Unlinking one narrows every call to the rest; the account stays saved.
         yield* browser.use("Unlink First inbox", (page) =>
           inbox
             .getByRole("button", { name: "Manage First inbox", exact: true })
@@ -647,7 +596,6 @@ export default defineApp({user: { accounts:{extra:service.many()} }},async ctx=>
           ),
         ).toEqual([
           ["Second inbox"],
-          // The unlinked account stays saved and offered, unchecked.
           [
             ["First inbox", "false"],
             ["Second inbox", "true"],
@@ -658,8 +606,6 @@ export default defineApp({user: { accounts:{extra:service.many()} }},async ctx=>
         expect(yield* saved(actors.member)).toEqual(expect.arrayContaining([first, second]));
         yield* skillsCount(1);
 
-        // Checking the saved account again adds it back, newest last. The list keeps its rows in
-        // name order, so linking does not move them; the link order shows in the calls.
         yield* browser.use("Link First inbox again", () =>
           chooseAccount(inbox, "Inbox", "First inbox"),
         );
@@ -710,7 +656,6 @@ export default defineApp({user: { accounts:{extra:service.many()} }},async ctx=>
           ),
         });
         expect(changed.status, JSON.stringify(changed.body)).toBe(200);
-        // Both open tabs follow the version at their next idle reconciliation.
         yield* advanceToReconciliation;
         yield* browser.use("The first tab follows the new version", (page) =>
           page.getByRole("button", { name: "version", exact: true }).first().waitFor(),
@@ -751,7 +696,6 @@ export default defineApp({user: { accounts:{extra:service.many()} }},async ctx=>
         expect(new URL(openApp).origin).toBe(new URL(appUrl).origin);
         expect(urlChoice(openApp), "the Open app link names no accounts").toBeNull();
         yield* browser.omitNetworkTrace;
-        // A bookmark into the app opens directly, keeping its path, query and fragment.
         const bookmark = `${appUrl}/inbox?folder=unread#message`;
         yield* browser.use("Open an app bookmark", (page) => page.goto(bookmark));
         yield* browser.use("The authored page is ready", (page) =>
@@ -761,8 +705,6 @@ export default defineApp({user: { accounts:{extra:service.many()} }},async ctx=>
           Promise.all([Promise.resolve(page.url()), page.locator("#identity").textContent()]),
         );
         expect(opened[0], "the bookmark opens without a detour").toBe(bookmark);
-        // The page runs with the member's links: the newest for the plain requirement, every
-        // link for many().
         const linkedIdentity = { context: { auth: false }, account: work, extra: [personal, work] };
         expect(yield* identity(opened[1])).toEqual(linkedIdentity);
         yield* browser.checkpoint("Authored app runs with the linked accounts");
@@ -786,11 +728,9 @@ export default defineApp({user: { accounts:{extra:service.many()} }},async ctx=>
               },
             ),
           );
-        // Another member's account, linked by them to the same app, is never used here.
         const foreign = yield* connect(actors.admin, "service", "Admin inbox", "synthetic-admin");
         expect(yield* linkedAccountIds(actors.admin, path)).toEqual([foreign]);
         expect(yield* call()).toEqual({ status: 200, body: linkedIdentity });
-        // A page that names accounts still runs with the caller's links.
         expect(yield* call({ service: [foreign], extra: [foreign] })).toEqual({
           status: 200,
           body: linkedIdentity,
@@ -800,8 +740,6 @@ export default defineApp({user: { accounts:{extra:service.many()} }},async ctx=>
           body: linkedIdentity,
         });
 
-        // Unlinking from many() narrows the next call to its remaining link; the plain requirement
-        // keeps its own.
         yield* unlinkAccount(actors.member, path, "extra", work);
         const narrowed = { context: { auth: false }, account: work, extra: [personal] };
         expect(yield* call()).toEqual({ status: 200, body: narrowed });
@@ -816,8 +754,6 @@ export default defineApp({user: { accounts:{extra:service.many()} }},async ctx=>
             ),
           ),
         ).toEqual(narrowed);
-        // With no account linked to the plain requirement, the page's calls need one rather than
-        // borrowing the account still linked to many().
         yield* unlinkAccount(actors.member, path, "service", work);
         expect(yield* call()).toEqual({
           status: 422,

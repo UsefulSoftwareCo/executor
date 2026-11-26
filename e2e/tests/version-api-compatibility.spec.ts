@@ -1,8 +1,3 @@
-/**
- * App versions were called deployments. API callers written before the rename still use the former
- * paths and field names: the hosted API serves both, accepts either field name, and repeats the
- * former names in its responses.
- */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Schema } from "effect";
 import { randomUUID } from "node:crypto";
@@ -45,7 +40,6 @@ layer(HostedLive, { excludeTestServices: true })("Version API compatibility", (i
         });
         expect(created.status, JSON.stringify(created.body)).toBe(200);
         const first = yield* body(Deployed, created);
-        // Responses carry the active version under both names.
         expect(first.activeDeployment).toBe(first.activeVersion);
         const path = `${prefix}/apps/${first.id}`;
         const updated = yield* saveAndDeploy(actors.owner, path, {
@@ -55,7 +49,6 @@ layer(HostedLive, { excludeTestServices: true })("Version API compatibility", (i
         const { app: second } = yield* body(Schema.Struct({ app: Deployed }), updated);
         expect(second.activeVersion).not.toBe(first.activeVersion);
 
-        // The version list answers on its new path and its former one.
         const versions = yield* api.request(actors.owner, "GET", `${path}/versions`);
         const deployments = yield* api.request(actors.owner, "GET", `${path}/deployments`);
         expect(versions.status).toBe(200);
@@ -66,7 +59,6 @@ layer(HostedLive, { excludeTestServices: true })("Version API compatibility", (i
           [first.activeVersion, second.activeVersion].sort(),
         );
 
-        // Source reads select a retained version by either query name.
         for (const name of ["version", "deployment"]) {
           const read = yield* api.request(
             actors.owner,
@@ -89,8 +81,6 @@ layer(HostedLive, { excludeTestServices: true })("Version API compatibility", (i
           expect(file.status, segment).toBe(200);
         }
 
-        // Tool listings select a version by either name and name it under both. New calls run
-        // only on the active version, so naming a retired one is refused.
         const tools = yield* api.request(
           actors.owner,
           "GET",
@@ -110,7 +100,6 @@ layer(HostedLive, { excludeTestServices: true })("Version API compatibility", (i
         expect(retired.status, JSON.stringify(retired.body)).toBe(404);
         expect(retired.body).toMatchObject({ _tag: "VersionNotFound" });
 
-        // Activation accepts the former field names, including the concurrency check.
         const stale = yield* api.request(actors.owner, "POST", `${path}/activate`, {
           deployment: first.activeVersion,
           expectedDeployment: first.activeVersion,

@@ -4,25 +4,39 @@ import { PagePending } from "@executor-js/hosted-web/page-pending";
 import { DashboardShell } from "@executor-js/hosted-web/shell";
 import { OrganizationBoundary, OrganizationContent } from "@executor-js/hosted-web/organization";
 import { NameAccountDialog } from "@executor-js/hosted-web/pages/name-account-dialog";
+import { Option } from "effect";
+import type { ReactNode } from "react";
 import { Navigation } from "../navigation.tsx";
+import { SelfHostUpdateBlock, useSelfHostUpdate } from "../update.tsx";
 
-/** The URL owns this tab's organization; all product pages inherit this boundary. */
 export const Route = createFileRoute("/org/$organizationSlug")({
   component: OrganizationLayout,
-  // The server streams the dashboard frame and navigation first, then the organization.
   pendingComponent: OrganizationPending,
 });
 function OrganizationLayout() {
   const { organizationSlug } = Route.useParams();
   return (
     <OrganizationBoundary slug={organizationSlug}>
-      <DashboardShell allowCreateOrganization={false} navigation={<Navigation />}>
+      <SelfHostShell>
         <OrganizationContent pending={<PagePending />}>
           <Outlet />
           <NameAccountDialog />
         </OrganizationContent>
-      </DashboardShell>
+      </SelfHostShell>
     </OrganizationBoundary>
+  );
+}
+
+function SelfHostShell({ children }: { readonly children: ReactNode }) {
+  const update = useSelfHostUpdate();
+  return (
+    <DashboardShell
+      allowCreateOrganization={false}
+      navigation={<Navigation />}
+      notice={Option.isSome(update) && <SelfHostUpdateBlock update={update.value} />}
+    >
+      {children}
+    </DashboardShell>
   );
 }
 

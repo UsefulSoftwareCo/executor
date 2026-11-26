@@ -10,7 +10,6 @@ import { useMcpOrigin } from "../resource-origin.ts";
 import { HostedFailure, useDashboardAtoms } from "./dashboard-bindings.tsx";
 import { useOrganizationRoute } from "./organization.tsx";
 
-/** Add app's way back to Apps, also shown while the page loads. */
 export function AddAppBack({ organizationSlug }: { readonly organizationSlug: string }) {
   return (
     <Link
@@ -24,7 +23,6 @@ export function AddAppBack({ organizationSlug }: { readonly organizationSlug: st
   );
 }
 
-/** Custom MCP imports install into the organization and open the new app. */
 function useAddAppDialogs() {
   const mcpOrigin = useMcpOrigin();
   const { slug: organizationSlug } = useOrganizationRoute();
@@ -43,7 +41,6 @@ function useAddAppDialogs() {
   };
 }
 
-/** Apps' Add app menu: make your own app or browse the catalog page. */
 export function AddAppMenu() {
   const { slug: organizationSlug } = useOrganizationRoute();
   return (
@@ -58,7 +55,6 @@ export function AddAppMenu() {
   );
 }
 
-/** The catalog page's button and link to making your own app. */
 export function MakeYourOwn({ appearance }: { readonly appearance?: "link" | "button" }) {
   return <SharedMakeYourOwn appearance={appearance} {...useAddAppDialogs()} />;
 }

@@ -62,11 +62,9 @@ export const authorCache = (
   ): CacheWithReads => {
     const cache = makeCache(
       host.transport,
-      // A refresh handed to the background runs beside the caller, which does not wait on it.
       (task) => host.background(task.pipe(owned("background", "app.cache.refresh"))),
       scope,
       deadline,
-      // Waiting on another caller's load is waiting, not Executor's work.
       (wait) => wait.pipe(Effect.withSpan("app.cache.lease.wait", ownedBy("lease"))),
     );
     const getOptions = <A>(options: CacheGetOptions<A>) => ({
@@ -104,9 +102,6 @@ export const authorCache = (
           ? Effect.succeed(undefined)
           : Schema.decodeUnknownEffect(decoderOf(schema))(entry.value),
       );
-    // Keep the native callback on each method so framework consumers retain the
-    // invocation's scheduler, tracing and cancellation across the Promise API. Each call is
-    // Executor's work, apart from the app's loader inside it.
     const service = <Args extends readonly unknown[], A, E>(
       method: string,
       operation: (...args: Args) => Effect.Effect<A, E>,
@@ -146,7 +141,6 @@ export const authorCache = (
           .flatMap(([, value]) => (Array.isArray(value) ? value : [value]))
           .find((value) => value.id === account.id);
         if (bound === undefined) throw new CacheError({ reason: "invalid" });
-        // Credentials never enter the scope, so a token renewal keeps the account's entries.
         return scoped(
           { account: bound.id, method: bound.method, generation: bound.generation },
           callerSignal,
@@ -154,9 +148,6 @@ export const authorCache = (
         );
       },
     };
-    // Only Executor's own cache object carries the combined read, as a non-enumerable own
-    // property: an app that spreads or wraps this cache to replace `get` or `read` hands its
-    // catalog an object without it, so the catalog calls the app's methods.
     return Object.defineProperty(authored, getWithReads, {
       value: service(
         "get",

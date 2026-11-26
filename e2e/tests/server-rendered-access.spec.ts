@@ -1,9 +1,3 @@
-/**
- * An organization page's server render starts the page's reads with the access check. Only a
- * successful check may put their data in the document. The test host's access check fixture makes
- * the check refuse, report an outage, fail in transport, or refuse only after the render deadline, each after the page's own reads have succeeded, which no
- * request from outside can produce, and the production entry point does not mount it.
- */
 import { expect, layer } from "@effect/vitest";
 import { randomBytes } from "node:crypto";
 import { Effect, Layer, Schedule, Schema } from "effect";
@@ -15,14 +9,11 @@ import { HostedLive, withHostedCase } from "../support/case.ts";
 import { Target } from "../support/platform.ts";
 import { startDevelopmentServer } from "../support/managed-server.ts";
 import { scenarios } from "../test-plan.ts";
+import { noPageErrors } from "../support/page-errors.ts";
 
-/** React reports a server/browser markup difference with one of these messages or codes. */
 const hydrationFailure = /hydrat|Minified React error #(418|419|423|425)/i;
-/** Selects the test host's access check answer; see `apps/hosted/testing/access-check-fixture.ts`. */
 const accessCheckCookie = "executor-test-access-check";
-/** Entries for the apps page's own reads in a document's streamed data. */
 const pageReadEntries = /AtomHttpApi:(groups:list|resourceAccess:directory):/;
-/** The browser's own reads by `group:endpoint`, sent alone or in a batch. */
 const directReads: ReadonlyArray<readonly [RegExp, string]> = [
   [/^\/api\/organizations\/[^/]+\/access$/, "organization:access"],
   [/^\/api\/organizations\/[^/]+\/groups$/, "groups:list"],
@@ -43,7 +34,6 @@ layer(HostedLive, { excludeTestServices: true })("Server-rendered access", (it) 
         const browser = yield* Browser;
         const target = yield* Target;
 
-        // The production entry point has no fixture: the cookie changes nothing there.
         yield* browser.login(yield* freshOwnerSession);
         const production = yield* browser.use(
           "Request a production apps page with the fixture cookie",
@@ -106,7 +96,6 @@ layer(HostedLive, { excludeTestServices: true })("Server-rendered access", (it) 
         );
         const organization = organizations[0];
         if (!organization) return yield* Effect.die("Development organization is missing");
-        // A distinctive value that only the page's own reads return.
         const marker = `Withheld ${randomBytes(6).toString("hex")}`;
         const group = yield* body(
           Group,
@@ -151,11 +140,10 @@ layer(HostedLive, { excludeTestServices: true })("Server-rendered access", (it) 
             }),
           );
 
-        // Without the fixture the document carries the page's reads, including the marker.
         const allowed = yield* open("Open the apps page");
         expect(allowed).toContain(marker);
         expect(allowed).toMatch(pageReadEntries);
-        expect(failures).toEqual([]);
+        yield* noPageErrors(failures);
 
         for (const mode of ["refuse", "unavailable", "fail", "stall"] as const) {
           browserReads.length = 0;
@@ -163,7 +151,6 @@ layer(HostedLive, { excludeTestServices: true })("Server-rendered access", (it) 
             page.context().addCookies([{ name: accessCheckCookie, value: mode, url: origin }]),
           );
           const html = yield* open(`Open the apps page while access ${mode}s`);
-          // The page's reads succeeded before the check answered; none of their data is sent.
           expect(html, `${mode}: the document must not carry page data`).not.toContain(marker);
           expect(html, `${mode}: the document must not carry page reads`).not.toMatch(
             pageReadEntries,
@@ -171,8 +158,6 @@ layer(HostedLive, { excludeTestServices: true })("Server-rendered access", (it) 
           expect(html.includes("Organization unavailable"), `${mode}: refusal`).toBe(
             mode === "refuse",
           );
-          // The browser's own access check succeeds, so it then renders the page as it would
-          // on its own and reads the page's data itself: the document gave it nothing to reuse.
           const read = (name: string) => browserReads.indexOf(name);
           yield* Effect.suspend(() =>
             read("groups:list") >= 0 && read("resourceAccess:directory") >= 0
@@ -189,15 +174,10 @@ layer(HostedLive, { excludeTestServices: true })("Server-rendered access", (it) 
             read("resourceAccess:directory"),
             `${mode}: the browser reads the app list`,
           ).toBeGreaterThanOrEqual(0);
-          // A refused document shows the refusal until the browser's own check answers.
           if (mode === "refuse")
             expect(read("organization:access")).toBeLessThan(read("groups:list"));
-          // Access failures other than a refusal are outside the access result's codec, so the
-          // document cannot carry them, yet the server renders the organization switcher's retry
-          // control from them and the browser does not. That shell mismatch predates the page-read
-          // guard and is separate work.
           if (mode === "refuse" || mode === "stall")
-            expect(failures, `${mode}: hydration must match the server render`).toEqual([]);
+            yield* noPageErrors(failures, `${mode}: hydration must match the server render`);
           failures.length = 0;
           yield* browser.checkpoint(`Apps page after access ${mode}s`);
         }

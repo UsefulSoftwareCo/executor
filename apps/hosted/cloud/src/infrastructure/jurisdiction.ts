@@ -38,6 +38,12 @@ const NativeNamespace = Schema.declare(
     value !== null &&
     "jurisdiction" in value &&
     typeof value.jurisdiction === "function" &&
+    "get" in value &&
+    typeof value.get === "function" &&
+    "idFromName" in value &&
+    typeof value.idFromName === "function" &&
+    "idFromString" in value &&
+    typeof value.idFromString === "function" &&
     "getByName" in value &&
     typeof value.getByName === "function",
 );

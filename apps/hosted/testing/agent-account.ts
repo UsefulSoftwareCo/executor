@@ -1,8 +1,3 @@
-/**
- * Real sign-in for synthetic agent identities on production or a deployed stage. Each identity is
- * `<name>@agents.executor.engineering`; its email codes and invitations arrive in the agent mail
- * stack. Nothing here bypasses the product's login, rate limits or authorization.
- */
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { Console, Effect, Exit, FileSystem, Layer, Option, Path, References, Schema } from "effect";
@@ -18,7 +13,6 @@ class AgentSignInFailed extends Schema.TaggedError<AgentSignInFailed>()("AgentSi
   reason: Schema.String,
 }) {}
 
-/** Production and deployed stages only; local stacks use `hosted:test-account`. */
 const HttpsOrigin = Schema.String.check(
   Schema.makeFilter((value) => URL.parse(value)?.origin === value && value.startsWith("https://"), {
     message: "Use an HTTPS origin without a path, such as https://v2.executor.sh",
@@ -30,14 +24,12 @@ const SignedIn = Schema.Struct({
 const Organizations = Schema.Array(
   Schema.Struct({ id: Schema.String, slug: Schema.String, name: Schema.String }),
 );
-/** The file `sign-in` writes. `headers` works for every product request, including POSTs. */
 const Session = Schema.Struct({
   origin: HttpsOrigin,
   email: Schema.String,
   headers: Schema.Struct({ cookie: Schema.String, origin: Schema.String }),
 });
 
-/** The account's current organizations, so callers have IDs for organization-targeted requests. */
 const organizations = (origin: string, headers: typeof Session.Type.headers) =>
   Effect.gen(function* () {
     const http = (yield* HttpClient.HttpClient).pipe(HttpClient.filterStatusOk);
@@ -72,7 +64,6 @@ const signIn = Command.make("sign-in", {
         );
         const mailbox = yield* agentMailbox;
         const http = yield* HttpClient.HttpClient;
-        // Better Auth rejects cookie-less POSTs from a foreign origin.
         const post = (route: string, body: unknown) =>
           HttpClientRequest.post(`${args.origin}/api/auth${route}`).pipe(
             HttpClientRequest.setHeader("origin", args.origin),
@@ -180,7 +171,6 @@ NodeRuntime.runMain(
     version: "0.0.0",
   }).pipe(
     Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer)),
-    // Keep stdout machine-readable; Alchemy's state client logs its credential source at Info.
     Effect.provideService(References.MinimumLogLevel, "Warn"),
     Effect.catch((error) =>
       CliError.isCliError(error)

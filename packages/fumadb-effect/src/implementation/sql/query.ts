@@ -1,17 +1,4 @@
-/**
- * OrmAdapter over Effect SQL's `SqlClient`.
- *
- * - Every identifier goes through `sql(name)`; every value through parameters.
- * - Values are encoded with `serialize` and decoded with `deserialize` from `schema/codec.ts`.
- * - Row keys in results are ORM names; joined rows nest under the relation name.
- * - Defaults for omitted insert columns are generated with `column.generateDefault()`.
- *
- * Provider differences this module handles: `RETURNING` (PostgreSQL,
- * CockroachDB, SQLite), `OUTPUT INSERTED` (MSSQL), neither (MySQL, which reads
- * the row back by id), `SELECT TOP (n)` and `OFFSET ... FETCH NEXT` on MSSQL,
- * and `COUNT(*)` coming back as a bigint on PostgreSQL and CockroachDB.
- */
-import { DateTime, Effect, Equal, Option, Result } from "effect";
+import { Array as Arr, DateTime, Effect, Equal, Option, Result } from "effect";
 import { Statement } from "effect/sql";
 import { SqlClient } from "effect/sql/SqlClient";
 import { QueryError } from "../../contracts/errors.ts";
@@ -33,7 +20,6 @@ import type { AnyTable } from "../../contracts/schema/table.ts";
 import type { ResolvedSqlAdapterConfig } from "../../contracts/sql.ts";
 import { buildWhere, defaultAlias } from "./where.ts";
 
-/** One entry of a select list: the column reference and the key it is returned under. */
 interface Selection {
   readonly source: string | Statement.Fragment;
   readonly alias: string;
@@ -65,15 +51,8 @@ const computedSelect = (
   return { source, alias: item.alias };
 };
 
-/** Join fragments with a single space, without adding parentheses. */
 const spaced = Statement.join(" ", false, "");
 
-/**
- * Label a query's statements with the FumaDB operation and table that ran them. The operation
- * has no span of its own: each statement's `sql.execute` span already covers its interval, so a
- * wrapper span would only repeat it. A nested operation, such as an upsert's read back, labels
- * its own statements.
- */
 const operation =
   (name: string) =>
   <A, E, R>(effect: Effect.Effect<A, E, R>, table: AnyTable): Effect.Effect<A, E, R> =>
@@ -82,11 +61,9 @@ const operation =
       "db.collection.name": table.names.sql,
     });
 
-/** `NULL`, absent, or `Option.none()`: a join value that can never match a row. */
 const isAbsentKey = (value: unknown): boolean =>
   value === null || value === undefined || (Option.isOption(value) && Option.isNone(value));
 
-/** A JSON-safe, identity-preserving form of a join key value for deduplication. */
 const keyPart = (value: unknown): unknown => {
   if (Option.isOption(value)) return Option.isSome(value) ? keyPart(value.value) : null;
   if (typeof value === "bigint") return `${value}n`;
@@ -96,18 +73,12 @@ const keyPart = (value: unknown): unknown => {
   return value;
 };
 
-/** Split a list into groups of at most `size`. */
 const chunk = <A>(items: ReadonlyArray<A>, size: number): Array<ReadonlyArray<A>> => {
   const out: Array<ReadonlyArray<A>> = [];
   for (let i = 0; i < items.length; i += size) out.push(items.slice(i, i + size));
   return out;
 };
 
-/**
- * The number of bound parameters one statement may carry, with headroom.
- * MSSQL allows 2100, SQLite 32766, PostgreSQL and CockroachDB 32767; MySQL
- * substitutes parameters client-side and has no comparable ceiling.
- */
 const parameterBudget = (provider: Provider): number => {
   switch (provider) {
     case "mssql":
@@ -121,14 +92,8 @@ const parameterBudget = (provider: Provider): number => {
   }
 };
 
-/** A row as the driver returns it: keys are the aliases of the select list. */
 type RawRow = Record<string, unknown>;
 
-/**
- * A select clause that extra columns can be added to, so a sub-query join can
- * read the columns it joins on even when the caller did not select them. The
- * added keys are removed from the rows before they are returned.
- */
 const extendSelect = (
   original: AnySelectClause,
 ): {
@@ -155,12 +120,6 @@ const extendSelect = (
   };
 };
 
-/**
- * The SQL adapter's implementation of the ORM operations.
- *
- * @param schema the resolved schema version (names already applied).
- * @param config the provider and relation mode of the target database.
- */
 export const makeSqlOrmAdapter = (
   schema: AnySchema,
   config: ResolvedSqlAdapterConfig,
@@ -181,7 +140,6 @@ export const makeSqlOrmAdapter = (
       : Effect.succeed(column);
   };
 
-  /** The select list for a table, aliased to ORM names (or `relation:ormName`). */
   const mapSelect = (
     select: AnySelectClause,
     table: AnyTable,
@@ -206,7 +164,6 @@ export const makeSqlOrmAdapter = (
       ),
     );
 
-  /** `INSERTED.<column> AS <ormName>` for an MSSQL `OUTPUT` clause. */
   const outputList = (sql: SqlClient, table: AnyTable): Statement.Fragment =>
     sql.csv(
       Object.entries(table.columns).flatMap(([ormName, column]) =>
@@ -216,7 +173,6 @@ export const makeSqlOrmAdapter = (
       ),
     );
 
-  /** `<column> AS <ormName>` for a `RETURNING` clause (no table qualifier). */
   const returningList = (sql: SqlClient, table: AnyTable): Statement.Fragment =>
     sql.csv(
       Object.entries(table.columns).flatMap(([ormName, column]) =>
@@ -224,10 +180,6 @@ export const makeSqlOrmAdapter = (
       ),
     );
 
-  /**
-   * ORM values -> SQL values. Missing columns take their runtime default when
-   * `generateDefault` is set; columns without a value are left out entirely.
-   */
   const prepareValues = (
     table: AnyTable,
     values: Row,
@@ -250,7 +202,6 @@ export const makeSqlOrmAdapter = (
       return { values: resolved, encoded };
     });
 
-  /** `WHERE <condition>`, or a typed failure when a value does not satisfy its column schema. */
   const whereClause = (
     sql: SqlClient,
     condition: Condition,
@@ -263,7 +214,6 @@ export const makeSqlOrmAdapter = (
       ),
     );
 
-  /** Driver row -> ORM row: ORM keys, decoded values, joined columns nested under the relation name. */
   const decodeResult = (
     row: RawRow,
     table: AnyTable,
@@ -304,7 +254,6 @@ export const makeSqlOrmAdapter = (
     return Result.succeed(output);
   };
 
-  /** Decode every row, failing on the first undecodable value. */
   const decodeRows = (
     rows: ReadonlyArray<RawRow>,
     table: AnyTable,
@@ -324,7 +273,6 @@ export const makeSqlOrmAdapter = (
       ),
     );
 
-  /** A row count used in `LIMIT`, `TOP`, `OFFSET`, or `FETCH NEXT`. */
   const rowCount = (value: number, name: string): Effect.Effect<string, QueryError> =>
     Number.isSafeInteger(value) && value >= 0
       ? Effect.succeed(String(value))
@@ -335,14 +283,9 @@ export const makeSqlOrmAdapter = (
           }),
         );
 
-  /**
-   * MySQL and SQLite reject `OFFSET` without a `LIMIT`, so an offset-only query
-   * needs a limit that means "all rows". PostgreSQL and CockroachDB do not.
-   */
   const emptyLimit =
     provider === "mysql" ? "18446744073709551615" : provider === "sqlite" ? "-1" : undefined;
 
-  /** The read behind findMany and findFirst; each traces it under its own name. */
   const findRows: (
     table: AnyTable,
     options: CompiledFindOptions,
@@ -364,8 +307,6 @@ export const makeSqlOrmAdapter = (
     for (const join of options.join ?? []) {
       const joinOptions = join.options;
       const relation = join.relation;
-      // A `many` relation, a join with joins of its own, and a join whose
-      // condition can never match are all resolved after the main query.
       if (joinOptions === false || relation.type === "many" || joinOptions.join !== undefined) {
         subQueryJoins.push(join);
         if (joinOptions !== false) {
@@ -375,7 +316,6 @@ export const makeSqlOrmAdapter = (
       }
       const target = relation.table;
       const alias = relation.name;
-      // The target's id column decides whether the LEFT JOIN matched a row.
       const joinSelect = extendSelect(joinOptions.select);
       joinSelect.extend(target.getIdColumn().ormName);
       const compiledJoinSelect = joinSelect.compile();
@@ -457,7 +397,6 @@ export const makeSqlOrmAdapter = (
 
     const rows = yield* sql<RawRow>`${spaced(parts)}`;
     const records = yield* decodeRows(rows, table, options.computed);
-    // A LEFT JOIN that matched nothing yields a row of NULLs; report it as no row.
     for (const record of records) {
       for (const join of flatJoins) {
         const joined = record[join.name];
@@ -472,11 +411,6 @@ export const makeSqlOrmAdapter = (
     return records;
   });
 
-  /**
-   * Attach a relation that cannot be a flat left join (a `many` relation, or
-   * one with its own joins): read the related rows in one extra query, then
-   * group them by the columns the relation joins on.
-   */
   const runSubQueryJoin: (
     records: ReadonlyArray<Row>,
     join: CompiledJoin,
@@ -493,10 +427,6 @@ export const makeSqlOrmAdapter = (
     for (const [, right] of relation.on) selectBuilder.extend(right);
     const compiledSelect = selectBuilder.compile();
 
-    // One condition per distinct key. A NULL join value can never match, so
-    // rows carrying one are left out. Single-column relations use one IN
-    // list; composite ones an OR of ANDs. Both are chunked to stay under the
-    // provider's parameter and expression-depth limits.
     const conditions: Array<Condition> = [];
     const pair = relation.on.length === 1 ? relation.on[0] : undefined;
     if (pair !== undefined) {
@@ -568,7 +498,6 @@ export const makeSqlOrmAdapter = (
     for (const subRecord of subRecords) compiledSelect.removeExtendedKeys(subRecord);
   });
 
-  // Join keys are decoded values, so a `DateTime` or `Uint8Array` key needs structural equality.
   const matches = (record: Row, subRecord: Row, relation: AnyRelation): boolean =>
     relation.on.every(([left, right]) => Equal.equals(record[left], subRecord[right]));
 
@@ -582,7 +511,6 @@ export const makeSqlOrmAdapter = (
     return yield* findRows(table, options);
   }, operation("findMany"));
 
-  // Reads through findRows, not findMany, so its statements are labelled findFirst.
   const findFirstImpl: (
     table: AnyTable,
     options: CompiledFindOptions,
@@ -619,7 +547,6 @@ export const makeSqlOrmAdapter = (
     return count;
   }, operation("count"));
 
-  /** Read one row back by its id, for providers or statements without a returning clause. */
   const selectById: (
     table: AnyTable,
     id: unknown,
@@ -639,18 +566,12 @@ export const makeSqlOrmAdapter = (
     return records[0];
   });
 
-  /**
-   * A value in an MSSQL statement: `NULL` as a literal (see `insertFragment`),
-   * an empty byte array as `0x` (tedious rejects a zero-length `varbinary`
-   * parameter), anything else bound as a parameter.
-   */
   const mssqlValue = (sql: SqlClient, value: unknown): Statement.Fragment => {
     if (value === null || value === undefined) return sql.literal("NULL");
     if (value instanceof Uint8Array && value.byteLength === 0) return sql.literal("0x");
     return sql`${value}`;
   };
 
-  /** `col = value, ...` for an UPDATE; MSSQL renders nulls and empty binaries as literals. */
   const assignments = (sql: SqlClient, encoded: Record<string, unknown>): Statement.Fragment =>
     provider === "mssql"
       ? sql.csv(
@@ -660,19 +581,9 @@ export const makeSqlOrmAdapter = (
         )
       : sql`${sql.update(encoded)}`;
 
-  /**
-   * The `(columns) VALUES (...)` part of an insert, with an optional
-   * `RETURNING` / `OUTPUT` list.
-   *
-   * MSSQL gets its own rendering: the Effect driver binds every `null`
-   * parameter as `bit`, so a multi-row insert that mixes `NULL` with text in
-   * one column fails with "Conversion failed ... to data type bit". Rendering
-   * `NULL` as a literal sidesteps the parameter type entirely. The other
-   * providers use the driver's insert helper.
-   */
   const insertFragment = (
     sql: SqlClient,
-    rows: ReadonlyArray<Record<string, unknown>>,
+    rows: Arr.NonEmptyReadonlyArray<Record<string, unknown>>,
     returning: Statement.Fragment | undefined,
   ): Statement.Fragment => {
     const aligned = alignColumns(rows);
@@ -693,16 +604,12 @@ export const makeSqlOrmAdapter = (
       : sql`(${columnList}) OUTPUT ${returning} VALUES ${valueList}`;
   };
 
-  /**
-   * Give every row the same columns, because one multi-row `INSERT` has a
-   * single column list. A column another row sets is inserted as `NULL` here.
-   */
   const alignColumns = (
-    rows: ReadonlyArray<Record<string, unknown>>,
-  ): Array<Record<string, unknown>> => {
+    rows: Arr.NonEmptyReadonlyArray<Record<string, unknown>>,
+  ): Arr.NonEmptyArray<Record<string, unknown>> => {
     const keys = new Set<string>();
     for (const row of rows) for (const key of Object.keys(row)) keys.add(key);
-    return rows.map((row) => {
+    return Arr.map(rows, (row) => {
       const out: Record<string, unknown> = {};
       for (const key of keys) out[key] = row[key] ?? null;
       return out;
@@ -760,10 +667,9 @@ export const makeSqlOrmAdapter = (
       const sql = yield* SqlClient;
       const prepared = yield* Effect.forEach(values, (value) => prepareValues(table, value, true));
       const encoded = prepared.map((item) => item.encoded);
-      // One INSERT per parameter budget; several chunks run in one transaction so the batch stays atomic.
       const columnCount = Math.max(1, Object.keys(table.columns).length);
       const rowsPerStatement = Math.max(1, Math.floor(parameterBudget(provider) / columnCount));
-      const chunks = chunk(encoded, rowsPerStatement);
+      const chunks = Arr.chunksOf(encoded, rowsPerStatement);
       const insertAll = Effect.forEach(
         chunks,
         (rows) => sql`INSERT INTO ${sql(table.names.sql)} ${insertFragment(sql, rows, undefined)}`,
@@ -806,7 +712,6 @@ export const makeSqlOrmAdapter = (
     yield* sql`${spaced(parts)}`;
   }, operation("deleteMany"));
 
-  /** Update the row with this id, returning it when `returning` is set. */
   const updateById: (
     table: AnyTable,
     id: unknown,
@@ -864,8 +769,6 @@ export const makeSqlOrmAdapter = (
     const idColumn = table.getIdColumn();
     const prepared = yield* prepareValues(table, options.update, false);
 
-    // Equality on the supplied primary key has an exact conflict target. Let the
-    // database arbitrate concurrent inserts instead of racing a read then create.
     const condition = options.where;
     if (
       (provider === "postgresql" || provider === "cockroachdb" || provider === "sqlite") &&
@@ -893,8 +796,6 @@ export const makeSqlOrmAdapter = (
         : yield* Effect.fromResult(decodeResult(row, table));
     }
 
-    // MSSQL has no row count on `.raw`, so the update reports itself through
-    // `OUTPUT INSERTED`: one round trip when a row already exists.
     if (provider === "mssql" && Object.keys(prepared.encoded).length > 0) {
       const output = options.returning
         ? outputList(sql, table)

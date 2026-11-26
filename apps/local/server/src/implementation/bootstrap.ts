@@ -1,4 +1,3 @@
-/** Persist first-install keys in the OS credential store, or a key file when there is none or when chosen. */
 import {
   Config,
   ConfigProvider,
@@ -20,7 +19,8 @@ import {
   keyStorageConfig,
   keyStorageInvalid,
   type KeyStorage,
-  LocalConfigurationReason,
+  LocalConfigurationError,
+  type LocalConfigurationReason,
   LocalCredentialService,
   LocalInstallation as Installation,
 } from "../contracts/auth.ts";
@@ -28,25 +28,12 @@ import { desktopPairing } from "../contracts/startup.ts";
 import { writeAtomically } from "./atomic-file.ts";
 import { readSettings } from "./service-files.ts";
 
-/** Safe startup instructions. Key values are never displayed; native error text is sanitized. */
-export class LocalConfigurationError extends Schema.TaggedError<LocalConfigurationError>()(
-  "LocalConfigurationError",
-  {
-    reason: LocalConfigurationReason,
-    message: Schema.String,
-  },
-) {}
-
 const Keys = Schema.Struct({
   apiKey: Schema.RedactedFromValue(Schema.String.check(Schema.isMinLength(32))),
   encryptionKey: Schema.RedactedFromValue(
     Schema.String.check(Schema.isPattern(/^[a-fA-F0-9]{64}$/u)),
   ),
 });
-/**
- * Native keyring text, sanitized for display: control characters removed, long hex runs (such
- * as generated keys) redacted, and length capped. Keyring-core text never carries the password.
- */
 const detail = (error: unknown) =>
   error instanceof Error
     ? error.message
@@ -56,7 +43,6 @@ const detail = (error: unknown) =>
         .slice(0, 240)
     : "unknown error";
 const optIn = "set EXECUTOR_KEY_STORAGE=file to keep this new directory's keys in keys.json";
-/** `firstStart` here means EXECUTOR_KEY_STORAGE=os ruled out the automatic key file. */
 const unavailable = (reason: string, firstStart: boolean) =>
   new LocalConfigurationError({
     reason: "credential-unavailable",
@@ -68,7 +54,6 @@ const unlock: Readonly<Record<string, string>> = {
   linux: "unlock the keyring first, for example with `gnome-keyring-daemon --unlock`",
   darwin: "unlock the keychain first with `security unlock-keychain`",
 };
-// Kept apart from `unavailable` so the desktop can offer a restart, which prompts again.
 const denied = (reason: string, platform: string, firstStart: boolean) =>
   new LocalConfigurationError({
     reason: "credential-denied",
@@ -88,21 +73,6 @@ const mismatch = (requested: KeyStorage, kept: KeyStorage) =>
     message: `This directory keeps its keys in ${kept === "file" ? "keys.json" : "the OS credential store"}, so EXECUTOR_KEY_STORAGE=${requested} cannot apply. Executor never switches key storage or moves keys. Unset EXECUTOR_KEY_STORAGE, or use a new EXECUTOR_DATA_DIR. Nothing was changed.`,
   });
 
-/**
- * Why the OS credential store could not be used, as reported by @napi-rs/keyring 2.1.0.
- *
- * Its errors carry no native code, only keyring-core text ("Platform failure: …" or
- * "Couldn't access platform storage: …"), and macOS detail text is localized. So only
- * these count as an absent store:
- * - the native module cannot load, or `new AsyncEntry` throws. Only the Linux Secret
- *   Service store does work there: it connects to the D-Bus session bus and opens a
- *   Secret Service session, so a missing bus or provider fails at construction.
- * - Windows ERROR_NO_SUCH_LOGON_SESSION: the logon session has no credential vault,
- *   as for a service or an SSH logon.
- * Every other failure is treated as denied and retryable: a cancelled macOS prompt
- * (-128), failed authentication or a locked keychain; a locked Linux collection or a
- * dismissed unlock prompt; and any error that cannot be identified.
- */
 type StoreFailure = { readonly kind: "absent" | "denied"; readonly reason: string };
 const absent = (error: unknown): StoreFailure => ({ kind: "absent", reason: detail(error) });
 const classify =
@@ -123,7 +93,6 @@ const invalid = () =>
       "Executor's saved key or installation record is invalid. Restore the original OS credential or key file and installation.json from your backup. Keys have not been replaced.",
   });
 
-/** One message for an unusable key file; the reason says whether it is gone, unreadable or damaged. */
 const keyFileUnusable = (
   keyFile: string,
   error: PlatformError.PlatformError | Schema.SchemaError,
@@ -140,11 +109,9 @@ const keyFileUnusable = (
 
 const randomKey = () => Redacted.make(Hex.encode(crypto.getRandomValues(new Uint8Array(32))));
 
-/** The line a first start that saved its keys to keys.json writes on stderr. */
 const keyFileNotice = (keyFile: string, chosen: boolean) =>
   `${chosen ? "EXECUTOR_KEY_STORAGE=file" : "OS credential store not found"}; keys saved to ${keyFile}`;
 
-/** Hold the directory's bootstrap lock for the current scope. */
 const lockDirectory = (directory: string, message: string) =>
   Effect.gen(function* () {
     const path = yield* Path.Path;
@@ -158,7 +125,6 @@ const lockDirectory = (directory: string, message: string) =>
     );
   });
 
-/** One installation's OS credential. Construction failures mean the store is absent. */
 const credentialEntry = (id: string) =>
   Effect.gen(function* () {
     const { AsyncEntry } = yield* Effect.tryPromise({
@@ -177,7 +143,6 @@ const credentialEntry = (id: string) =>
 const decodeKeys = Schema.decodeUnknownEffect(Schema.fromJsonString(Keys));
 const encodeKeys = Schema.encodeEffect(Schema.fromJsonString(Keys));
 
-/** One directory's files and any supplied keys, read before anything touches the directory. */
 const dataDirectory = Effect.gen(function* () {
   const path = yield* Path.Path;
   const directory = path.resolve(yield* dataDirectoryConfig);
@@ -190,7 +155,6 @@ const dataDirectory = Effect.gen(function* () {
   };
 });
 
-/** A directory's installation record. */
 const decodeInstallation = (marker: string) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
@@ -202,7 +166,6 @@ const decodeInstallation = (marker: string) =>
       );
   });
 
-/** The directory's installation record, or none when nothing has started with it. */
 const readInstallation = (marker: string) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
@@ -211,14 +174,12 @@ const readInstallation = (marker: string) =>
       : Option.none<typeof Installation.Type>();
   });
 
-/** A directory's keys.json. */
 const readKeyFile = (keyFile: string) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
     return yield* fs.readFileString(keyFile).pipe(Effect.flatMap(decodeKeys));
   }).pipe(Effect.mapError((error) => keyFileUnusable(keyFile, error)));
 
-/** One installation's OS credential entry and the keys saved in it, if any. */
 const readCredential = (platform: string, id: string) =>
   Effect.gen(function* () {
     const entry = yield* credentialEntry(id);
@@ -236,17 +197,14 @@ const credentialMissing = () =>
       "Executor's OS credential is missing for an existing installation. Restore that credential from your backup. It has not been replaced.",
   });
 
-/** Keys saved in an existing installation's OS credential, which is never replaced when missing. */
 const storedKeys = (stored: string | undefined) =>
   stored === undefined
     ? Effect.fail(credentialMissing())
     : decodeKeys(stored).pipe(Effect.mapError(invalid));
 
-/** The text for an OS credential store that refused a later read or write. */
 const refusedAgain = (reason: string) =>
   `Access to the OS credential store was denied, or the store is locked (${reason}). Allow access or unlock the store, then try again.`;
 
-/** This directory's server configuration with its resolved keys in place of the environment's. */
 const configure = (directory: string, keys: typeof Keys.Type) =>
   Effect.gen(function* () {
     const base = yield* ConfigProvider.ConfigProvider;
@@ -262,11 +220,6 @@ const configure = (directory: string, keys: typeof Keys.Type) =>
     );
   });
 
-/** Resolve one profile's keys. Existing data never causes a new credential to be generated. */
-/**
- * The key storage a new data directory asks for. Servers read it before creating anything, so an
- * invalid value changes nothing.
- */
 export const keyStorageSetting = keyStorageConfig.pipe(
   Effect.mapError(
     () => new LocalConfigurationError({ reason: "misconfigured", message: keyStorageInvalid }),
@@ -278,7 +231,6 @@ export const localConfiguration = (platform: string) =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;
-      // Read before touching the directory, so an invalid value changes nothing.
       const keyStorage = yield* keyStorageSetting;
       const { directory, marker, keyFile, explicitApi, explicitEncryption } = yield* dataDirectory;
 
@@ -342,11 +294,7 @@ export const localConfiguration = (platform: string) =>
           message:
             "This directory uses supplied keys. Set its original EXECUTOR_API_KEY and EXECUTOR_ENCRYPTION_KEY. No replacement keys were created.",
         });
-      // Only a directory that has never held keys may choose the key file. Once a
-      // record says "ready" or data exists, the credential store stays mandatory.
       const firstStart = installation.state === "pending" && !existing;
-      // A first start interrupted after saving its key file finishes in file mode
-      // with those keys; the bootstrap lock keeps this check and the write exclusive.
       const interrupted = firstStart && (yield* fs.exists(keyFile));
       const kept: KeyStorage | undefined =
         installation.state === "file" || interrupted ? "file" : firstStart ? undefined : "os";
@@ -367,13 +315,10 @@ export const localConfiguration = (platform: string) =>
           const keys = generated();
           yield* writeFile(keyFile, yield* encodeKeys(keys));
           yield* writeMarker("file");
-          // stdout is the desktop readiness protocol; this notice belongs on stderr.
           yield* Console.error(keyFileNotice(keyFile, chosen));
           return yield* configure(directory, keys);
         });
       if (Option.contains(keyStorage, "file")) return yield* saveKeyFile(true);
-      // Denied access leaves the pending record and no key file, so the next start
-      // prompts again and can still fall back if the store turns out to be absent.
       const storeFailed = (failure: StoreFailure) =>
         failure.kind === "denied"
           ? Effect.fail(denied(failure.reason, platform, firstStart))
@@ -412,11 +357,6 @@ export const localConfiguration = (platform: string) =>
     ),
   );
 
-/**
- * Run `start`, which may start this directory's background server, and repeat the line that server
- * wrote if its first start saved the keys to keys.json: nothing reads a background server's stderr.
- * Only the installation record is read, never the keys.
- */
 export const withKeyFileNotice = <A, E, R>(directory: string, start: Effect.Effect<A, E, R>) =>
   Effect.gen(function* () {
     const path = yield* Path.Path;
@@ -427,7 +367,6 @@ export const withKeyFileNotice = <A, E, R>(directory: string, start: Effect.Effe
     const before = yield* recorded;
     const result = yield* start;
     if (Option.isNone(before) && Option.contains(yield* recorded, "file")) {
-      // The server ran with this environment and its saved `env`, as `ensure` starts it.
       const env = yield* readSettings(directory).pipe(
         Effect.map((settings) => settings.env ?? {}),
         Effect.orElseSucceed(() => ({})),
@@ -447,13 +386,6 @@ export const withKeyFileNotice = <A, E, R>(directory: string, start: Effect.Effe
     return result;
   });
 
-/**
- * Read the API key a client of one directory's running server sends, such as `executor pair`.
- * Unlike `localConfiguration` it never creates the directory, a record or keys, and takes no
- * lock: every bootstrap write is atomic and saves keys before the record that names them.
- * A supplied EXECUTOR_API_KEY is sent instead of the saved key. Clients never need the
- * encryption key, which protects the server's stored credentials.
- */
 export const savedApiKey = (platform: string) =>
   Effect.gen(function* () {
     const { directory, marker, keyFile, explicitApi } = yield* dataDirectory;
@@ -501,12 +433,6 @@ export const savedApiKey = (platform: string) =>
 const unchanged = (reason: LocalConfigurationReason, message: string) =>
   new LocalConfigurationError({ reason, message: `${message} The API key was not changed.` });
 
-/**
- * Replace one directory's saved API key where it is kept, in the OS credential store or
- * keys.json. The encryption key is retained, so saved accounts and MCP sign-ins still decrypt.
- * The bootstrap lock serializes this with a starting server. A running server keeps its current key
- * until it restarts; its next start also updates the managed Executor account.
- */
 export const rotateApiKey = (platform: string) =>
   Effect.scoped(
     Effect.gen(function* () {

@@ -1,4 +1,3 @@
-/** Product-owned browser review; scheduler actions otherwise share the normal local SDK. */
 import { Effect, Schema } from "effect";
 import { HttpApiBuilder } from "effect/http-api";
 import { StorageError, RequestInvalid, type Executor } from "@executor-js/sdk/core";
@@ -11,10 +10,6 @@ import { browserOnly } from "./dashboard.ts";
 import type { SqlClient } from "effect/sql";
 import { callerAccounts, localActor } from "./app-accounts.ts";
 
-/**
- * Authentication is shared with dashboard routes; human decisions additionally require a browser
- * cookie. The local subject has one copy of each declaration.
- */
 export const localScheduleHandlers = (
   executor: Executor,
   sql: SqlClient.SqlClient,
@@ -32,7 +27,6 @@ export const localScheduleHandlers = (
           ),
         ),
       )
-      // The app schedule has no actor; the SDK refuses a declaration of the other scope.
       .handle("configure", ({ params, payload: { scope, ...settings } }) =>
         executor.schedules.configure({
           ...params,

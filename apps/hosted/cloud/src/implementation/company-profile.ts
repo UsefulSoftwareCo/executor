@@ -25,7 +25,6 @@ const BrandResponse = Schema.Struct({
   ),
 });
 
-/** Context.dev owns company resolution, including rejection of consumer email domains. */
 export const companyLookupLive = (
   key: Redacted.Redacted<string>,
   endpoint = "https://api.context.dev/v1/brand/retrieve",
@@ -40,8 +39,6 @@ export const companyLookupLive = (
             const request = yield* HttpClientRequest.post(endpoint).pipe(
               HttpClientRequest.bearerToken(key),
               HttpClientRequest.bodyJson({
-                // Send only the domain identity, never the user's actual email address.
-                // The email resolver rejects free/disposable domains before returning a brand.
                 type: "by_email",
                 email: `workspace@${domain}`,
                 timeoutOpts: { milliseconds: 12000, behavior: "fail" },
@@ -54,7 +51,6 @@ export const companyLookupLive = (
             const { brand, partial } = yield* response.json.pipe(
               Effect.flatMap(Schema.decodeUnknownEffect(BrandResponse)),
             );
-            // Do not permanently cache a timeout as an unmatched or incomplete company.
             if (partial === true) return yield* new CompanyLookupFailed();
             if (!brand?.title?.trim()) return null;
             const logos =

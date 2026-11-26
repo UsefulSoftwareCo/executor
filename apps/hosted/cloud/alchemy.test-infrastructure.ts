@@ -1,4 +1,3 @@
-/** Shared empty Neon parent and preview automation configuration, managed separately from each preview. */
 import * as Alchemy from "alchemy";
 import * as Neon from "alchemy/Neon";
 import * as GitHub from "alchemy/GitHub";
@@ -55,7 +54,6 @@ export default Alchemy.Stack(
         name,
         value: yield* Config.NonEmptyString(name),
       }).pipe(retain());
-    // Test stages sign in through production's proxy, at the edge where its social sign-ins return.
     yield* GitHub.Variable("OAUTH_PROXY_PRODUCTION_URL", {
       ...target,
       name: "OAUTH_PROXY_PRODUCTION_URL",
@@ -75,8 +73,6 @@ export default Alchemy.Stack(
       yield* GitHub.Secret(name, { ...target, name, value: yield* Config.Redacted(name) }).pipe(
         retain(),
       );
-    // GitHub reserves the GITHUB_ prefix in Actions secrets. Login clients are shared with
-    // the existing OAuth proxy; previews still own their signing and encryption secrets.
     for (const name of ["GITHUB_CLIENT_ID", "GITHUB_CLIENT_SECRET"] as const)
       yield* GitHub.Secret(`Auth${name}`, {
         ...target,
