@@ -1,6 +1,10 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import { Effect, FileSystem, Path, Schema } from "effect";
+import { fromMarkdown } from "mdast-util-from-markdown";
+import { gfmFromMarkdown } from "mdast-util-gfm";
+import { gfm } from "micromark-extension-gfm";
+import { parse, type HTMLElement } from "node-html-parser";
 import { siteOrigin } from "@executor-js/marketing/site-origin";
 import { workerFirstRoutes } from "../src/contracts/worker-first-routes.ts";
 
@@ -14,6 +18,31 @@ class MissingHostedMcpEndpoint extends Schema.TaggedError<MissingHostedMcpEndpoi
 ) {}
 
 type Rule = Readonly<{ pattern: RegExp; target: string; status: number }>;
+type MarkdownNode = ReturnType<typeof fromMarkdown>["children"][number];
+
+const htmlReferences = (document: HTMLElement) =>
+  document
+    .querySelectorAll("[href], [src]")
+    .flatMap((element) =>
+      [element.getAttribute("href"), element.getAttribute("src")].filter(
+        (reference) => reference !== undefined,
+      ),
+    );
+
+const markdownReferences = (markdown: string) => {
+  const references: string[] = [];
+  const visit = (node: MarkdownNode) => {
+    if ("url" in node) references.push(node.url);
+    if (node.type === "html") references.push(...htmlReferences(parse(node.value)));
+    if ("children" in node) node.children.forEach(visit);
+  };
+  const body = markdown.replace(/^---\r?\n[\s\S]*?\r?\n---(?:\r?\n|$)/u, "");
+  fromMarkdown(body, {
+    extensions: [gfm()],
+    mdastExtensions: [gfmFromMarkdown()],
+  }).children.forEach(visit);
+  return references;
+};
 
 const routePattern = (source: string) =>
   new RegExp(
@@ -61,15 +90,17 @@ const checkSiteLinks = Effect.gen(function* () {
       status: Number(status),
     }));
 
-  const resolves = (pathname: string, hops = 0): boolean => {
-    if (hops > 5) return false;
-    if (workerRoutes.some((route) => route.test(pathname))) return true;
+  const resolveFile = (pathname: string, hops = 0): string | undefined => {
+    if (hops > 5) return undefined;
     const rule = rules.find((candidate) => candidate.pattern.test(pathname));
     if (rule !== undefined) {
-      if (rule.status === 200) return files.has(rule.target);
-      return resolves(new URL(rule.target, siteOrigin).pathname, hops + 1);
+      if (rule.status === 200) return files.has(rule.target) ? rule.target : undefined;
+      const target = new URL(rule.target, siteOrigin);
+      return target.origin === siteOrigin ? resolveFile(target.pathname, hops + 1) : undefined;
     }
-    return files.has(pathname);
+    if (files.has(pathname)) return pathname;
+    if (pathname === "/" && files.has("/index.html")) return "/index.html";
+    return undefined;
   };
 
   const pageRoute = (file: string) =>
@@ -79,23 +110,96 @@ const checkSiteLinks = Effect.gen(function* () {
         ? file.slice(0, -"/index.html".length)
         : file.slice(0, -".html".length);
 
+  const documents = new Map<string, { references: string[]; anchors: Set<string | undefined> }>();
+  const readHtml = (file: string) =>
+    Effect.gen(function* () {
+      const existing = documents.get(file);
+      if (existing !== undefined) return existing;
+      const html = parse(yield* fs.readFileString(path.join(site, file)));
+      const document = {
+        references: htmlReferences(html),
+        anchors: new Set([
+          ...html.querySelectorAll("[id]").map((element) => element.getAttribute("id")),
+          ...html.querySelectorAll("a[name]").map((element) => element.getAttribute("name")),
+        ]),
+      };
+      documents.set(file, document);
+      return document;
+    });
+
+  const anchorPage = (file: string) => {
+    if (file.endsWith(".html")) return file;
+    if (file.endsWith("/index.md")) return resolveFile(file.slice(0, -"/index.md".length) || "/");
+    if (file.endsWith(".md")) {
+      const stem = file.slice(0, -".md".length);
+      return resolveFile(stem) ?? resolveFile(stem + ".html");
+    }
+    return undefined;
+  };
+
+  const docsPath = (pathname: string) => pathname === "/docs" || pathname.startsWith("/docs/");
+  const fullText = "/docs/llms-full.txt";
   const broken = new Map<string, Set<string>>();
+  const record = (target: string, page: string) => {
+    const pages = broken.get(target) ?? new Set();
+    pages.add(page);
+    broken.set(target, pages);
+  };
+  if (!files.has(fullText)) record(fullText, "/docs");
+
+  let markdownCount = 0;
   for (const file of files) {
-    if (!file.endsWith(".html")) continue;
-    const page = pageRoute(file);
-    const html = yield* fs.readFileString(path.join(site, file));
-    for (const [, raw = ""] of html.matchAll(/\s(?:href|src)="([^"]*)"/g)) {
-      const reference = raw.replaceAll("&amp;", "&");
-      if (reference === "" || reference.startsWith("#")) continue;
+    const markdown = file.endsWith(".md");
+    const agentText = markdown || file === fullText;
+    if (!agentText && !file.endsWith(".html")) continue;
+    const page = agentText ? file : pageRoute(file);
+    const agentDocs = agentText && docsPath(file);
+    const references = agentText
+      ? markdownReferences(yield* fs.readFileString(path.join(site, file)))
+      : (yield* readHtml(file)).references;
+    if (markdown) markdownCount++;
+
+    for (const reference of references) {
+      if (reference === "" || (file === "/404.html" && reference.startsWith("#"))) continue;
       const url = yield* Effect.try(() => new URL(reference, new URL(page, siteOrigin))).pipe(
         Effect.option,
       );
       if (url._tag === "None" || url.value.origin !== siteOrigin) continue;
-      const pathname = decodeURIComponent(url.value.pathname);
-      if (resolves(pathname)) continue;
-      const pages = broken.get(pathname) ?? new Set();
-      pages.add(page);
-      broken.set(pathname, pages);
+      const { pathname, hash } = url.value;
+      const decoded = yield* Effect.try(() => ({
+        pathname: decodeURI(pathname),
+        anchor: decodeURIComponent(hash.slice(1)),
+      })).pipe(Effect.option);
+      if (
+        decoded._tag === "None" ||
+        (file === fullText && !reference.startsWith("/") && !URL.canParse(reference))
+      ) {
+        record(pathname + hash, page);
+        continue;
+      }
+      const decodedPath = decoded.value.pathname;
+      const target = reference.startsWith("#") ? file : resolveFile(decodedPath);
+      if (
+        agentDocs &&
+        !docsPath(decodedPath) &&
+        decodedPath !== "/" &&
+        reference.startsWith("/") &&
+        resolveFile("/docs" + decodedPath) !== undefined
+      ) {
+        record(pathname + hash, page);
+        continue;
+      }
+      if (target === undefined) {
+        const workerRoute = workerRoutes.some((route) => route.test(decodedPath));
+        if (!docsPath(decodedPath) && !agentDocs && workerRoute) continue;
+        record(pathname + hash, page);
+        continue;
+      }
+      if (!hash) continue;
+      const html = anchorPage(target);
+      if (html === undefined) continue;
+      const { anchors } = yield* readHtml(html);
+      if (!anchors.has(decoded.value.anchor)) record(pathname + hash, page);
     }
   }
 
@@ -106,7 +210,9 @@ const checkSiteLinks = Effect.gen(function* () {
       links: [...broken].map(([target, pages]) => ({ target, pages: [...pages] })),
     });
   }
-  yield* Effect.log(`Every same-origin link in ${files.size} site files resolves.`);
+  yield* Effect.log(
+    `Every same-origin link in the site HTML, ${markdownCount} Markdown files, and ${fullText} resolves.`,
+  );
 }).pipe(Effect.provide(NodeServices.layer));
 
 NodeRuntime.runMain(checkSiteLinks);

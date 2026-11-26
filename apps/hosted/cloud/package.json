@@ -59,7 +59,11 @@
     "@sentry/cli": "3.8.0",
     "@types/pg": "8.15.6",
     "esbuild": "0.28.2",
+    "mdast-util-from-markdown": "2.0.3",
+    "mdast-util-gfm": "3.1.0",
+    "micromark-extension-gfm": "3.0.0",
     "miniflare": "4.20260730.0",
+    "node-html-parser": "9.0.4",
     "vite-plus": "0.3.3"
   }
 }

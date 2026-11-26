@@ -251,7 +251,8 @@
     "effect@4.1.4": "patches/effect@4.1.4.patch",
     "@effect/sql-pg@4.1.4": "patches/@effect%2Fsql-pg@4.1.4.patch",
     "@effect/sql-pglite@4.1.4": "patches/@effect%2Fsql-pglite@4.1.4.patch",
-    "@electron/notarize@2.5.0": "patches/@electron%2Fnotarize@2.5.0.patch"
+    "@electron/notarize@2.5.0": "patches/@electron%2Fnotarize@2.5.0.patch",
+    "blume@1.7.3": "patches/blume@1.7.3.patch"
   },
   "trustedDependencies": [
     "dugite",
