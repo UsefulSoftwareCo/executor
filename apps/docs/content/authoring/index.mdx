@@ -1,0 +1,236 @@
+---
+title: Build an app
+description: "Write a TypeScript Executor app with index.ts and package.json, create it with executor apps create, and deploy it with executor apps deploy."
+slug: "/build"
+---
+
+An Executor app is a TypeScript package with `index.ts` and `package.json` declaring `dependencies.apps`. Create apps with `executor apps create`, activate them with `executor apps deploy`, and update them with `executor apps source`, `executor apps commit`, or Git on **Local**, **Self-host**, and **Cloud**.
+
+**The command that matters most:** run `executor apps framework`, save `hello/package.json` and `hello/index.ts`, then run `executor apps create --name "Hello" --files ./hello` and `executor apps deploy --app "$APP_ID" --files ./hello`.
+
+**Prerequisites and permissions:** Bash, Node.js, and `npm i -g executor@2.0.0-beta.79`. The walkthrough uses the **Local** background service. On **Cloud** and **Self-host**, use the organization you approved for app management. Editing and deploying an existing app require an editable app and edit permission.
+
+**You'll know it worked when…** deploy returns `app` and `version`, and `executor execute --code 'return await tools.hello.greet({ name: "Ada" })'` returns `Hello, Ada!`.
+
+## How to use it
+
+App commands choose their target in this order: `--host`, then `EXECUTOR_HOST`, then the last host remembered by either sign-in command (`executor apps login` or `executor login`), then the **Local** background server.
+
+Every app starts with two files:
+
+- `package.json` declaring `dependencies.apps` pinned to the exact version returned by `executor apps framework` so rebuilds stay on that release.
+- `index.ts` exporting `defineApp(requirements, definition)` as the default export.
+
+### Local
+
+The commands below use Bash and Node.js and assume no saved hosted sign-in or `EXECUTOR_HOST` override. If you run a manual Local server instead of the background service, pass its loopback origin (`--host http://127.0.0.1:4312`), supply its API key with `EXECUTOR_API_KEY`, and clear any `EXECUTOR_ACCESS_TOKEN` override.
+
+<Steps>
+  <Step title="Check the host's apps version">
+    In a new empty directory, run:
+
+    ```bash
+    executor apps framework
+    ```
+
+    Note the returned `version` (for example `0.0.1-beta.148`).
+  </Step>
+  <Step title="Create the two starter files">
+    Save these two files in `./hello`, replacing `0.0.1-beta.148` with the `version` printed above if your host reports a different release:
+
+    <CodeGroup>
+
+    ```json hello/package.json
+    {
+      "name": "hello-app",
+      "private": true,
+      "dependencies": {
+        "apps": "0.0.1-beta.148"
+      }
+    }
+    ```
+
+    ```ts hello/index.ts
+    import { defineApp, object, query, router, string } from "apps";
+
+    const greet = query(
+      {
+        description: "Greet someone by name",
+        input: object({ name: string() }),
+        output: object({ message: string() }),
+      },
+      async (_ctx, { name }) => ({
+        message: `Hello, ${name}!`,
+      }),
+    );
+
+    export default defineApp({}, { tools: router({ greet }) });
+    ```
+
+    </CodeGroup>
+  </Step>
+  <Step title="Create, deploy, and run the tool">
+    Create the app from `./hello`, deploy the returned `id`, and call `greet`:
+
+    ```bash
+    APP_ID=$(executor apps create --name "Hello" --files ./hello | node -pe 'JSON.parse(require("fs").readFileSync(0, "utf8")).id')
+    executor apps deploy --app "$APP_ID" --files ./hello
+    executor execute --code 'return await tools.hello.greet({ name: "Ada" })'
+    ```
+
+    Check that the deploy response includes `app` and `version`, and that `execution.value.message` is `"Hello, Ada!"` (or open the app's **Tools** tab in the dashboard and click **Run tool**).
+  </Step>
+</Steps>
+
+### Cloud
+
+<Steps>
+  <Step title="Sign in for app commands">
+    ```bash
+    executor apps login
+    ```
+
+    Open the printed URL, select your organization, and approve **Executor API** access. With no `EXECUTOR_HOST` override, this sign-in defaults to Cloud (`https://api.executor.sh`). For scripted hosted app commands, use an app-management access token in `EXECUTOR_ACCESS_TOKEN` and pass the target organization with `--organization`.
+  </Step>
+  <Step title="Check the framework version, create, and deploy">
+    Run `executor apps framework`, put the returned `version` in `hello/package.json`, then create and deploy `./hello`:
+
+    ```bash
+    executor apps framework
+    APP_ID=$(executor apps create --name "Hello" --files ./hello | node -pe 'JSON.parse(require("fs").readFileSync(0, "utf8")).id')
+    executor apps deploy --app "$APP_ID" --files ./hello
+    ```
+  </Step>
+  <Step title="Call the deployed tool">
+    Being able to manage an app is separate from being in its tool audience. To run the tool over hosted MCP, use a connection that can call the app. For the tool CLI on `2.0.0-beta.79`, sign in separately with `executor login --host https://api.executor.sh`, then run:
+
+    ```bash
+    executor execute --code 'return await tools.hello.greet({ name: "Ada" })'
+    ```
+  </Step>
+</Steps>
+
+### Self-host
+
+Sign in against your self-hosted origin for app commands, pin the returned framework version in `hello/package.json`, create, and deploy:
+
+```bash
+executor apps login --host https://executor.example.com
+executor apps framework
+APP_ID=$(executor apps create --name "Hello" --files ./hello | node -pe 'JSON.parse(require("fs").readFileSync(0, "utf8")).id')
+executor apps deploy --app "$APP_ID" --files ./hello
+```
+
+You can set `EXECUTOR_HOST=https://executor.example.com` instead of passing `--host` on each command. To call the deployed tool from the tool CLI on `2.0.0-beta.79`, sign in separately with `executor login --host https://executor.example.com` first.
+
+## Check source locally
+
+Before creating or deploying an app, run `executor apps check --files ./hello`.
+It reads the directory locally and checks the manifest, source paths, UTF-8 text,
+and source/public-file limits. It does not contact a host or change the files.
+It requires an exact `dependencies.apps` pin and keeps the version you tested;
+it does not compare that pin with the current host release. A host can still
+refuse a release it does not support.
+
+Use Oxlint for app-authoring conventions. Generate its config from the `apps`
+package:
+
+```js
+import { writeFile } from "node:fs/promises";
+import { appConfig } from "apps/oxlint";
+
+await writeFile(".oxlintrc.json", JSON.stringify(appConfig(), null, 2));
+```
+
+Then run the Oxlint CLI with that config. The rules reject host-only imports,
+global HTTP in app code, legacy account access, missing mutation approval, and a
+root entry that does not default-export `defineApp`. Browser code under `ui/`
+may use browser HTTP, but CommonJS loading through global `require`, global
+`module`, or `node:module`/`module` imports is rejected throughout the app.
+
+Framework calls must keep their identity. Import `defineApp`, `mutation`,
+`query` and `decodeJson` by name from exactly `apps`, in the module that calls
+them. A renamed import such as `import { mutation as write } from "apps"` is
+allowed when the imported function is called directly. The app entry must use
+`export default defineApp(...)` directly; parentheses and TypeScript expression
+wrappers are allowed.
+Import `QueryContext` and `MutationContext` types directly from `apps` in the
+module that uses them. Do not re-export or alias these types through a helper.
+Use ESM imports in helpers and browser code too.
+
+Do not assign these functions to another value, destructure them, pass or return
+them, or re-export them. Default, namespace and dynamic imports of `apps` are
+rejected. Every app source file is checked, including helpers, so a local barrel
+cannot hide a framework function. Ordinary helper modules can use named,
+default, namespace or literal dynamic imports. DTO fields named `mutation` or
+`write` remain valid.
+
+These checks inspect source structure. They do not type-check the app, evaluate
+application code, or prove that a host can build and run it.
+
+## Deploying
+
+`executor apps create` saves source files without building or running them. `executor apps deploy` compiles the app, runs any SQL migrations, activates the new version if the build succeeds, and returns JSON with `app` and `version`. A failed build keeps the previous active version running and reports the failing stage, with a source file and line when available.
+
+`executor apps deploy --files` first loads the working revision and saves the complete supplied directory as the new working source before building. A failed build can therefore leave the working source updated, and `--files` does not check for someone else's edits since you downloaded the app.
+
+### Updating an existing app
+
+To detect concurrent changes before deploying edits from a shell:
+
+1. Download the working source into an empty directory and record its `revision.commit`:
+
+   ```bash
+   BASE_COMMIT=$(executor apps source --app "$APP_ID" --out ./hello | node -pe 'JSON.parse(require("fs").readFileSync(0, "utf8")).revision.commit')
+   ```
+
+2. Edit files in `./hello`, commit with `--expected "$BASE_COMMIT"`, and deploy the returned `revision.commit`:
+
+   ```bash
+   NEW_COMMIT=$(executor apps commit --app "$APP_ID" --files ./hello --expected "$BASE_COMMIT" --message "Update greeting" | node -pe 'JSON.parse(require("fs").readFileSync(0, "utf8")).revision.commit')
+   executor apps deploy --app "$APP_ID" --commit "$NEW_COMMIT"
+   ```
+
+3. Inspect previous commits with `executor apps history --app "$APP_ID"`.
+
+`executor apps commit` saves a complete snapshot: any file omitted from `--files` is deleted from the working source, and the command reports `removed.count` and up to 100 removed paths.
+
+The CLI uploads a source directory larger than 16 MiB through Git automatically when only its `ui/public/` assets push it over the inline limit (non-public code must still fit within 4,096 files and 16 MiB). To clone on **Cloud**, sign in with `executor apps login`. On **Self-host**, use `executor apps login --host https://executor.example.com`, replacing the example with your server's origin. Then run:
+
+```bash
+CLONE_URL=$(executor apps git --app "$APP_ID")
+git clone -c credential.helper= -c credential.helper='!executor apps credential' -c credential.useHttpPath=true "$CLONE_URL"
+```
+
+On **Local**, use the snapshot commands (`source`, `commit`, `deploy`), or use `executor` as the Git HTTP Basic username and the Local API key as the password.
+
+From the clone, push the commit you want to activate, then deploy it with `executor apps deploy --app "$APP_ID" --commit "$(git rev-parse HEAD)"`.
+
+### Deploying through an agent over MCP
+
+On **Cloud** or **Self-host**, authorize a **Full access** MCP connection with **All apps** and link an account on the built-in **Executor** app that can create and deploy apps in the target organization. Read your organization ID from `tools.executor.context.get({})` and include `organization` in every `path` object (`path: { organization }` for `framework.release` and `appManagement.create`, and `path: { organization, app }` for `source`, `commit`, and `deploy`).
+
+On **Local**, use a **Full access** connection. Local links the built-in Executor app's account automatically.
+
+- `tools.executor.framework.release({})` returns the target's `apps` version for `package.json`.
+- `tools.executor.appManagement.create({ body: { name, files } })` creates an app from `{ path, content }` pairs.
+- `tools.executor.appManagement.source({ path: { app } })` reads the working source and current `revision`.
+- `tools.executor.appManagement.commit({ path: { app }, body: { expected, message, files } })` saves a new commit.
+- `tools.executor.appManagement.deploy({ path: { app }, body: { commit } })` builds and activates that commit.
+
+Start a new `execute` call after deploying to discover and run the newly deployed tool.
+
+## Limits
+
+- **Host resolution order:** `executor apps` commands resolve their target in this order: `--host`, then `EXECUTOR_HOST`, then the last host remembered by either `executor apps login` or `executor login`, then the Local background server. Pass `--host` or `EXECUTOR_HOST` explicitly when switching between targets.
+- **Pinning `dependencies.apps`:** declare the exact version returned by `executor apps framework` in `dependencies.apps` to keep rebuilds on that release. Omitting `dependencies.apps` fails the build; a version range can resolve to a different published framework version.
+- **Source size bounds:** code outside `ui/public/` must be UTF-8 text, at most 4,096 files and 16 MiB total, and each of your own JavaScript or TypeScript files is at most 2,000,000 bytes (JSON files and imported npm packages are outside the per-file JS/TS limit). Files under `ui/public/` may be binary: up to 10,000 files, at most 32 MB per file, and 1 GB total.
+- **Git push size on hosted servers:** on hosted Executor, a single Git push larger than about 64 MiB of packed data fails; split large `ui/public/` additions across smaller commits.
+- **No secrets in source:** never hardcode API keys or tokens in app files. Publishing on **Cloud** requires an organization **owner** or **admin** with app edit access and exposes the selected commit's files, package name, description, commit ID, and publication date. Connected account records, live app data, and private Git history stay behind (and paths such as `.env`, `.env.*`, and `.npmrc` are blocked), but credentials or private data written into included files become public. Use [Accounts and providers](/docs/build/accounts) for credentials.
+
+## Related
+
+- [Tools, routers, and schemas](/docs/build/tools)
+- [Accounts and providers](/docs/build/accounts)
+- [Framework versions and upgrades](/docs/build/upgrades)
+- [Apps and versions](/docs/concepts/apps-and-versions)
