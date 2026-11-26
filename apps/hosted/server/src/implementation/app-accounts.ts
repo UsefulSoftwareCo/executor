@@ -220,8 +220,7 @@ export const lockedChange = <A, E, R>(
           if (input.access === "contribute")
             yield* requireRequirementAccessAs(actor, { ...input, scope: "app" });
           else yield* requireAppAccessAs(actor, input.app, input.access);
-          if (input.account !== undefined)
-            yield* requireAccountOwnerAs(actor, input.account);
+          if (input.account !== undefined) yield* requireAccountOwnerAs(actor, input.account);
         }
         return yield* change(sql, actor);
       }),

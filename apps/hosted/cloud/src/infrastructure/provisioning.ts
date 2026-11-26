@@ -145,8 +145,8 @@ export const dispatchProvisioning = <R>(
       for update skip locked limit 50
     ) update hosted_provisioning job set available_at = now() + interval '30 seconds'
       from candidates where job.id = candidates.id returning job.id, job.kind`.pipe(
-      Effect.flatMap(Schema.decodeUnknownEffect(ClaimedJobs)),
-    );
+        Effect.flatMap(Schema.decodeUnknownEffect(ClaimedJobs)),
+      );
     const dispatched = yield* Effect.forEach(
       jobs,
       (job) =>

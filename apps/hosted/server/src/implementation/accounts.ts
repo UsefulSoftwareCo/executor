@@ -170,20 +170,20 @@ export const removeAccount = ({
   readonly account: AccountId;
 }) =>
   Effect.gen(function* () {
-  const executor = yield* Effect.flatten(HostedExecutor);
-  yield* executor.accounts.get({ owner, account });
-  const sql = yield* policyDatabase;
-  yield* executor[StorageHost].transaction(checkContributedAccountRemoval(sql, account));
-  const [first, ...rest] = yield* appLinkApps(sql, account, true);
-  if (first !== undefined)
-    return yield* new AccountLinkedToApp({ account, apps: [first, ...rest] });
-  return yield* executor.accounts
-    .remove({ owner, account })
-    .pipe(
-      Effect.catchTag("AccountWebhooksActive", (refusal) =>
-        Effect.flatMap(visibleAccountRefusal(executor, refusal), Effect.fail),
-      ),
-    );
+    const executor = yield* Effect.flatten(HostedExecutor);
+    yield* executor.accounts.get({ owner, account });
+    const sql = yield* policyDatabase;
+    yield* executor[StorageHost].transaction(checkContributedAccountRemoval(sql, account));
+    const [first, ...rest] = yield* appLinkApps(sql, account, true);
+    if (first !== undefined)
+      return yield* new AccountLinkedToApp({ account, apps: [first, ...rest] });
+    return yield* executor.accounts
+      .remove({ owner, account })
+      .pipe(
+        Effect.catchTag("AccountWebhooksActive", (refusal) =>
+          Effect.flatMap(visibleAccountRefusal(executor, refusal), Effect.fail),
+        ),
+      );
   });
 export const disconnectAccount = Effect.flatMap(AccountGrants.delete, removeAccount);
 /** Update the label or description using the owner-filtered SDK primitive. */
