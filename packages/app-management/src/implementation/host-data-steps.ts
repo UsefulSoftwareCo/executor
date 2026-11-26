@@ -99,7 +99,6 @@ const listedSteps: ReadonlyArray<ListedStep> = [
     step: catalogCopyRebuildStep,
     listed: (host) => host.catalogCopyRebuild !== undefined,
   },
-  // One-off: record the identity of providers stored before SDK storage 4.0.18.
   { name: providerIdentitiesStepName, step: providerIdentitiesStep },
 ];
 

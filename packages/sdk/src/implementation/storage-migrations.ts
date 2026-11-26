@@ -365,7 +365,6 @@ const version4015Schema = schema({
   },
 });
 
-/** The 4.0.18 layout: providers record their identity. */
 const version4018Schema = schema({
   version: "4.0.18",
   tables: version4018Tables,
@@ -531,9 +530,7 @@ export const storageSchemas = [
         ]),
       ),
   }),
-  // Additive: the running server ignores provider identities until it deploys or data step 14 records them.
   version4018Schema,
-  // Additive: deploys find providers by identity; the running server's queries are unchanged.
   indexOnlyVersion(version4018Schema, "4.0.19", [providerIdentityIndex]),
 ] as const;
 

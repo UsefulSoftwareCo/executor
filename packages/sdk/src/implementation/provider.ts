@@ -26,7 +26,6 @@ export function canonical(value: Json): string {
   return JSON.stringify(value);
 }
 
-/** JSON Schema keywords whose value is one schema, or a list of them for `items` before 2020-12. */
 const subschema = new Set([
   "items",
   "additionalItems",
@@ -41,9 +40,7 @@ const subschema = new Set([
   "then",
   "else",
 ]);
-/** Keywords whose value lists schemas. */
 const subschemaLists = new Set(["prefixItems", "allOf", "anyOf", "oneOf"]);
-/** Keywords whose value maps names, such as field names, to schemas, or to lists of names. */
 const subschemaMaps = new Set([
   "properties",
   "dependencies",
@@ -53,11 +50,6 @@ const subschemaMaps = new Set([
   "definitions",
 ]);
 
-/**
- * A field schema without the `title` and `description` forms show. Only annotations at schema
- * positions go, so a field named `title` or `description` stays, as do types, formats, `required`
- * and every other keyword that decides what a value is.
- */
 const withoutDisplayText = (schema: Json): Json => {
   if (schema === null || typeof schema !== "object") return schema;
   if (Array.isArray(schema)) return schema.map(withoutDisplayText);
@@ -82,10 +74,6 @@ const withoutDisplayText = (schema: Json): Json => {
   );
 };
 
-/**
- * A method without the text forms show: a secrets method's `label`, and the `title` and
- * `description` of its fields. What remains decides how the credential is obtained and used.
- */
 export const methodCredential = (method: ProviderDefinition["auth"][string]) => {
   if (method.type !== "secrets") return method;
   const { label: _label, fields, ...credential } = method;
@@ -111,19 +99,6 @@ const contentId = (value: unknown, crypto: HostCrypto) =>
     return ProviderId.make(`prv_${Hex.encode(hash)}`);
   });
 
-/**
- * Equal JSON definitions, regardless of object key order, share a content-derived identity.
- * Declared hosts are not part of it: each account records the hosts it was connected for, so an
- * app that declares other hosts still fills the slot, but sends credentials only where both allow.
- * Display text is not part of it either (see `methodCredential`), so rewording a form keeps the
- * provider and its accounts. `shared` is the definition every app with this identity agrees on,
- * without hosts; its display text is the last deploy's, so forms read it from the app version's
- * own definition.
- *
- * `identity` is the ID a provider first stored now gets. `legacy` is the ID earlier versions
- * derived, display text included; a provider stored then keeps that ID. A deploy chooses the ID by
- * identity: see `chooseProviderIds` in apps.ts.
- */
 export const identifyProvider = (definition: ProviderDefinition, crypto: HostCrypto) =>
   Effect.gen(function* () {
     const parsed = yield* Schema.decodeUnknownEffect(ProviderDefinition)(definition).pipe(
