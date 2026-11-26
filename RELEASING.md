@@ -191,7 +191,8 @@ run. A push and a scheduled tick decide alike:
   skipping it. At most five publishing attempts a day fail: once five failed in
   the last 24 hours, counting each re-run of a run as an attempt of its own, no
   tick starts or re-runs another, a manual dispatch of Beta
-  included, until one of them is a day old (dispatch **Executor releases** with
+  included, until enough of them are a day old that fewer than five remain
+  (dispatch **Executor releases** with
   channel **beta** by hand to publish sooner, after inspecting them). It finds
   them by when they ran: the release runs of the last month (GitHub re-runs a
   run only within 30 days), and the earlier attempts of those re-run in the last
@@ -204,8 +205,8 @@ run. A push and a scheduled tick decide alike:
   as soon as `main` is green again. Beta also ticks when CI finishes green on a
   push to `main`, so that retry starts within minutes.
 - An attempt that failed in a step that publishes anything is never retried that
-  way: it has its failed jobs re-run once from its own artifacts; after that,
-  inspect it as below. It is judged by the step, not the job's name: every step
+  way: it has its failed jobs re-run once from its own artifacts (bar the kind
+  below); after that, inspect it as below. It is judged by the step, not the job's name: every step
   of `release-artifacts.yml` and `bun-runtime.yml` declares in its `env` whether
   it publishes, `PUBLISHES: "yes"` (every step of the `publish` job, the docker
   job's architecture push, the dispatch of Deploy and the Bun runtime's release)
@@ -215,6 +216,53 @@ run. A push and a scheduled tick decide alike:
   step that cannot be found counts as publishing
   (`scripts/releases/publishing-steps.ts`). Each skipped retry leaves a warning
   on the Beta run, and the failed release runs stay red.
+- One kind of publish failure is held for inspection instead of re-run, because
+  its re-run cannot publish `main`'s version. All of these must show: the run is
+  on its first attempt and failed; its `publish` job failed at "Export source
+  and create or resume the public draft release", every earlier step of that
+  job succeeded and every later one was skipped (bar the report, `Post` and
+  runner steps); no other step that publishes failed; and npm listed the
+  version that the run's commit records in `apps/cli/package.json` before the
+  run was created. Evidence it cannot read leaves the ordinary decision in
+  place: when the run's `apps/cli/package.json` cannot be read (within 30
+  seconds) or npm lists no time for the version it records, Beta re-runs the
+  run as above, and so it does when it cannot work out the hold's age for the
+  `held` output. A failed read of the run's jobs still fails the tick, as it
+  always has. The hold is the one Beta uses for any publish
+  failure to inspect: nothing is dispatched or re-run, the day's count is
+  unchanged, and the warning names the run, its commit and the version it
+  built. Beta does not recover from this by itself. Inspect the run; if it is a
+  dispatch that started on the commit before a version bump, check that npm
+  lacks `main`'s version and no release run is active, then dispatch
+  **Executor releases** from `main` with channel **beta** by hand. The step can
+  also fail for a transient reason (the app token, the export, the release
+  lookup) on a run whose source matches the release it resumes; that run is
+  held too, and once the cause is fixed, re-run its failed publish job when the
+  partial-failure checks below allow it ("After a partial failure" in this
+  section).
+
+  Why: on 2026-11-26 Beta pushed `Release 2.0.0-beta.80` (`1e846c84a9`) and
+  dispatched with `--ref main` about 20 ms later (its log). The run it started,
+  45761840264, was created on `47f49bf240`, the commit before the bump, which
+  records beta.79, and failed at that step because beta.79 was already public
+  (the run record). That GitHub resolved `main` before it saw the push is
+  inferred from those times. Before this check Beta would have re-run 45761840264,
+  which records beta.79 and so would have failed at that step again, and held
+  only on the second failure. The race itself is not fixed: such a run still
+  builds the old version for about 17 minutes and costs one of the day's five.
+  Three fixes were tried and set aside. Passing the pushed commit to **Executor
+  releases** and refusing a run on any other commit changes both workflows, is
+  skipped wherever an older revision of either sends or receives the dispatch,
+  and can only cancel a run after it exists. Dropping release runs that built
+  another version from Beta's history let Beta dispatch through holds it keeps
+  today, such as a publish failure whose commit cannot be read. Passing over
+  only a run of the shape above and deciding on the runs before it let Beta
+  dispatch or re-run another run on evidence that cannot show that is safe: the
+  passed-over run may have been resumable, a recovery run may lie beyond the 30
+  runs Beta reads, and the run exposed may be for a version the channel has
+  moved past. A fix has to make the release run build the exact commit Beta
+  pushed.
+
 - Only publishing runs count as attempts. A dispatch with channel **build**
   does not publish, so it neither adds to a failure streak nor counts as a
   success, though it still makes the tick wait while it runs.

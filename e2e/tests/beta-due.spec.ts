@@ -48,13 +48,16 @@ interface ReleaseRun {
   readonly headSha: string;
   readonly attempt?: number;
   readonly attemptsHoursAgo?: ReadonlyArray<number>;
-  readonly publish?: "success" | "failure" | "skipped";
+  readonly publish?: "success" | "failure" | "cancelled" | "skipped";
   readonly channel?: "beta" | "build";
   readonly metadata?: "success" | "failure";
   readonly title?: string;
   readonly publishingStep?: string;
   readonly dockerPush?: "success" | "failure" | "skipped";
   readonly failedJobs?: ReadonlyArray<{ readonly name: string; readonly step: string }>;
+  readonly publishSteps?: ReadonlyArray<{ readonly name: string; readonly conclusion: string }>;
+  readonly startedHoursAgo?: number;
+  readonly attemptsStartedHoursAgo?: ReadonlyArray<number>;
 }
 
 interface MatrixRun {
@@ -85,8 +88,6 @@ const run = (
     );
     return { output, exitCode };
   }).pipe(Effect.scoped);
-
-const ago = (hours: number) => new Date(Date.now() - hours * hour).toISOString();
 
 const world = Effect.gen(function* () {
   const fs = yield* FileSystem.FileSystem;
@@ -202,18 +203,58 @@ const world = Effect.gen(function* () {
     return yield* git("rev-parse", "HEAD");
   });
 
+  const clock = path.join(root, "clock.cjs");
+  yield* fs.writeFileString(
+    clock,
+    "const now = Number(process.env.BETA_DUE_NOW);\nDate.now = () => now;\n",
+  );
+  const realGit = (yield* run(root, "sh", ["-c", "command -v git"], env)).output.trim();
+  const gitBin = path.join(root, "git-bin");
+  yield* fs.makeDirectory(gitBin);
+  const stalled = path.join(root, "stalled");
+  const timers = path.join(root, "timers.cjs");
+  yield* fs.writeFileString(
+    timers,
+    [
+      'const fs = require("node:fs");',
+      "const later = setTimeout;",
+      "globalThis.setTimeout = (callback, delay, ...args) =>",
+      "  delay >= 10_000 && delay <= 60_000",
+      "    ? later(function fire() {",
+      "        if (fs.existsSync(process.env.BETA_DUE_STALLED)) callback(...args);",
+      "        else later(fire, 5);",
+      "      }, 0)",
+      "    : later(callback, delay, ...args);",
+      "",
+    ].join("\n"),
+  );
+  const alive = (pid: string) =>
+    run(root, "sh", ["-c", 'kill -0 "$1" 2>/dev/null', "sh", pid], env).pipe(
+      Effect.map((result) => result.exitCode === 0),
+    );
   const decide = (input: {
+    readonly at?: string;
     readonly event?: "push" | "schedule" | "workflow_dispatch" | "workflow_run" | "pull_request";
     readonly published?: number;
+    readonly npmTimes?: Readonly<Record<string, number>>;
     readonly betaTag?: string;
     readonly appsPublished?: boolean;
     readonly runs?: ReadonlyArray<ReleaseRun>;
     readonly matrix?: ReadonlyArray<MatrixRun>;
     readonly listFails?: boolean;
     readonly green?: ReadonlyArray<{ readonly headSha: string; readonly hoursAgo: number }>;
+    readonly git?: string;
+    readonly stall?: boolean;
   }) =>
     Effect.gen(function* () {
-      const time: Record<string, string> = { "2.0.0-beta.4": ago(30) };
+      const now = input.at === undefined ? Date.now() : Date.parse(input.at);
+      const ago = (hours: number) => new Date(Math.round(now - hours * hour)).toISOString();
+      const time: Record<string, string> = Object.fromEntries(
+        Object.entries(input.npmTimes ?? { "2.0.0-beta.4": 30 }).map(([released, hours]) => [
+          released,
+          ago(hours),
+        ]),
+      );
       if (input.published !== undefined) time[version] = ago(input.published);
       yield* fs.writeFileString(
         path.join(npm, "executor.json"),
@@ -266,6 +307,7 @@ const world = Effect.gen(function* () {
         readonly hoursAgo: number;
         readonly attempt?: number;
         readonly attemptsHoursAgo?: ReadonlyArray<number>;
+        readonly startedHoursAgo?: number;
       }) => ({
         databaseId: run.id,
         status: run.status ?? "completed",
@@ -275,7 +317,7 @@ const world = Effect.gen(function* () {
             : "",
         headSha: run.headSha,
         createdAt: ago(run.hoursAgo),
-        startedAt: ago(run.attemptsHoursAgo?.at(-1) ?? run.hoursAgo),
+        startedAt: ago(run.startedHoursAgo ?? run.attemptsHoursAgo?.at(-1) ?? run.hoursAgo),
         updatedAt: ago(run.attemptsHoursAgo?.at(-1) ?? run.hoursAgo),
         attempt: run.attempt ?? 1,
         url: `https://github.com/${repository}/actions/runs/${run.id}`,
@@ -324,7 +366,10 @@ const world = Effect.gen(function* () {
         for (const [index, hoursAgo] of (release.attemptsHoursAgo ?? []).entries())
           yield* fs.writeFileString(
             path.join(github, `attempt-${release.id}-${index + 1}.json`),
-            JSON.stringify({ startedAt: ago(hoursAgo), updatedAt: ago(hoursAgo) }),
+            JSON.stringify({
+              startedAt: ago(release.attemptsStartedHoursAgo?.[index] ?? hoursAgo),
+              updatedAt: ago(hoursAgo),
+            }),
           );
         const metadata = release.metadata ?? "success";
         yield* fs.writeFileString(
@@ -371,7 +416,11 @@ const world = Effect.gen(function* () {
                   { name: job.step, conclusion: "failure" },
                 ],
               })),
-              { name: "publish", conclusion: release.publish ?? "skipped", steps: [] },
+              {
+                name: "publish",
+                conclusion: release.publish ?? "skipped",
+                steps: release.publishSteps ?? [],
+              },
               {
                 name: "releases",
                 conclusion: (release.conclusion ?? "failure") === "success" ? "success" : "failure",
@@ -384,11 +433,40 @@ const world = Effect.gen(function* () {
       yield* fs.writeFileString(path.join(github, "calls"), "");
       const output = path.join(root, "output");
       yield* fs.writeFileString(output, "");
-      const result = yield* run(main, "node", [script], {
-        ...env,
-        GITHUB_OUTPUT: output,
-        GITHUB_EVENT_NAME: input.event ?? "schedule",
-      });
+      yield* fs.remove(stalled, { force: true });
+      if (input.git !== undefined) {
+        yield* fs.writeFileString(
+          path.join(gitBin, "git"),
+          `#!/bin/sh\n${input.git}\nexec "${realGit}" "$@"\n`,
+        );
+        yield* fs.chmod(path.join(gitBin, "git"), 0o755);
+      }
+      const result = yield* run(
+        main,
+        "node",
+        [
+          ...(input.at === undefined ? [] : ["--require", clock]),
+          ...(input.stall === true ? ["--require", timers] : []),
+          script,
+        ],
+        {
+          ...env,
+          ...(input.git === undefined ? {} : { PATH: `${gitBin}:${env.PATH}` }),
+          GITHUB_OUTPUT: output,
+          GITHUB_EVENT_NAME: input.event ?? "schedule",
+          BETA_DUE_STALLED: stalled,
+          ...(input.at === undefined ? {} : { BETA_DUE_NOW: String(now) }),
+        },
+      );
+      const stalledPid = (yield* fs.exists(stalled))
+        ? (yield* fs.readFileString(stalled)).trim()
+        : undefined;
+      const lookup =
+        stalledPid === undefined
+          ? undefined
+          : { pid: stalledPid, running: yield* alive(stalledPid) };
+      if (lookup?.running === true)
+        yield* run(root, "sh", ["-c", 'kill -KILL "$1"', "sh", lookup.pid], env);
       const outputs = Object.fromEntries(
         (yield* fs.readFileString(output))
           .split("\n")
@@ -398,7 +476,7 @@ const world = Effect.gen(function* () {
       const calls = (yield* fs.readFileString(path.join(github, "calls")))
         .split("\n")
         .filter((line) => line !== "");
-      return { ...result, outputs, calls };
+      return { ...result, outputs, calls, lookup };
     });
 
   yield* run(root, "git", ["init", "--quiet", "--bare", remote], env);
@@ -435,6 +513,32 @@ const world = Effect.gen(function* () {
     return { ...result, outputs: yield* fs.readFileString(output) };
   });
   const file = (name: string) => fs.readFileString(path.join(main, name));
+  const commitAt = (files: Readonly<Record<string, string>>, subject: string, date?: string) =>
+    Effect.gen(function* () {
+      for (const [name, text] of Object.entries(files))
+        yield* fs.writeFileString(path.join(main, name), text);
+      const result = yield* run(
+        main,
+        "git",
+        ["commit", "--quiet", "--allow-empty", "-am", subject],
+        date === undefined ? env : { ...env, GIT_AUTHOR_DATE: date, GIT_COMMITTER_DATE: date },
+      );
+      expect(result.exitCode, result.output).toBe(0);
+      return yield* git("rev-parse", "HEAD");
+    });
+  const manifest = (other: string) =>
+    `${JSON.stringify({ name: "executor", version: other }, null, 2)}\n`;
+  const onVersion = (other: string, date?: string) =>
+    commitAt({ "apps/cli/package.json": manifest(other) }, `Release ${other}`, date);
+  const aside = (files: Readonly<Record<string, string>>, subject: string) =>
+    Effect.gen(function* () {
+      const head = yield* git("rev-parse", "HEAD");
+      const commit = yield* commitAt(files, subject);
+      yield* git("reset", "--quiet", "--hard", head);
+      return commit;
+    });
+  const atVersion = (other: string) =>
+    aside({ "apps/cli/package.json": manifest(other) }, `Release ${other}`);
 
   return {
     decide,
@@ -451,6 +555,9 @@ const world = Effect.gen(function* () {
     git,
     file,
     lockRefresh,
+    onVersion,
+    atVersion,
+    aside,
   };
 });
 
@@ -5739,3 +5846,636 @@ layer(NodeServices.layer, { excludeTestServices: true })("Main health triggers",
     }).pipe(Effect.scoped),
   );
 });
+
+type World = Effect.Success<typeof world>;
+type History = Parameters<World["decide"]>[0];
+
+interface Outcome {
+  readonly exit: number;
+  readonly decision: string;
+  readonly run: string;
+  readonly held: string;
+  readonly failed?: number;
+  readonly inspects?: string;
+}
+
+interface Row {
+  readonly history: string;
+  readonly setup: (
+    world: World,
+  ) => Effect.Effect<History, unknown, ChildProcessSpawner.ChildProcessSpawner>;
+  readonly main: Outcome;
+  readonly patched?: Outcome;
+}
+
+const step = (name: string, conclusion: string) => ({ name, conclusion });
+const checkout = "Run actions/checkout@11d5960a326750d5838078e36cf38b85af677262";
+const appToken = "Run actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1";
+const download = "Run actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093";
+const refusedSteps = [
+  step("Set up job", "success"),
+  step("Set up runner", "success"),
+  step(checkout, "success"),
+  step("Run ./.github/actions/setup", "success"),
+  step("Refuse to publish over a newer release", "success"),
+  step(download, "success"),
+  step(download, "success"),
+  step(download, "success"),
+  step("Check the downloaded release notes", "success"),
+  step(appToken, "success"),
+  step("Export source and create or resume the public draft release", "failure"),
+  step("Run bun run release:wrapper .local/publish", "skipped"),
+  step("Refuse a version npm holds with another archive", "skipped"),
+  step(appToken, "skipped"),
+  step("Collect the public assets and their SHA256SUMS", "skipped"),
+  step("Upload installers, native archives and bundled Git source", "skipped"),
+  step("Publish the tested Docker manifest and channel", "skipped"),
+  step("Make the release public without changing v1 latest during beta", "skipped"),
+  step("Publish the npm launcher", "skipped"),
+  step("Verify a clean public npm installation", "skipped"),
+  step(appToken, "skipped"),
+  step("Point the Homebrew formula at this release", "skipped"),
+  step("Point the desktop update channel at this release", "skipped"),
+  step("Report what was and was not published", "success"),
+  step(`Post ${appToken}`, "success"),
+  step("Post Run ./.github/actions/setup", "success"),
+  step(`Post ${checkout}`, "success"),
+  step("Complete runner", "success"),
+  step("Complete job", "success"),
+];
+const changed = (changes: Readonly<Record<string, string>>) =>
+  refusedSteps.map((each) => ({ ...each, conclusion: changes[each.name] ?? each.conclusion }));
+
+const refused = (id: number, hoursAgo: number, headSha: string): ReleaseRun => ({
+  id,
+  hoursAgo,
+  headSha,
+  publish: "failure",
+  publishSteps: refusedSteps,
+});
+const failure = (id: number, hoursAgo: number, headSha: string): ReleaseRun => ({
+  id,
+  hoursAgo,
+  headSha,
+});
+const publishFailure = (id: number, hoursAgo: number, headSha: string): ReleaseRun => ({
+  id,
+  hoursAgo,
+  headSha,
+  publish: "failure",
+});
+const builds = (count: number, from: number, headSha: string): ReadonlyArray<ReleaseRun> =>
+  Array.from({ length: count }, (_, index) => ({
+    id: 300 + index,
+    channel: "build",
+    conclusion: "success",
+    hoursAgo: from + index * 0.01,
+    headSha,
+  }));
+
+const holds = (failed?: number): Outcome => ({
+  exit: 0,
+  decision: "none",
+  run: "",
+  held: failed === undefined ? "" : "held",
+  ...(failed === undefined ? {} : { failed }),
+});
+const waits: Outcome = { exit: 0, decision: "none", run: "", held: "" };
+const rerun = (run: number, failed?: number): Outcome => ({
+  exit: 0,
+  decision: "rerun",
+  run: String(run),
+  held: "",
+  ...(failed === undefined ? {} : { failed }),
+});
+const inspects = (run: number, held = ""): Outcome => ({
+  exit: 0,
+  decision: "none",
+  run: "",
+  held,
+  inspects: String(run),
+});
+
+const day = (
+  at: string,
+  options: {
+    readonly event?: History["event"];
+    readonly appsPublished?: boolean;
+    readonly matrixRed?: boolean;
+    readonly reRunAt?: readonly [string, string];
+  } = {},
+) =>
+  Effect.fnUntraced(function* (w: World) {
+    const c75 = yield* w.onVersion("2.0.0-beta.75", "2026-11-25T14:55:44Z");
+    const c76 = yield* w.onVersion("2.0.0-beta.76", "2026-11-25T18:24:47Z");
+    const c77 = yield* w.onVersion("2.0.0-beta.77", "2026-11-25T19:51:40Z");
+    const c78 = yield* w.onVersion("2.0.0-beta.78", "2026-11-25T20:19:22Z");
+    const c79 = yield* w.onVersion("2.0.0-beta.79", "2026-11-25T21:39:20Z");
+    yield* w.onVersion("2.0.0-beta.80", "2026-11-26T05:28:33Z");
+    const h = (time: string) => (Date.parse(at) - Date.parse(time)) / hour;
+    const record = (
+      id: number,
+      headSha: string,
+      conclusion: "success" | "failure",
+      created: string,
+      attempts: ReadonlyArray<readonly [string, string]>,
+    ): ReleaseRun => ({
+      id,
+      headSha,
+      conclusion,
+      publish: conclusion,
+      hoursAgo: h(created),
+      attempt: attempts.length,
+      startedHoursAgo: h(attempts.at(-1)![0]),
+      attemptsStartedHoursAgo: attempts.map(([started]) => h(started)),
+      attemptsHoursAgo: attempts.map(([, updated]) => h(updated)),
+    });
+    const incident: ReadonlyArray<readonly [string, string]> = [
+      ["2026-11-26T05:28:36Z", "2026-11-26T05:46:18Z"],
+      ...(options.reRunAt === undefined ? [] : [options.reRunAt]),
+    ];
+    return {
+      at,
+      event: options.event ?? "schedule",
+      appsPublished: options.appsPublished ?? true,
+      betaTag: "2.0.0-beta.79",
+      npmTimes: {
+        "2.0.0-beta.75": h("2026-11-25T16:56:16.998Z"),
+        "2.0.0-beta.76": h("2026-11-25T19:46:13.877Z"),
+        "2.0.0-beta.77": h("2026-11-25T20:13:31.834Z"),
+        "2.0.0-beta.78": h("2026-11-25T20:41:57.701Z"),
+        "2.0.0-beta.79": h("2026-11-25T23:05:31.322Z"),
+      },
+      matrix: [
+        {
+          id: 900,
+          conclusion: options.matrixRed === true ? "failure" : "success",
+          hoursAgo: 0.05,
+          headSha: c79,
+        },
+      ],
+      runs: [
+        {
+          ...record(45761840264, c79, "failure", "2026-11-26T05:28:36Z", incident),
+          publishSteps: refusedSteps,
+        },
+        record(45715842446, c79, "success", "2026-11-25T22:44:57Z", [
+          ["2026-11-25T22:44:57Z", "2026-11-25T23:06:18Z"],
+        ]),
+        record(45706328710, c79, "failure", "2026-11-25T21:39:23Z", [
+          ["2026-11-25T21:39:23Z", "2026-11-25T21:58:04Z"],
+          ["2026-11-25T21:58:25Z", "2026-11-25T22:09:22Z"],
+        ]),
+        record(45693835617, c78, "success", "2026-11-25T20:19:25Z", [
+          ["2026-11-25T20:19:25Z", "2026-11-25T20:42:38Z"],
+        ]),
+        record(45689330241, c77, "success", "2026-11-25T19:51:43Z", [
+          ["2026-11-25T19:51:43Z", "2026-11-25T20:14:17Z"],
+        ]),
+        record(45684701202, c76, "success", "2026-11-25T19:23:21Z", [
+          ["2026-11-25T19:23:21Z", "2026-11-25T19:47:03Z"],
+        ]),
+        record(45681019003, c76, "failure", "2026-11-25T19:01:24Z", [
+          ["2026-11-25T19:01:24Z", "2026-11-25T19:22:41Z"],
+        ]),
+        record(45674895192, c76, "failure", "2026-11-25T18:24:50Z", [
+          ["2026-11-25T18:24:50Z", "2026-11-25T18:47:03Z"],
+        ]),
+        record(45639436964, c75, "success", "2026-11-25T14:55:48Z", [
+          ["2026-11-25T14:55:48Z", "2026-11-25T15:13:39Z"],
+          ["2026-11-25T16:47:34Z", "2026-11-25T16:57:06Z"],
+        ]),
+      ],
+    } satisfies History;
+  });
+
+const synthetic = (
+  runs: (w: World, older: string) => ReadonlyArray<ReleaseRun>,
+  extra: Omit<History, "runs"> = {},
+) =>
+  Effect.fnUntraced(function* (w: World) {
+    const older = yield* w.atVersion("2.0.0-beta.4");
+    return { ...extra, runs: runs(w, older) } satisfies History;
+  });
+
+const differential: ReadonlyArray<Row> = [
+  {
+    history: "beta.80's day at 10:01:35Z: six failures counted",
+    setup: day("2026-11-26T10:01:35Z"),
+    main: holds(6),
+  },
+  {
+    history: "beta.80's day at 15:13:38Z, a second before 45639436964's first attempt ages out",
+    setup: day("2026-11-26T15:13:38Z"),
+    main: holds(5),
+  },
+  {
+    history: "beta.80's day at 15:13:39Z, when 45639436964's first attempt ages out",
+    setup: day("2026-11-26T15:13:39Z"),
+    main: holds(5),
+  },
+  {
+    history: "beta.80's day at 18:47:02Z, a second before 45674895192 ages out",
+    setup: day("2026-11-26T18:47:02Z"),
+    main: holds(5),
+  },
+  {
+    history: "beta.80's day at 18:47:03Z, when 45674895192 ages out",
+    setup: day("2026-11-26T18:47:03Z"),
+    main: rerun(45761840264),
+    patched: inspects(45761840264, "held"),
+  },
+  {
+    history: "beta.80's day at 18:55Z",
+    setup: day("2026-11-26T18:55:00Z"),
+    main: rerun(45761840264),
+    patched: inspects(45761840264, "held"),
+  },
+  {
+    history: "beta.80's day at 18:55Z, Beta dispatched by hand",
+    setup: day("2026-11-26T18:55:00Z", { event: "workflow_dispatch" }),
+    main: rerun(45761840264),
+    patched: inspects(45761840264, "held"),
+  },
+  {
+    history: "beta.80's day at 18:55Z, a push tick",
+    setup: day("2026-11-26T18:55:00Z", { event: "push" }),
+    main: rerun(45761840264),
+    patched: inspects(45761840264, "held"),
+  },
+  {
+    history: "beta.80's day at 18:55Z, the apps release not on npm",
+    setup: day("2026-11-26T18:55:00Z", { appsPublished: false }),
+    main: rerun(45761840264),
+    patched: inspects(45761840264, "held"),
+  },
+  {
+    history: "beta.80's day at 18:55Z, the newest release matrix red",
+    setup: day("2026-11-26T18:55:00Z", { matrixRed: true }),
+    main: rerun(45761840264),
+    patched: inspects(45761840264, "held"),
+  },
+  {
+    history: "beta.80's day at 18:55Z, after main re-ran 45761840264 once at 18:47:30Z",
+    setup: day("2026-11-26T18:55:00Z", {
+      reRunAt: ["2026-11-26T18:47:30Z", "2026-11-26T18:50:00Z"],
+    }),
+    main: holds(5),
+  },
+  {
+    history: "a refused run on beta.4's commit, alone",
+    setup: synthetic((_, older) => [refused(70, 1, older)]),
+    main: rerun(70),
+    patched: inspects(70),
+  },
+  {
+    history: "a refused run on beta.4's commit, alone, Beta dispatched by hand",
+    setup: synthetic((_, older) => [refused(70, 1, older)], { event: "workflow_dispatch" }),
+    main: rerun(70),
+    patched: inspects(70),
+  },
+  {
+    history: "three failures of beta.5 before publishing, then a refused run",
+    setup: synthetic(({ released }, older) => [
+      refused(70, 0.5, older),
+      failure(71, 1, released),
+      failure(72, 2, released),
+      failure(73, 3, released),
+    ]),
+    main: rerun(70),
+    patched: inspects(70),
+  },
+  {
+    history: "four failures of beta.5, then a refused run",
+    setup: synthetic(({ released }, older) => [
+      refused(70, 0.5, older),
+      failure(71, 1, released),
+      failure(72, 2, released),
+      failure(73, 3, released),
+      failure(74, 4, released),
+    ]),
+    main: holds(5),
+  },
+  {
+    history: "a publish failure of beta.5 on its first attempt, then a refused run",
+    setup: synthetic(({ released }, older) => [
+      refused(70, 0.5, older),
+      publishFailure(71, 1, released),
+    ]),
+    main: rerun(70),
+    patched: inspects(70),
+  },
+  {
+    history: "a publish failure of beta.5 on its second attempt, then a refused run",
+    setup: synthetic(({ released }, older) => [
+      refused(70, 0.5, older),
+      { ...publishFailure(71, 2, released), attempt: 2, attemptsHoursAgo: [1.5, 1] },
+    ]),
+    main: rerun(70),
+    patched: inspects(70),
+  },
+  {
+    history: "a successful beta.5 run that npm does not list, then a refused run",
+    setup: synthetic(({ released }, older) => [
+      refused(70, 0.5, older),
+      { id: 71, conclusion: "success", publish: "success", hoursAgo: 1, headSha: released },
+    ]),
+    main: rerun(70),
+    patched: inspects(70),
+  },
+  {
+    history: "two refused runs",
+    setup: synthetic((_, older) => [refused(70, 0.5, older), refused(71, 1, older)]),
+    main: rerun(70),
+    patched: inspects(70),
+  },
+  {
+    history: "a refused run, then an older version that never reached npm failed its publish job",
+    setup: Effect.fnUntraced(function* (w: World) {
+      const older = yield* w.atVersion("2.0.0-beta.4");
+      const unpublished = yield* w.atVersion("2.0.0-beta.3");
+      return {
+        runs: [refused(70, 0.5, older), publishFailure(72, 1, unpublished)],
+      } satisfies History;
+    }),
+    main: rerun(70),
+    patched: inspects(70),
+  },
+  {
+    history: "a refused run, 29 build runs, then a beta.5 publish failure",
+    setup: synthetic(({ released }, older) => [
+      refused(70, 0.05, older),
+      ...builds(29, 0.1, released),
+      publishFailure(91, 1, released),
+    ]),
+    main: rerun(70),
+    patched: inspects(70),
+  },
+  {
+    history: "a refused run on beta.4's commit, on its second attempt",
+    setup: synthetic((_, older) => [
+      { ...refused(70, 2, older), attempt: 2, attemptsHoursAgo: [1.5, 1] },
+    ]),
+    main: waits,
+  },
+  {
+    history: "a refused run on beta.5's own commit",
+    setup: synthetic(({ released }) => [refused(70, 1, released)]),
+    main: rerun(70),
+  },
+  {
+    history: "a refused run on beta.4's commit, beta.4 reaching npm after the run was created",
+    setup: synthetic((_, older) => [refused(70, 1, older)], {
+      npmTimes: { "2.0.0-beta.4": 0.5 },
+    }),
+    main: rerun(70),
+  },
+  {
+    history: "a refused run on beta.4's commit, beta.4 reaching npm as the run was created",
+    setup: synthetic((_, older) => [refused(70, 1, older)], {
+      npmTimes: { "2.0.0-beta.4": 1 },
+    }),
+    main: rerun(70),
+  },
+  {
+    history: "a refused run on beta.4's commit, beta.4 not on npm",
+    setup: synthetic((_, older) => [refused(70, 1, older)], { npmTimes: {} }),
+    main: rerun(70),
+  },
+  {
+    history: "a cancelled run on beta.4's commit whose publish job failed at the refusal",
+    setup: synthetic((_, older) => [{ ...refused(70, 1, older), conclusion: "cancelled" }]),
+    main: rerun(70),
+  },
+  {
+    history: "a refused run on beta.4's commit whose publish job was cancelled",
+    setup: synthetic((_, older) => [{ ...refused(70, 1, older), publish: "cancelled" }]),
+    main: rerun(70),
+  },
+  {
+    history: "a refused run on beta.4's commit with a second publish job",
+    setup: synthetic((_, older) => [
+      {
+        ...refused(70, 1, older),
+        failedJobs: [
+          { name: "publish", step: "Export source and create or resume the public draft release" },
+        ],
+      },
+    ]),
+    main: rerun(70),
+  },
+  {
+    history: "a run on beta.4's commit whose draft step was cancelled",
+    setup: synthetic((_, older) => [
+      {
+        ...refused(70, 1, older),
+        publishSteps: changed({
+          "Export source and create or resume the public draft release": "cancelled",
+        }),
+      },
+    ]),
+    main: rerun(70),
+  },
+  {
+    history: "a run on beta.4's commit that failed publishing the npm launcher",
+    setup: synthetic((_, older) => [
+      {
+        ...refused(70, 1, older),
+        publishSteps: changed({
+          "Export source and create or resume the public draft release": "success",
+          "Run bun run release:wrapper .local/publish": "success",
+          "Refuse a version npm holds with another archive": "success",
+          "Publish the npm launcher": "failure",
+        }),
+      },
+    ]),
+    main: rerun(70),
+  },
+  {
+    history: "a refused run on beta.4's commit whose upload step ran after the refusal",
+    setup: synthetic((_, older) => [
+      {
+        ...refused(70, 1, older),
+        publishSteps: changed({
+          "Upload installers, native archives and bundled Git source": "success",
+        }),
+      },
+    ]),
+    main: rerun(70),
+  },
+  {
+    history: "a refused run on beta.4's commit whose closing runner step failed",
+    setup: synthetic((_, older) => [
+      {
+        ...refused(70, 1, older),
+        publishSteps: changed({ "Complete job": "failure" }),
+      },
+    ]),
+    main: rerun(70),
+  },
+  {
+    history: "a refused run on beta.4's commit whose step before the refusal did not succeed",
+    setup: synthetic((_, older) => [
+      {
+        ...refused(70, 1, older),
+        publishSteps: changed({ "Check the downloaded release notes": "skipped" }),
+      },
+    ]),
+    main: rerun(70),
+  },
+  {
+    history: "a refused run on beta.4's commit with a publishing failure in another job",
+    setup: synthetic((_, older) => [
+      {
+        ...refused(70, 1, older),
+        failedJobs: [
+          {
+            name: "deploy-published",
+            step: "Deploy main again once npm names this release, so the docs name it",
+          },
+        ],
+      },
+    ]),
+    main: rerun(70),
+  },
+  {
+    history: "a publish failure on beta.4's commit whose steps are not listed",
+    setup: synthetic((_, older) => [publishFailure(70, 1, older)]),
+    main: rerun(70),
+  },
+  {
+    history: "a refused run whose commit cannot be read",
+    setup: synthetic(() => [refused(70, 0.5, "0123456789abcdef0123456789abcdef01234567")]),
+    main: rerun(70),
+  },
+  {
+    history: "a refused run whose manifest lookup exits non-zero after printing beta.4's manifest",
+    setup: synthetic((_, older) => [refused(70, 1, older)], {
+      git: `[ "$1" = show ] && { printf '{"version":"2.0.0-beta.4"}\\n'; echo "fatal: stub" >&2; exit 128; }`,
+    }),
+    main: rerun(70),
+  },
+  {
+    history:
+      "a refused run on beta.4's commit whose hold age cannot read the release commit's date",
+    setup: synthetic((_, older) => [refused(70, 1, older)], {
+      git: `case "$*" in "log -1 --format=%cI "*) echo "fatal: stub" >&2; exit 128 ;; esac`,
+    }),
+    main: rerun(70),
+  },
+  {
+    history: "a refused run on beta.4's commit whose hold age cannot find the release commit",
+    setup: synthetic((_, older) => [refused(70, 1, older)], {
+      git: `case "$*" in "log -1 --format=%H "*) echo "fatal: stub" >&2; exit 128 ;; esac`,
+    }),
+    main: rerun(70),
+  },
+  {
+    history: "a refused run whose commit's apps/cli/package.json is not JSON",
+    setup: Effect.fnUntraced(function* (w: World) {
+      const broken = yield* w.aside(
+        { "apps/cli/package.json": "not json\n" },
+        "Break the manifest",
+      );
+      return { runs: [refused(70, 1, broken)] } satisfies History;
+    }),
+    main: rerun(70),
+  },
+  {
+    history: "an older version that never reached npm failed its publish job",
+    setup: Effect.fnUntraced(function* (w: World) {
+      const unpublished = yield* w.atVersion("2.0.0-beta.3");
+      return { npmTimes: {}, runs: [publishFailure(72, 1, unpublished)] } satisfies History;
+    }),
+    main: rerun(72),
+  },
+  {
+    history: "two recent failures before publishing on an older version, inside the back-off",
+    setup: synthetic((_, older) => [failure(82, 1, older), failure(83, 2, older)]),
+    main: waits,
+  },
+  {
+    history: "a release run in progress",
+    setup: synthetic(({ released }) => [
+      { id: 95, status: "in_progress", hoursAgo: 0.1, headSha: released },
+    ]),
+    main: waits,
+  },
+  {
+    history: "beta.5 on npm for seven hours with a commit after it",
+    setup: Effect.fnUntraced(function* (w: World) {
+      yield* w.merge;
+      return { published: 7 } satisfies History;
+    }),
+    main: { exit: 0, decision: "bump", run: "", held: "clear" },
+  },
+];
+
+const outcome = (result: {
+  readonly exitCode: number;
+  readonly outputs: Readonly<Record<string, string>>;
+}): Outcome => {
+  const reason = result.outputs["reason"] ?? "";
+  const counted = /at least (\d+) publishing attempts failed|(\d+) of 5 attempts today failed/.exec(
+    reason,
+  );
+  const inspected = /^Not re-running \S+\/runs\/(\d+) /.exec(reason);
+  return {
+    exit: result.exitCode,
+    decision: result.outputs["decision"] ?? "",
+    run: result.outputs["run"] ?? "",
+    held: result.outputs["held"] ?? "",
+    ...(counted === null ? {} : { failed: Number(counted[1] ?? counted[2]) }),
+    ...(inspected === null ? {} : { inspects: inspected[1] }),
+  };
+};
+
+layer(NodeServices.layer, { excludeTestServices: true })(
+  "Beta decides as main's beta-due.ts at c35ac66114 did, except that it holds a refused run that built a published version instead of re-running it",
+  (it) => {
+    for (const row of differential)
+      it.effect(row.history, () =>
+        Effect.gen(function* () {
+          const w = yield* world;
+          const result = yield* w.decide(yield* row.setup(w));
+          expect(outcome(result), result.output).toEqual(row.patched ?? row.main);
+          if (row.patched !== undefined) {
+            expect(row.main.decision).toBe("rerun");
+            expect(row.patched).toEqual(inspects(Number(row.main.run), row.patched.held));
+          }
+        }).pipe(Effect.scoped),
+      );
+
+    it.effect(
+      "a manifest lookup that stalls is given up at its limit and stopped, and the run is re-run as main does",
+      () =>
+        Effect.gen(function* () {
+          const w = yield* world;
+          const history = yield* synthetic((_, older) => [refused(70, 1, older)], {
+            stall: true,
+            git: `[ "$1" = show ] && { echo $$ > "$BETA_DUE_STALLED"; exec sleep 300; }`,
+          })(w);
+          const result = yield* w.decide(history);
+          expect(outcome(result), result.output).toEqual(rerun(70));
+          expect(result.outputs["reason"]).toContain("re-running its failed jobs");
+          expect(result.lookup?.pid).toMatch(/^\d+$/);
+          expect(result.lookup?.running).toBe(false);
+        }).pipe(Effect.scoped),
+    );
+
+    it.effect(
+      "at 18:55Z on beta.80's day the hold names the run, its commit and both versions",
+      () =>
+        Effect.gen(function* () {
+          const w = yield* world;
+          const history = yield* day("2026-11-26T18:55:00Z")(w);
+          const result = yield* w.decide(history);
+          const incident = history.runs.find((each) => each.id === 45761840264)!;
+          expect(result.output).toContain("::warning::Not re-running");
+          expect(result.outputs["reason"]).toBe(
+            `Not re-running https://github.com/${repository}/actions/runs/45761840264 (commit ${incident.headSha}): it built executor@2.0.0-beta.79, which was already on npm when the run was created, and failed at "Export source and create or resume the public draft release", so re-running it cannot publish executor@2.0.0-beta.80. Inspect it; if it is a dispatch that started before the version bump reached main, publish executor@2.0.0-beta.80 by dispatching Executor releases from main with channel beta by hand (RELEASING.md, "Publish beta").`,
+          );
+        }).pipe(Effect.scoped),
+    );
+  },
+);

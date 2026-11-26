@@ -70,6 +70,33 @@ type Jobs = typeof Jobs.Type;
 
 const publishingStep = "Check the apps release is published unchanged";
 
+const refusalStep = "Export source and create or resume the public draft release";
+const afterRefusal = new Set([
+  "Report what was and was not published",
+  "Complete runner",
+  "Complete job",
+]);
+
+const refusedAtDraft = (jobs: Jobs) => {
+  const publish = jobs.jobs.filter((job) => job.name === "publish");
+  const steps = publish[0]?.steps ?? [];
+  const at = steps.findIndex((step) => step.name === refusalStep);
+  return (
+    publish.length === 1 &&
+    publish[0]?.conclusion === "failure" &&
+    steps[at]?.conclusion === "failure" &&
+    steps.slice(0, at).every((step) => step.conclusion === "success") &&
+    steps
+      .slice(at + 1)
+      .every(
+        (step) =>
+          step.conclusion === "skipped" ||
+          (step.conclusion === "success" &&
+            (afterRefusal.has(step.name) || step.name.startsWith("Post "))),
+      )
+  );
+};
+
 interface Attempt {
   readonly run: Run;
   readonly jobs: Jobs;
@@ -82,6 +109,7 @@ interface Decision {
   readonly exhausted?: boolean;
   readonly pending?: boolean;
   readonly run?: Run;
+  readonly otherwise?: Decision;
 }
 
 const wait = (reason: string): Decision => ({ decision: "none", reason, warning: false });
@@ -198,6 +226,17 @@ NodeRuntime.runMain(
       `--grep=^Release ${version.replaceAll(".", "\\.")}( |$)`,
       "HEAD",
     ]);
+
+    const builtPublished = (run: Run) =>
+      Effect.gen(function* () {
+        const shown = yield* succeed("git", ["show", `${run.headSha}:apps/cli/package.json`]).pipe(
+          Effect.timeout("30 seconds"),
+        );
+        const built = (yield* Schema.decodeUnknownEffect(Package)(shown)).version;
+        return Date.parse(registry.time[built] ?? "") < Date.parse(run.createdAt)
+          ? built
+          : undefined;
+      }).pipe(Effect.catchCause(() => Effect.succeed(undefined)));
 
     const jobsRead = new Map<number, Jobs>();
     const jobsOf = (run: Run) =>
@@ -334,22 +373,37 @@ NodeRuntime.runMain(
         };
       const failedToday = counted.failed;
       const publishJob = latest.jobs.jobs.find((job) => job.name === "publish");
+      const failures = publishingFailures(latest.jobs.jobs, {
+        [releaseWorkflow]: yield* fs.readFileString(`.github/workflows/${releaseWorkflow}`),
+        "bun-runtime.yml": yield* fs.readFileString(".github/workflows/bun-runtime.yml"),
+      });
       const publishing = [
         ...(publishJob !== undefined && publishJob.conclusion !== "skipped" ? ["publish"] : []),
-        ...publishingFailures(latest.jobs.jobs, {
-          [releaseWorkflow]: yield* fs.readFileString(`.github/workflows/${releaseWorkflow}`),
-          "bun-runtime.yml": yield* fs.readFileString(".github/workflows/bun-runtime.yml"),
-        }),
+        ...failures,
       ];
       if (publishing.length > 0) {
         const where = [...new Set(publishing)].join("; ");
-        if (last.attempt === 1)
+        const built =
+          last.attempt === 1 &&
+          last.conclusion === "failure" &&
+          failures.every((failure) => failure === `publish: ${refusalStep}`) &&
+          refusedAtDraft(latest.jobs)
+            ? yield* builtPublished(last)
+            : undefined;
+        const rerun = {
+          decision: "rerun",
+          reason: `${last.url} failed in a step that publishes executor@${version} (${where}); re-running its failed jobs from its artifacts.`,
+          warning: false,
+          run: last,
+        } satisfies Decision;
+        if (built !== undefined)
           return {
-            decision: "rerun",
-            reason: `${last.url} failed in a step that publishes executor@${version} (${where}); re-running its failed jobs from its artifacts.`,
-            warning: false,
-            run: last,
-          } satisfies Decision;
+            ...hold(
+              `Not re-running ${last.url} (commit ${last.headSha}): it built executor@${built}, which was already on npm when the run was created, and failed at "${refusalStep}", so re-running it cannot publish executor@${version}. Inspect it; if it is a dispatch that started before the version bump reached main, publish executor@${version} by dispatching Executor releases from main with channel beta by hand (RELEASING.md, "Publish beta").`,
+            ),
+            otherwise: rerun,
+          };
+        if (last.attempt === 1) return rerun;
         return hold(
           `${last.url} failed to publish executor@${version} again after a re-run (${where}). It may hold a public draft or tag, so a new run cannot replace it; inspect it (RELEASING.md, "Publish beta").`,
         );
@@ -501,25 +555,36 @@ NodeRuntime.runMain(
         ? afterPublished
         : Math.max(afterPublished, Date.parse(first));
     });
-    const held = result.warning
-      ? yield* Effect.gen(function* () {
-          const since = yield* dueSince;
-          const shown = result.exhausted === true || since === undefined || now - since > heldFor;
-          return { state: shown ? "held" : "", since };
-        })
+    const fallback = result.otherwise;
+    const aged =
+      result.warning && fallback !== undefined
+        ? yield* dueSince.pipe(
+            Effect.map((since) => ({ final: result, since })),
+            Effect.catchCause(() => Effect.succeed({ final: fallback, since: undefined })),
+          )
+        : { final: result, since: result.warning ? yield* dueSince : undefined };
+    const final = aged.final;
+    const held = final.warning
+      ? {
+          state:
+            final.exhausted === true || aged.since === undefined || now - aged.since > heldFor
+              ? "held"
+              : "",
+          since: aged.since,
+        }
       : {
-          state: registry.time[version] !== undefined && result.pending !== true ? "clear" : "",
+          state: registry.time[version] !== undefined && final.pending !== true ? "clear" : "",
           since: undefined,
         };
 
-    yield* Console.log(`${result.warning ? "::warning::" : ""}${result.reason}`);
+    yield* Console.log(`${final.warning ? "::warning::" : ""}${final.reason}`);
     yield* fs.writeFileString(
       output,
       [
-        `decision=${result.decision}`,
+        `decision=${final.decision}`,
         `version=${version}`,
-        `run=${result.run?.databaseId ?? ""}`,
-        `reason=${result.reason}`,
+        `run=${final.run?.databaseId ?? ""}`,
+        `reason=${final.reason}`,
         `held=${held.state}`,
         `held_since=${held.since === undefined ? "" : new Date(held.since).toISOString()}`,
       ]
