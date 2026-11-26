@@ -126,6 +126,7 @@ layer(HostedLive, { excludeTestServices: true })("Contributed app requirements",
         expect(managed).toMatchObject({
           health: { info: { email: "upstream@example.test" } },
         });
+        expect(managed?.canRemove).toBe(true);
         yield* ok(yield* f.unlink(actors.owner, "shared", account));
 
         yield* refused(
