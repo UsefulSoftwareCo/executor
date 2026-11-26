@@ -21,10 +21,11 @@ const analyticsPath = process.env.PUBLIC_POSTHOG_PATH ?? "";
 if (analyticsKey && !/^\/api\/[a-f0-9]{16}$/.test(analyticsPath))
   throw new Error("PostHog proxy path is missing from this build");
 const environment = process.env.PUBLIC_EXECUTOR_ENVIRONMENT ?? "";
+const cloudMcpOrigin = "https://mcp.executor.sh";
 const mcpOrigin = parseSiteOrigin(
   process.env.EXECUTOR_MCP_ORIGIN,
   "EXECUTOR_MCP_ORIGIN",
-  "https://mcp.executor.sh",
+  cloudMcpOrigin,
 );
 
 const analyticsSettings = `(function(){
@@ -105,7 +106,12 @@ export default defineConfig({
         },
       }),
   deployment: { output: "static", site: siteOrigin, base: "/docs" },
-  redirects: [{ from: "/concepts/apps-and-deployments", to: "/concepts/apps-and-versions" }],
+  redirects: [
+    {
+      from: "/concepts/apps-and-deployments",
+      to: "/concepts/apps-and-versions",
+    },
+  ],
   theme: {
     accent: { light: "#111111", dark: "#ededed" },
     mode: "system",
@@ -123,21 +129,46 @@ export default defineConfig({
       details: [
         "## When to use Executor",
         "",
-        "Executor holds the credentials for services you already use and turns them into tools.",
-        "Reach for it when an agent needs to call a real service without holding the credential:",
-        "connect an account once, then call the app through one MCP endpoint.",
-        `For Executor Cloud, connect to \`${mcpOrigin}/mcp\`.`,
+        "Executor stores credentials for services you already use and turns them into tools.",
+        "Connect an account once, then call the app through one MCP endpoint.",
+        `For Executor Cloud, connect to \`${cloudMcpOrigin}/mcp\`.`,
+        ...(mcpOrigin === cloudMcpOrigin
+          ? []
+          : [`This build uses the MCP endpoint \`${mcpOrigin}/mcp\`.`]),
         "For a local or self-hosted instance, use that instance's origin followed by `/mcp`.",
       ].join("\n"),
     },
   },
   navigation: {
     sidebar: [
-      { label: "Getting started", items: ["/", "/quickstart", "/connect-an-account"] },
-      { label: "Agents and MCP", items: ["/mcp", "/mcp-clients", "/api-keys"] },
+      {
+        label: "Getting started",
+        items: ["/", "/quickstart", "/where-to-run", "/connect-an-account"],
+      },
+      {
+        label: "Agents and MCP",
+        items: [
+          "/mcp",
+          "/mcp/code-mode",
+          "/mcp/approval-modes",
+          "/mcp/scoped-connections",
+          "/mcp/events",
+          "/mcp-clients",
+          "/api-keys",
+        ],
+      },
       {
         label: "Apps",
-        items: ["/apps/add", "/apps/source-and-git", "/apps/publish", "/apps/executor-app"],
+        items: [
+          "/apps",
+          "/apps/add",
+          "/apps/tools",
+          "/apps/versions",
+          "/apps/source-and-git",
+          "/apps/share-and-copy",
+          "/apps/publish",
+          "/apps/executor-app",
+        ],
       },
       { label: "Automation", items: ["/workflows", "/schedules", "/webhooks"] },
       { label: "Skills", items: ["/skills"] },
