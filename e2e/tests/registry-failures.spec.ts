@@ -1,4 +1,3 @@
-/** The public app catalog reads a configured remote registry and reports each failure distinctly. */
 import { expect, layer } from "@effect/vitest";
 import { Effect, FileSystem, Layer, Schedule, Schema } from "effect";
 import { Api, body, currentClient, releasedClient, SessionClients } from "../support/api.ts";
@@ -27,8 +26,8 @@ const Copy = Schema.Struct({
   copiedFrom: Schema.Struct({ name: Schema.String, commit: Schema.String }),
 });
 const Apps = Schema.Array(Schema.Struct({ id: Schema.String }));
+const Resources = Schema.Struct({ pendingApp: Schema.Boolean });
 
-/** A fresh self-host reading the registry fixture, with its owner signed in. */
 const registryCase = Effect.gen(function* () {
   const target = yield* Target;
   const registry = yield* registryUpstream;
@@ -110,12 +109,9 @@ layer(TestLive, { excludeTestServices: true })("Remote registry failures", (it) 
           "each read states the wire revision this release reads",
         ).toEqual(paths.map(() => "1"));
 
-        // A listing this release cannot read is left out; the others are still listed. The log
-        // names each one and what failed to decode, and promises an upgrade only for new formats.
         const mixed = yield* catalog(registryMixedName);
         expect(mixed.status, JSON.stringify(mixed.body)).toBe(200);
         expect(mixed.body).toEqual([registryPublication]);
-        // The server's output reaches its log file after the response, so wait for both lines.
         const fs = yield* FileSystem.FileSystem;
         const warnings = yield* fs.readFileString(log).pipe(
           Effect.map((text) =>
@@ -166,9 +162,6 @@ layer(TestLive, { excludeTestServices: true })("Remote registry failures", (it) 
             client,
           );
 
-        // A client released before publisher scopes lists each listing by a name it decodes: an
-        // older registry's `@fixture/example` as it is, a publishing scope's under its slug. The
-        // twins would read as one name, so neither is listed to it.
         const listed = yield* catalog(undefined, releasedClient);
         expect(listed.status, JSON.stringify(listed.body)).toBe(200);
         expect(listed.body).toEqual([
@@ -176,7 +169,6 @@ layer(TestLive, { excludeTestServices: true })("Remote registry failures", (it) 
           { ...registryScopedListing, name: "@scoped/notes" },
         ]);
 
-        // Each name it was shown selects that listing, looked up by every name it could stand for.
         let before = yield* sent;
         const example = yield* catalog(registryPublication.name, releasedClient);
         expect(example.status, JSON.stringify(example.body)).toBe(200);
@@ -188,14 +180,11 @@ layer(TestLive, { excludeTestServices: true })("Remote registry failures", (it) 
         const notes = yield* catalog("@scoped/notes", releasedClient);
         expect(notes.status, JSON.stringify(notes.body)).toBe(200);
         expect(notes.body).toEqual([{ ...registryScopedListing, name: "@scoped/notes" }]);
-        // A later release that states no revision reads names under publisher scopes and may send
-        // one. The full name means only that listing, and the answer names it as it was sent.
         before = yield* sent;
         const full = yield* catalog(registryScopedListing.name, releasedClient);
         expect(full.status, JSON.stringify(full.body)).toBe(200);
         expect(full.body).toEqual([registryScopedListing]);
         expect(yield* since(before)).toEqual([lookup(registryScopedListing.name)]);
-        // When nothing reads as the name, it is answered as the registry answers that name itself.
         before = yield* sent;
         expect(
           yield* failed(yield* catalog(registryFixtureNames.missing, releasedClient)),
@@ -206,7 +195,6 @@ layer(TestLive, { excludeTestServices: true })("Remote registry failures", (it) 
           lookup("@fixture.executor.community/missing"),
         ]);
 
-        // Copying reads the source of the listing it was shown, under its published name.
         before = yield* sent;
         const exampleCopy = yield* copy(
           registryPublication.name,
@@ -244,7 +232,6 @@ layer(TestLive, { excludeTestServices: true })("Remote registry failures", (it) 
           commit: registryScopedListing.commit,
         });
 
-        // A name two listings read as is refused, never sent to either; no source is read.
         before = yield* sent;
         expect(yield* failed(yield* catalog(dotless.name, releasedClient))).toEqual({
           _tag: "RegistryError",
@@ -259,15 +246,12 @@ layer(TestLive, { excludeTestServices: true })("Remote registry failures", (it) 
           (yield* since(before)).filter((path) => path.startsWith("/api/registry/source")),
         ).toEqual([]);
 
-        // This release's clients name each twin by its own name.
         for (const listing of [dotless, scoped]) {
           const own = yield* catalog(listing.name);
           expect(own.status, JSON.stringify(own.body)).toBe(200);
           expect(own.body).toEqual([listing]);
         }
 
-        // A self-host removes no listing from the registry it reads, for either revision, and
-        // never looks the name up.
         before = yield* sent;
         for (const [name, client] of [
           ["@scoped/notes", releasedClient],
@@ -285,13 +269,22 @@ layer(TestLive, { excludeTestServices: true })("Remote registry failures", (it) 
         }
         expect(yield* since(before)).toEqual([]);
 
-        // The listing it was shown as `@scoped/notes` changes before it copies that commit. The
-        // name then selects a replacement with another commit, or nothing once the scope is
-        // renamed; the copy is refused and makes no app.
         const apps = Effect.flatMap(api.request(owner, "GET", `${prefix}/apps`), (response) =>
           body(Apps, response),
         );
-        const made = (yield* apps).length;
+        yield* api.request(owner, "GET", `${prefix}/resources`).pipe(
+          Effect.flatMap((response) => body(Resources, response)),
+          Effect.repeat({
+            until: ({ pendingApp }) => !pendingApp,
+            schedule: Schedule.spaced("250 millis"),
+            times: 80,
+          }),
+          Effect.flatMap(({ pendingApp }) =>
+            pendingApp ? Effect.die("The Executor app was never installed") : Effect.void,
+          ),
+        );
+        const ids = Effect.map(apps, (list) => list.map((app) => app.id).sort());
+        const made = yield* ids;
         const others = registryCatalog.filter((listing) => listing !== registryScopedListing);
         const replacement = { ...registryScopedListing, commit: "e".repeat(40) };
         yield* registry.publish([...others, replacement]);
@@ -305,7 +298,7 @@ layer(TestLive, { excludeTestServices: true })("Remote registry failures", (it) 
           yield* failed(yield* copy("@scoped/notes", registryScopedListing.commit, releasedClient)),
         ).toEqual({ _tag: "RegistryError", reason: "not-found" });
         expect(yield* since(before)).not.toContain(source(renamed));
-        expect((yield* apps).length).toBe(made);
+        expect(yield* ids).toEqual(made);
       }),
     ),
   );

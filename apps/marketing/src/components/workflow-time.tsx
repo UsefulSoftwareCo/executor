@@ -41,7 +41,6 @@ function WorkflowDay({
   );
 }
 
-/** A workflow sends an email, waits two days, and resumes with a follow-up; time rewinds only while the calendar is hidden. */
 export function TimeWorkflow({ clock }: { readonly clock: MotionValue<number> }) {
   const phase = useTransform(clock, (time) => (time % 11) / 11);
   const current = useTransform(

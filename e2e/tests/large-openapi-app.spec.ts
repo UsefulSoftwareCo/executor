@@ -1,16 +1,3 @@
-/**
- * An OpenAPI app whose document is larger than the biggest imported vendor API's builds within
- * the compiler's memory, and its tools call the API. The document is an indented JSON file, as
- * imported apps wrote it, so it is the size whose build exceeded the hosted compiler's memory.
- *
- * Imported apps write their document as compact JSON in ASCII. As large as the largest imported
- * vendor API's, with prose beyond Latin-1 in every operation, such a document builds and calls,
- * also beside source files whose text goes beyond Latin-1, such as a provider's display name.
- *
- * A document whose resources expand into one another, as Stripe's do, gives every tool all of
- * its definitions. Its catalog written tool by tool is larger than any string, yet it lists in
- * pages no larger than their bound.
- */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Schema } from "effect";
 import { randomUUID } from "node:crypto";
@@ -22,6 +9,7 @@ import { App } from "../support/contracts.ts";
 import { Evidence } from "../support/evidence.ts";
 import { Target } from "../support/platform.ts";
 import { appsManifest } from "../support/apps-release.ts";
+import { connectionsPath } from "../support/app-accounts.ts";
 import { expandableOpenapiDocument, largeOpenapiDocument } from "../support/large-openapi.ts";
 import { McpClient } from "../support/mcp-client.ts";
 
@@ -32,10 +20,43 @@ export default defineApp({}, async ({ cache, fetch, signal }) => ({
   tools: liveOpenapiRouter({ ...configuration, cache, fetch, ...(signal === undefined ? {} : { signal }) }),
 }));`;
 
-/** Prose with Latin-1, punctuation, symbols and an emoji, as vendor API descriptions use. */
+const listingJsonBudget = 800_000_000;
+
+const accountsIndex = `import { accountRouter, defineApp, defineProvider, object, router, secrets, string } from "apps";
+import { liveOpenapiRouter } from "apps/openapi";
+import configuration from "./openapi.json";
+const write = JSON.stringify;
+let written = 0;
+JSON.stringify = function (...args: Parameters<typeof write>) {
+  const text: string | undefined = write.apply(JSON, args);
+  written += text?.length ?? 0;
+  if (written > ${listingJsonBudget})
+    throw new Error("The listing wrote " + written + " characters of JSON, over its budget of ${listingJsonBudget}.");
+  return text;
+} as typeof JSON.stringify;
+const service = defineProvider({
+  name: "Expandable service",
+  auth: { key: secrets({ label: "Key", fields: object({ token: string({ minLength: 1 }) }) }) },
+});
+export default defineApp(
+  { user: { accounts: { service: service.many() } } },
+  async ({ user, cache, fetch, signal }) => {
+    written = 0;
+    return {
+      tools: router(
+        await accountRouter(
+          user?.accounts.service ?? [],
+          (account) => liveOpenapiRouter({ ...configuration, cache, fetch, signal, account }),
+          { signal },
+        ),
+      ),
+    };
+  },
+);`;
+const linkedAccounts = 3;
+
 const prose = "Returns the service’s “state” — café → ✅ or 🔴.";
 
-/** The document's configuration as imported apps write it: compact, each non-ASCII character a `\u` escape. */
 const asciiConfiguration = (origin: string) =>
   JSON.stringify({
     source: { document: largeOpenapiDocument(origin, 1000, prose) },
@@ -48,7 +69,6 @@ const asciiConfiguration = (origin: string) =>
     (character) => `\\u${character.charCodeAt(0).toString(16).padStart(4, "0")}`,
   );
 
-/** An entry like `index`, beside a provider module whose display name goes beyond Latin-1. */
 const wideIndex = `import { defineApp } from "apps";
 import { liveOpenapiRouter } from "apps/openapi";
 import configuration from "./openapi.json";
@@ -59,17 +79,8 @@ export default defineApp({}, async ({ cache, fetch, signal }) => ({
 }));`;
 const wideProvider = `export const provider = { name: "Kanji 日本 API", headers: { "X-Note": "東京" } };\n`;
 
-/**
- * Three hundred resources that expand into one another, each about ten thousand characters of
- * definition, and 700 operations that each return one. Every tool's output schema reaches all
- * three hundred definitions, so the tools written out in full are about 2.2 billion characters:
- * more than a JavaScript string holds, whatever the host's memory. The document is about 3.5 MB,
- * and the app's catalog with each definition and each distinct `$defs` once about 5 million
- * characters, near Stripe's 6.8 million, so a deployed Worker holds about as much as Stripe's.
- */
 const expandableResources = 300;
 const expandableOperations = 700;
-/** The most a page of the tool listing holds, in characters, unless its first tool alone is more. */
 const pageChars = 16 * 1024 * 1024;
 
 const JsonSchemaDocument = Schema.Record(Schema.String, Schema.Json);
@@ -83,9 +94,22 @@ const ToolPage = Schema.Struct({
   next: Schema.optional(Schema.String),
 });
 const ToolIndex = Schema.Struct({ items: Schema.Array(Schema.Struct({ name: Schema.String })) });
+const AccountsTool = Schema.Struct({
+  name: Schema.String,
+  inputSchema: Schema.Struct({
+    anyOf: Schema.Array(
+      Schema.Struct({
+        properties: Schema.Struct({
+          accountId: Schema.Struct({ enum: Schema.optional(Schema.Array(Schema.String)) }),
+        }),
+      }),
+    ),
+  }),
+  outputSchema: Schema.optional(JsonSchemaDocument),
+});
+const AccountsToolPage = Schema.Struct({ items: Schema.Array(AccountsTool) });
 const SearchResult = Schema.Struct({ items: Schema.Array(Schema.Struct({ path: Schema.String })) });
 
-/** Every `#/$defs/` name a JSON value references, anywhere in it. */
 const referenced = (value: unknown, found = new Set<string>()): Set<string> => {
   if (Array.isArray(value)) for (const item of value) referenced(item, found);
   else if (value !== null && typeof value === "object")
@@ -95,10 +119,6 @@ const referenced = (value: unknown, found = new Set<string>()): Set<string> => {
       else referenced(item, found);
   return found;
 };
-/**
- * The definitions a resource's output schema holds, after checking it is complete on its own: every
- * reference anywhere in it names one of its own definitions.
- */
 const ownDefinitions = (schema: typeof JsonSchemaDocument.Type | undefined) => {
   const definitions = schema?.$defs;
   const names =
@@ -152,12 +172,7 @@ layer(HostedLive, { excludeTestServices: true })("Large OpenAPI app", (it) => {
             api.request(actors.owner, "DELETE", path).pipe(Effect.orDie),
           );
 
-          // The listing evaluates the whole catalog. Each page stays within the page bound, and
-          // each tool's schemas are complete on their own, as an agent reads them.
           const first = yield* api.request(actors.owner, "GET", `${path}/tools`);
-          // The body as sent: the server writes it as `JSON.stringify` does, so encoding the parsed
-          // body again gives back its text. Each page is encoded once: at 16 MB, another encoding
-          // adds about a tenth to the walk.
           const firstText = JSON.stringify(first.body);
           yield* evidence.json("expandable-openapi-first-page.json", {
             status: first.status,
@@ -175,15 +190,12 @@ layer(HostedLive, { excludeTestServices: true })("Large OpenAPI app", (it) => {
           for (const tool of resources)
             expect(ownDefinitions(tool.outputSchema)).toHaveLength(expandableResources);
 
-          // The index names every tool.
           const listed = yield* body(
             ToolIndex,
             yield* api.request(actors.owner, "GET", `${path}/tools/index`),
           );
           expect(listed.items).toHaveLength(expandableOperations + 1);
 
-          // Following `next` to the end lists every tool once, each page within the bound and
-          // continuing after the page before it.
           const last = page.items.at(-1)?.name ?? "";
           const paged = page.items.map((tool) => tool.name);
           let next = page.next;
@@ -208,7 +220,6 @@ layer(HostedLive, { excludeTestServices: true })("Large OpenAPI app", (it) => {
           expect(new Set(paged).size).toBe(paged.length);
           expect([...paged].sort()).toEqual(listed.items.map((tool) => tool.name).sort());
 
-          // The last tool reads with its whole schema.
           const lastTool =
             listed.items
               .map((tool) => tool.name)
@@ -226,7 +237,6 @@ layer(HostedLive, { excludeTestServices: true })("Large OpenAPI app", (it) => {
             expandableResources,
           );
 
-          // MCP search ranks the app's tools rather than reporting the app unavailable.
           const key = yield* body(
             Schema.Struct({ id: Schema.String, key: Schema.RedactedFromValue(Schema.String) }),
             yield* api.request(actors.owner, "POST", "/api/auth/api-key/create", {
@@ -263,11 +273,100 @@ layer(HostedLive, { excludeTestServices: true })("Large OpenAPI app", (it) => {
           ).toBe(true);
         }).pipe(Effect.provide(McpClient.layer)),
       ),
-    // Following `next` reads about 140 pages of 16 MB, one after another. Self-host CI runs the
-    // scenario in 25 to 58 seconds, but a busy runner took 0.68 seconds a page, about 110 seconds
-    // in all. A deployed stage answers a page in 1.1 to 2.1 seconds, 1.55 at the median of 55 runs,
-    // so the walk alone takes 2.5 to 5 minutes there.
     { timeout: 360_000 },
+  );
+
+  it.effect(
+    scenarios.largeOpenapiAccountsApp.title,
+    (context) =>
+      withHostedCase(
+        context,
+        Effect.gen(function* () {
+          const api = yield* Api,
+            actors = yield* Actors,
+            evidence = yield* Evidence;
+          const origin = (yield* Target).metadata.origin;
+          const configuration = JSON.stringify({
+            source: {
+              document: expandableOpenapiDocument(
+                origin,
+                expandableResources,
+                expandableOperations,
+              ),
+            },
+            allowedOrigin: origin,
+            securitySchemes: {},
+            methods: {},
+            oauth: [],
+          });
+          const organization = `/api/organizations/${actors.organization.id}`;
+          const deployed = yield* api.request(actors.owner, "POST", `${organization}/apps/deploy`, {
+            name: `Expandable accounts ${randomUUID().slice(0, 8)}`,
+            files: [
+              { path: "index.ts", content: accountsIndex },
+              { path: "openapi.json", content: configuration },
+              appsManifest,
+            ],
+          });
+          expect(deployed.status, JSON.stringify(deployed.body).slice(0, 2000)).toBe(200);
+          const app = yield* body(App, deployed);
+          const path = `${organization}/apps/${app.id}`;
+          yield* Effect.addFinalizer(() =>
+            api.request(actors.owner, "DELETE", path).pipe(Effect.orDie),
+          );
+
+          const accounts: string[] = [];
+          for (let index = 0; index < linkedAccounts; index++) {
+            const started = yield* api.request(
+              actors.owner,
+              "POST",
+              connectionsPath(path, "user", "service"),
+              {},
+            );
+            expect(started.status, JSON.stringify(started.body)).toBe(200);
+            const connection = (yield* body(Schema.Struct({ id: Schema.String }), started)).id;
+            const submitted = yield* api.request(
+              actors.owner,
+              "POST",
+              `${organization}/connections/${connection}/submit`,
+              { method: "key", label: `Key ${index + 1}`, fields: { token: `key-${index + 1}` } },
+            );
+            expect(submitted.status, JSON.stringify(submitted.body)).toBe(200);
+            accounts.push((yield* body(Schema.Struct({ id: Schema.String }), submitted)).id);
+          }
+
+          const started = Date.now();
+          const first = yield* api.request(actors.owner, "GET", `${path}/tools`);
+          const firstText = JSON.stringify(first.body);
+          yield* evidence.json("expandable-accounts-first-page.json", {
+            status: first.status,
+            characters: firstText.length,
+            milliseconds: Date.now() - started,
+            body: first.status === 200 ? undefined : first.body,
+          });
+          expect(first.status, firstText.slice(0, 2000)).toBe(200);
+          expect(firstText.length).toBeLessThanOrEqual(pageChars);
+          const page = yield* body(AccountsToolPage, first);
+          const resources = page.items.filter((tool) => tool.name.startsWith("resources."));
+          expect(resources.length).toBeGreaterThan(0);
+          for (const tool of resources) {
+            const branches = tool.inputSchema.anyOf;
+            expect(branches).toHaveLength(1);
+            expect([...(branches[0]?.properties.accountId.enum ?? [])].sort()).toEqual(
+              [...accounts].sort(),
+            );
+            expect(ownDefinitions(tool.outputSchema)).toHaveLength(expandableResources);
+          }
+
+          const listed = yield* body(
+            ToolIndex,
+            yield* api.request(actors.owner, "GET", `${path}/tools/index`),
+          );
+          expect(listed.items).toHaveLength(expandableOperations + 1);
+          expect(new Set(listed.items.map((tool) => tool.name)).size).toBe(listed.items.length);
+        }),
+      ),
+    { timeout: 240_000 },
   );
 
   it.effect(scenarios.largeOpenapiApp.title, (context) =>
@@ -308,7 +407,6 @@ layer(HostedLive, { excludeTestServices: true })("Large OpenAPI app", (it) => {
           api.request(actors.owner, "DELETE", path).pipe(Effect.orDie),
         );
 
-        // The call compiles the whole document, then sends the one operation the product answers.
         const called = yield* api.request(actors.owner, "POST", `${path}/tools/call`, {
           tool: "service.health",
           kind: "query",
@@ -336,7 +434,6 @@ layer(HostedLive, { excludeTestServices: true })("Large OpenAPI app", (it) => {
           actors = yield* Actors,
           evidence = yield* Evidence;
         const origin = (yield* Target).metadata.origin;
-        // Each character beyond ASCII is a `\u` escape, as the importer writes it.
         const configuration = asciiConfiguration(origin);
         yield* evidence.json("large-openapi-ascii-source.json", { bytes: configuration.length });
         expect(configuration.length).toBeGreaterThan(13_600_000);
@@ -388,8 +485,6 @@ layer(HostedLive, { excludeTestServices: true })("Large OpenAPI app", (it) => {
         const configuration = asciiConfiguration(origin);
         expect(configuration.length).toBeGreaterThan(13_600_000);
         expect(configuration).not.toMatch(/[\u0080-\uffff]/);
-        // Characters beyond Latin-1 in the other files: the host retains every server file's text
-        // together, so these would otherwise widen the document's copy too.
         expect(wideIndex + wideProvider).toMatch(/[\u0100-\uffff]/);
 
         const prefix = `/api/organizations/${actors.organization.id}/apps`;
@@ -413,7 +508,6 @@ layer(HostedLive, { excludeTestServices: true })("Large OpenAPI app", (it) => {
           api.request(actors.owner, "DELETE", path).pipe(Effect.orDie),
         );
 
-        // The app's files read back exactly as deployed.
         const source = yield* api.request(actors.owner, "GET", `${path}/source`);
         expect(source.status).toBe(200);
         const files = (yield* body(

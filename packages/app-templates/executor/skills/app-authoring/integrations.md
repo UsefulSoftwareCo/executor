@@ -211,7 +211,8 @@ are generated with this check.
 
 Streamable HTTP and legacy SSE are supported. Every discovery/call owns and
 closes its connection. Session-local workflows do not survive separate tool
-calls. Results retain MCP `content`, `structuredContent`, `isError`, and `_meta`;
+calls. Results retain MCP `content`, `structuredContent`, `isError`, and `_meta`,
+except a text block that only repeats `structuredContent` as JSON, which is dropped;
 remote tool failures are results, while transport failures reject the call.
 A tool's output type describes that whole result, with the server's output schema
 under `structuredContent`, and every result is checked against it. Read typed
@@ -261,7 +262,7 @@ tools: router({
 Call `liveOpenapiRouter` from `apps/openapi` with `ctx.cache`, `ctx.fetch`,
 the signal and an account: each of a `provider.many()` user requirement's
 accounts through `accountRouter`, as for MCP, or a plain app requirement's
-`ctx.app.accounts.service` for one shared account. It returns the router at once, then
+`ctx.app.accounts.service` for one account every caller uses. It returns the router at once, then
 downloads and compiles the definition inside the app when its tools are listed
 or called, caching each revision; no extra dependency is needed. Pass the
 settings the definition cannot be trusted to decide:
@@ -545,7 +546,7 @@ Use `graphqlRouter` from `apps/graphql` with the endpoint, an account and its
 headers, and optional cancellation signal. Declare `graphql` (currently
 `16.11.0`) in the app's dependencies. Authenticated apps use a `provider.many()`
 user requirement and `accountRouter` as above, or a plain app requirement for
-one shared account; public endpoints need no account.
+one account every caller uses; public endpoints need no account.
 
 Helpers are separate subpath imports. Importing `apps` alone does not load
 MCP or GraphQL. Optional dependencies must appear in the app's manifest and

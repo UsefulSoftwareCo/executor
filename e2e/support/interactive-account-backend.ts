@@ -1,4 +1,3 @@
-/** A tiny credential custodian, reached by the fixture app over real HTTP. */
 import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
 import { Clock, Deferred, Effect, Layer, Ref, Schema } from "effect";
 import { HttpRouter, HttpServer, HttpServerRequest, HttpServerResponse } from "effect/http";
@@ -188,7 +187,6 @@ export const interactiveAccountBackend = Effect.gen(function* () {
   };
 });
 
-/** The app holds backend access through its own linked account, never a global test credential. */
 export const interactiveAccountSource = (
   origin: string,
   plain = false,

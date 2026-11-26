@@ -26,18 +26,11 @@ declare global {
   }
 }
 
-/** Waits two frames, so the browser has reported the shifts of everything already rendered. */
 const painted = () =>
   new Promise<void>((resolve) =>
     requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
   );
 
-/**
- * Records every layout shift the browser reports in the current document, including those within
- * 500ms of input that CLS leaves out, and files each under the named journey phase it fell in.
- * Shifts reported before the first phase belong to `load`. A viewport change lays the whole page
- * out again, so `resize` files its own shifts under a phase that `unstable` leaves out.
- */
 export const observeLayoutShifts = Effect.gen(function* () {
   const browser = yield* Browser;
   const evidence = yield* Evidence;
@@ -115,9 +108,7 @@ export const observeLayoutShifts = Effect.gen(function* () {
     )
     .pipe(Effect.flatMap(Schema.decodeUnknownEffect(Recorded)));
   return {
-    /** Starts a phase; later shifts belong to it until the next one starts. */
     phase: (name: string) => mark(name, false),
-    /** Changes the viewport inside a phase of its own, then starts `next`. */
     resize: (size: { readonly width: number; readonly height: number }, next: string) =>
       Effect.gen(function* () {
         yield* mark(`Resize to ${size.width}x${size.height}`, true);
@@ -126,10 +117,6 @@ export const observeLayoutShifts = Effect.gen(function* () {
         );
         yield* mark(next, false);
       }),
-    /**
-     * Saves every shift with its phase as `name`, and returns the ones outside viewport changes.
-     * Each phase is listed with its shift count and scores, with and without recent input.
-     */
     unstable: (name: string) =>
       Effect.gen(function* () {
         const { marks, entries } = yield* read;

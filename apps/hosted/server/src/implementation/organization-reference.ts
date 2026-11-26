@@ -7,7 +7,6 @@ import {
   type OrganizationReference,
 } from "../contracts/organization.ts";
 
-/** Resolve ID or slug before authorization. Ambiguous references never select either tenant. */
 export const resolveOrganizationReference = (
   adapter: Pick<AuthContext["adapter"], "findMany">,
   reference: OrganizationReference,

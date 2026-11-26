@@ -1,4 +1,3 @@
-/** The local operator's scoped connections, reconciled after each write. */
 import { hydrated } from "@executor-js/ui/contracts/http";
 import { Effect } from "effect";
 import type { ConnectionId } from "@executor-js/mcp-auth/connections";
@@ -6,13 +5,11 @@ import type { ConnectionSave } from "@executor-js/ui/contracts/scoped-connection
 import { acknowledge, acknowledgedQuery, upsert } from "@executor-js/ui/contracts/mutations";
 import { DashboardClient } from "./api.ts";
 
-/** Keep confirmed connections visible while background reconciliation runs. */
 export const mcpConnectionsAtom = DashboardClient.query(
   "mcpConnections",
   "list",
   hydrated({}),
 ).pipe(acknowledgedQuery);
-/** Create with the editor's chosen ID, or replace an existing connection's name and access. */
 export const saveMcpConnectionAtom = DashboardClient.runtime.fn(
   ({ existing, input }: ConnectionSave, get) =>
     Effect.gen(function* () {
@@ -27,7 +24,6 @@ export const saveMcpConnectionAtom = DashboardClient.runtime.fn(
       return saved;
     }),
 );
-/** Remove the row only after the server revoked the connection and its grants. */
 export const revokeMcpConnectionAtom = DashboardClient.runtime.fn((connection: ConnectionId, get) =>
   Effect.flatMap(DashboardClient, (client) =>
     client.mcpConnections.revoke({ params: { connection } }),

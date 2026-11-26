@@ -29,9 +29,6 @@ export const skillFromFiles = (
     );
     if (match?.[1] === undefined) return yield* invalid("frontmatter");
     const frontmatter = match[1];
-    // YAML is only needed when skills are parsed, not while a host starts. yaml is CommonJS on
-    // Node, where a dynamic import's only guaranteed export is `default`; every build of it
-    // (Node, bundled Node, and the browser build Workers use) has the full API there.
     // oxlint-disable-next-line executor/authored-code-through-adapter -- dynamic import
     const { parseDocument } = (yield* Effect.promise(() => import("yaml"))).default;
     const value: unknown = yield* Effect.try({
@@ -68,7 +65,6 @@ export const folderSkillsEffect = (
     for (const file of files) {
       if (!file.path.startsWith(prefix)) continue;
       const [name, ...relative] = file.path.slice(prefix.length).split("/");
-      // Loose files such as README.md beside the skill directories are not skills.
       if (relative.length === 0) continue;
       if (name === undefined || !Schema.is(AppSkillName)(name))
         return yield* new SkillDefinitionInvalid({ file: file.path, reason: "directory" });

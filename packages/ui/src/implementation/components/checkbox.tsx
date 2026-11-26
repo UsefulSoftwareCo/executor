@@ -6,7 +6,6 @@ import { HugeiconsIcon } from "@hugeicons/react";
 import { Tick02Icon } from "@hugeicons/core-free-icons";
 import { Checkbox as CheckboxPrimitive } from "radix-ui";
 
-/** Checkbox primitive; accepts native props and composes caller styles. */
 function Checkbox({ className, ...props }: React.ComponentProps<typeof CheckboxPrimitive.Root>) {
   return (
     <CheckboxPrimitive.Root

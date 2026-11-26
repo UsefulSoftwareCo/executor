@@ -1,21 +1,15 @@
-/**
- * The background server's port, kept in the data directory's `service.json` like `executor service
- * set port`. The form is a script-free document; its submission is a navigation.
- */
 import { createServer } from "node:net";
 import { BrowserWindow, session } from "electron";
 import { Effect, FileSystem, Option, Path, Schema } from "effect";
 import { readSettings, writeSettings } from "../../../server/src/implementation/service-files.ts";
 import { DesktopPort, LegacyDesktopSettings, SettingsFailed } from "../contracts/desktop.ts";
 
-/** Where the server's port comes from. An explicit EXECUTOR_PORT always wins over the setting. */
 export type PortSource =
   | { readonly kind: "environment"; readonly port: string }
   | { readonly kind: "setting"; readonly port: number }
   | { readonly kind: "default" }
   | { readonly kind: "invalid"; readonly message: string };
 
-/** The port source now. `environment` is EXECUTOR_PORT as this desktop started. */
 export const portSource = (directory: string, environment: Option.Option<string>) =>
   Option.isSome(environment)
     ? Effect.succeed<PortSource>({ kind: "environment", port: environment.value })
@@ -30,17 +24,12 @@ export const portSource = (directory: string, environment: Option.Option<string>
         ),
       );
 
-/** Keep every other setting; only the port changes. */
 const savePort = (platform: string, directory: string, port: number) =>
   readSettings(directory).pipe(
     Effect.flatMap((settings) => writeSettings(platform, directory, { ...settings, port })),
     Effect.mapError(() => new SettingsFailed()),
   );
 
-/**
- * The port an old desktop saved in its own data directory's `desktop.json`, for the migration.
- * A missing file has none; an unreadable one is logged and carries none over.
- */
 export const legacyPort = (directory: string) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
@@ -61,7 +50,6 @@ export const legacyPort = (directory: string) =>
     ),
   );
 
-/** Probe the loopback address the server binds. A later bind can still race another process. */
 const portAvailable = (port: number) =>
   Effect.callback<boolean>((resume) => {
     const server = createServer();
@@ -124,19 +112,12 @@ const portPage = (options: {
 </html>`)}`;
 };
 
-/**
- * Make the "Server port…" action. `current` is the port the running server bound, if one is
- * running. Saving writes `service.json` and restarts the background server, because the listener
- * cannot move in place.
- */
 export const makePortAction = (options: {
   readonly directory: string;
   readonly platform: string;
-  /** EXECUTOR_PORT as this desktop started; it locks the form. */
   readonly environment: Option.Option<string>;
   readonly current: () => number | undefined;
   readonly parent: () => BrowserWindow | undefined;
-  /** Stop the background server and start it again, so it listens on the saved port. */
   readonly restart: () => void;
 }) =>
   Effect.gen(function* () {
@@ -146,7 +127,6 @@ export const makePortAction = (options: {
     let open: BrowserWindow | undefined;
     const show = Effect.gen(function* () {
       if (open !== undefined && !open.isDestroyed()) return open.focus();
-      // Read once per opened form, so a restart while it is open cannot change the page.
       const source = yield* portSource(options.directory, options.environment);
       const running = options.current();
       const parent = options.parent();

@@ -1,22 +1,3 @@
-/**
- * Synthetic upstreams for performance runs: an MCP server and an OpenAPI service whose size and
- * timing come from the URL path, so the same Worker or loopback process serves every shape.
- *
- *   /mcp/<spec>/mcp                Streamable HTTP MCP endpoint (stateless JSON responses)
- *   /openapi/<spec>/openapi.json   OpenAPI 3.0 document; operations live under /openapi/<spec>/ops
- *
- * `<spec>` is a hyphen-separated list of letter+number settings (all optional):
- *   t tool count (10)   l per-call latency ms (0)   j uniform jitter ms (0)
- *   s latency of every tools/list or document read ms (0)
- *   c extra first-load delay per isolate and spec ms (0)   e call error rate per mille (0)
- *   a require an `x-api-key` header when 1 (0)            k free-form instance key
- * Example: /mcp/t200-l40-j10-s800-c2500-e0-a1-kalpha/mcp
- *
- * Every response reports the emulator's own processing time in `x-emulator-processing-ms` and
- * `Server-Timing: emulator;dur=<ms>`. Tool results repeat it in their body as `emulator.processingMs`
- * so an Executor execution can report upstream time without response header access.
- * Data is generated; nothing is derived from customer content.
- */
 import { Clock, Effect, Layer, Option, Schema } from "effect";
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/http";
 
@@ -42,7 +23,6 @@ const defaults: EmulatorSpec = {
   key: "default",
 };
 
-/** Parse the path segment; unknown or oversized settings are rejected instead of clamped. */
 export const parseSpec = (segment: string): Option.Option<EmulatorSpec> => {
   let spec = defaults;
   for (const part of segment.split("-")) {
@@ -68,7 +48,6 @@ export const parseSpec = (segment: string): Option.Option<EmulatorSpec> => {
   return Option.some(spec);
 };
 
-/** Render a spec back to its canonical path segment. */
 export const formatSpec = (spec: Partial<EmulatorSpec>) => {
   const value = { ...defaults, ...spec };
   return [
@@ -83,7 +62,6 @@ export const formatSpec = (spec: Partial<EmulatorSpec>) => {
   ].join("-");
 };
 
-// Deterministic tool shapes: names, descriptions and schemas depend only on the index.
 const words = [
   "account",
   "record",
@@ -291,7 +269,6 @@ const openapi = (spec: EmulatorSpec, method: string, rest: string, base: string)
     } satisfies Outcome;
   });
 
-/** Route one request. The public origin comes from the Host header, so servers[] stays absolute. */
 export const emulatorResponse = Effect.gen(function* () {
   const request = yield* HttpServerRequest.HttpServerRequest;
   const started = yield* Clock.currentTimeMillis;
@@ -299,7 +276,6 @@ export const emulatorResponse = Effect.gen(function* () {
   const protocol =
     request.headers["x-forwarded-proto"] ??
     (/^(127\.0\.0\.1|localhost)(:\d+)?$/.test(host) ? "http" : "https");
-  // Web handlers keep the absolute URL; Node servers supply only the path and Host header.
   const url = URL.parse(request.originalUrl) ?? new URL(request.url, `${protocol}://${host}`);
   const match = /^\/(mcp|openapi)\/([a-z0-9-]+)\/(.*)$/.exec(url.pathname);
   let outcome: Outcome;
@@ -339,7 +315,6 @@ export const emulatorResponse = Effect.gen(function* () {
   ),
 );
 
-/** One catch-all route shared by the Worker entry and the loopback server. */
 export const emulatorRoutes = Layer.mergeAll(
   HttpRouter.add("*", "*", emulatorResponse),
   HttpRouter.add("*", "/", emulatorResponse),

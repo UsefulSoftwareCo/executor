@@ -1,4 +1,3 @@
-/** Reuse local pairing sessions for secret exchange; link generation does not reveal setup fields. */
 import { Effect, Layer } from "effect";
 import { HttpApiBuilder } from "effect/http-api";
 import { HttpServerResponse } from "effect/http";
@@ -8,7 +7,6 @@ import { LocalWebhookSetupApi, WebhookSetupAccess } from "../contracts/webhook-s
 import { AuthForbidden, PairingUnauthorized } from "../contracts/auth.ts";
 import { DashboardUnauthorized } from "../contracts/dashboard.ts";
 import { localBearer, localRequest, requestOrigin, sessionCookie, type LocalAuth } from "./auth.ts";
-/** Each secret operation requires a current paired dashboard session and same-origin writes. */
 export const localWebhookSetupHandlers = (
   executor: Executor,
   config: ServerConfig,
@@ -53,7 +51,6 @@ export const localWebhookSetupHandlers = (
     HttpApiBuilder.group(LocalWebhookSetupApi, "webhookSetup", (handlers) =>
       handlers
         .handle("read", ({ params }) => executor.webhookSetup.read(params))
-        // A finished setup is new intent for the webhook source waiting on it.
         .handle("complete", ({ params, payload }) =>
           executor.webhookSetup
             .complete({ ...params, ...payload })

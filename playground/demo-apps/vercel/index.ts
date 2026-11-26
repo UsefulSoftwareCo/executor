@@ -1,7 +1,3 @@
-/**
- * One-tool app sketch, self-contained because the playground deploys only
- * this file. The app host is not implemented yet.
- */
 import {
   query,
   array,
@@ -14,7 +10,6 @@ import {
   router,
 } from "apps";
 
-/** Vercel with a single named method: a personal API token. */
 export const vercel = defineProvider({
   name: "Vercel",
   auth: {
@@ -31,11 +26,6 @@ const ProjectList = object({
 
 const accounts = { vercel };
 
-/**
- * Static declaration; the host supplies the bound Vercel account per invocation.
- * HTTP work happens only when listProjects runs, using native fetch and the
- * supplied token; the host owns that credential and supplies it per call.
- */
 export default defineApp(
   { user: { accounts } },
   {

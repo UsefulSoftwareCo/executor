@@ -18,6 +18,7 @@ import { parseDeclaration } from "./schema.ts";
 /** Declare a secrets method with an Effect decoder. */
 export const secrets = <Fields extends Schema.Decoder<unknown>>(options: {
   readonly label: string;
+  readonly guide?: string;
   readonly fields: Fields;
   readonly exposure?: Readonly<Record<string, FieldExposure>>;
   readonly request?: readonly Placement[];
@@ -46,6 +47,7 @@ export const oauth2 = <Response extends Schema.Decoder<unknown>>(
   response: Response,
   exposure?: Readonly<Record<string, FieldExposure>>,
   request?: readonly Placement[],
+  clientGuide?: string,
 ): Effect.Effect<OAuth2Method<Response>, DeclarationInvalid> =>
   parseDeclaration(OAuth2Config, config, "oauth2()", oauth2Form).pipe(
     Effect.map(
@@ -55,6 +57,7 @@ export const oauth2 = <Response extends Schema.Decoder<unknown>>(
           response,
           ...(exposure === undefined ? {} : { exposure }),
           ...(request === undefined ? {} : { request }),
+          ...(clientGuide === undefined ? {} : { clientGuide }),
         }),
     ),
   );
@@ -90,8 +93,6 @@ export const defineProvider = <const Auth extends AuthMethods>({
       `Provider "${options.name}" declares a request for ${placed.map(([name]) => name).join(", ")} but no hosts. Declare the hosts its credentials may be sent to.`,
     );
   if (health === undefined) return new Provider(options);
-  // SAFETY: the host runs a check only with an account bound against this provider: its method is
-  // a key of `auth` and its fields were decoded by that method's schema, as `Auth` promises.
   const run = fromPromise(health, "check") as unknown as AccountCheck<AuthMethods>["run"];
   return new Provider({ ...options, health: { run } });
 };

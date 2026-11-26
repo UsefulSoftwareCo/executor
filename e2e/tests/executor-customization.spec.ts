@@ -1,4 +1,3 @@
-/** Customized management apps keep their personal account links through the browser and MCP. */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Layer, Redacted, Schema } from "effect";
 import { saveAndDeploy } from "../support/app-authoring.ts";
@@ -89,7 +88,6 @@ layer(HostedLive, { excludeTestServices: true })("Executor customization", (it) 
         expect(saved.files.toSorted((a, b) => a.path.localeCompare(b.path))).toEqual(
           modified.toSorted((a, b) => a.path.localeCompare(b.path)),
         );
-        // The redeployed common app keeps the user's own managed key linked.
         expect(yield* linkedAccountIds(actors.owner, path)).toEqual([own]);
         yield* browser.login(actors.owner);
         yield* browser.use("Open the user's Executor accounts", (page) =>

@@ -1,5 +1,4 @@
-/** Explicit retirement validates, leases, invokes without SQL, then rechecks and commits. */
-import { type Crypto, Effect, Option, Schema } from "effect";
+import { Effect, Option, Schema } from "effect";
 import { InteractiveRemovalDone, type InteractiveHost } from "../contracts/interactive-accounts.ts";
 import { InteractiveRetirementFailed } from "../contracts/interactive-errors.ts";
 import { type AccountWebhooksActive, type AccountWorkflowsActive } from "../contracts/account.ts";
@@ -10,10 +9,11 @@ import { StoredState } from "./connection-state.ts";
 import { makeRetirementClaims, retirementRecords } from "./interactive-retirement-claims.ts";
 import { interactiveStepMillis } from "./interactive-runner.ts";
 import { validateRemovalChange } from "./removal-validation.ts";
+import type { HostCrypto } from "./host-crypto.ts";
 const decode = Schema.decodeUnknownOption(StoredState);
 export const makeInteractiveRetirement = (
   db: Query,
-  crypto: Crypto.Crypto,
+  crypto: HostCrypto,
   remove: InteractiveHost["remove"],
   deleteAccount: (input: {
     owner: OwnerId;
@@ -58,7 +58,6 @@ export const makeInteractiveRetirement = (
           );
         return result;
       }).pipe(Effect.provideService(InteractiveRemovalDone, new Set([...held, ...accounts])));
-      // Use the canonical mutation's complete checks, then roll back and release every SQL lock.
       yield* validateRemovalChange(db, change);
       const claims = yield* leases.begin({ ...input, accounts });
       const removed = new Set(
@@ -107,7 +106,6 @@ export const makeInteractiveRetirement = (
         ),
       );
     });
-  /** Bulk authority is the app/owner deletion. Its bound references cannot survive that app. */
   const discard = (input: { owner: OwnerId; accounts: readonly AccountId[] }) =>
     Effect.gen(function* () {
       if (input.accounts.length === 0) return;

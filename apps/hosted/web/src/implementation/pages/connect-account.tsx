@@ -51,19 +51,13 @@ import {
   updateOAuthClientAtom,
 } from "../../contracts/oauth-clients.ts";
 
-/**
- * A page other than the app's own that starts account sign-ins, such as onboarding, provides where
- * the callback returns. Without it the callback opens the app's Accounts view.
- */
 export const OAuthReturnContext = createContext<OAuthReturn | undefined>(undefined);
 
-/** Retain only the return context; OAuth state and credentials remain owned by the server. */
 export function openAccountOAuth(pending: typeof PendingOAuth.Type, authorizationUrl: string) {
   sessionStorage.setItem("executor:hosted:oauth", JSON.stringify(pending));
   window.location.assign(authorizationUrl);
 }
 
-/** Resume the existing request in a connection dialog without creating a new attempt. */
 export function ConnectionFields({
   connection,
   onSaved,
@@ -85,8 +79,6 @@ export function ConnectionFields({
   const startOAuth = useAtomSet(startOAuthAtom(params), { mode: "promiseExit" });
   const cancel = useAtomSet(cancelInteractiveConnectionAtom(params), { mode: "promiseExit" });
   const start = useAtomSet(startInteractiveConnectionAtom(params), { mode: "promiseExit" });
-  // This page has only this one request, so changing methods must not end it: the next start or
-  // submit retires the attempt left behind. Leaving the page with an attempt open cancels it.
   const started = useRef(false);
   const interactive = {
     start: (input: { readonly method: string }) => {
@@ -96,7 +88,6 @@ export function ConnectionFields({
     status: useAtomSet(interactiveConnectionStatusAtom(params), { mode: "promiseExit" }),
     submit: useAtomSet(submitInteractiveConnectionAtom(params), { mode: "promiseExit" }),
     cancel: () => Promise.resolve(),
-    // Runs in the form's step order, after any poll still answering.
     leave: () => (started.current ? cancel() : Promise.resolve()),
   };
   if (connection.state.status !== "pending")
@@ -151,7 +142,6 @@ export function ConnectionFields({
   );
 }
 
-/** Steps of a sign-in the app runs itself, bound to one connection request. */
 export interface HostedInteractiveActions {
   readonly start: (input: {
     readonly method: string;
@@ -161,11 +151,9 @@ export interface HostedInteractiveActions {
     readonly value: string;
   }) => Promise<Exit.Exit<InteractiveState<Account>, HostedError>>;
   readonly cancel: () => Promise<unknown>;
-  /** Run once when the form goes away, in step order; for a page that owns one request. */
   readonly leave?: (() => Promise<unknown>) | undefined;
 }
 
-/** Render known provider metadata; the caller owns creating or resuming the connection attempt. */
 export function HostedAccountForm<A extends HostedOAuthSignIn>({
   provider,
   account,
@@ -181,21 +169,19 @@ export function HostedAccountForm<A extends HostedOAuthSignIn>({
   app,
   interactive,
 }: {
-  /** Absent where the product can't run app sign-ins; the form then says it can't connect them. */
   readonly interactive?: HostedInteractiveActions | undefined;
   readonly provider: Provider;
-  /** The app that will use the account; its check confirms entered credentials. */
   readonly app?: AppId | null | undefined;
   readonly account?: Account;
   readonly redirectUri: string;
   readonly initialMethod?: string | undefined;
   readonly manualClient?: boolean | undefined;
-  /** A registered client whose details reopen to be corrected before signing in again. */
   readonly editClient?: OAuthClientId | undefined;
   readonly submit: (input: AccountSubmission) => Promise<Exit.Exit<Account, HostedError>>;
   readonly start: (input: {
     readonly method: string;
     readonly client?: OAuthClientSelection;
+    readonly chooseAgain?: true;
   }) => Promise<
     Exit.Exit<A | Extract<HostedOAuthStartResult, { status: "completed" }>, HostedError>
   >;
@@ -208,10 +194,7 @@ export function HostedAccountForm<A extends HostedOAuthSignIn>({
   const { organization } = useOrganizationRoute();
   const requestName = useAtomSet(accountToNameAtom);
   const checkCredentials = useAtomSet(checkCredentialsAtom, { mode: "promiseExit" });
-  // Only administrators register clients, so members are told to enter their own details.
   const role = useOrganizationDetails()?.role;
-  // One connection's steps run in order, whatever the method: a cancel from the method just left
-  // finishes before the next one starts or submits, and a poll never overlaps a pasted value.
   const steps = useRef<Promise<unknown>>(Promise.resolve());
   const inOrder = <T,>(run: () => Promise<T>): Promise<T> => {
     const next = steps.current.then(run, run);
@@ -219,7 +202,6 @@ export function HostedAccountForm<A extends HostedOAuthSignIn>({
     return next;
   };
   const orderedSubmit = (input: AccountSubmission) => inOrder(() => submit(input));
-  // The latest leave step, run once when the form goes away rather than on every re-render.
   const leave = useRef(interactive?.leave);
   useEffect(() => {
     leave.current = interactive?.leave;
@@ -235,22 +217,16 @@ export function HostedAccountForm<A extends HostedOAuthSignIn>({
   const admin = role !== undefined && role !== "member";
   const registry = useContext(RegistryContext);
   const register = useAtomSet(registerOAuthClientAtom(organization), { mode: "promiseExit" });
-  // A client registered before sign-in failed to start is updated on retry, not registered again.
   const registered = useRef<{
     readonly issuer: string;
     readonly clientId: string;
     readonly id: OAuthClientId;
   }>(undefined);
-  // Reconnects keep their name; a new account is named once saved.
   const saved = (value: Account) => {
     if (!account)
       requestName({ organization, account: value.id, saved: { account: value, provider } });
     onSaved(value);
   };
-  /**
-   * An administrator's entered client is registered, or a registered one updated, before sign-in
-   * starts, so a failed or cancelled sign-in keeps it. A failure here stays in the form.
-   */
   const savedClient = (
     input: OAuthSubmission,
     issuer: typeof HttpUrl.Type | undefined,
@@ -310,8 +286,11 @@ export function HostedAccountForm<A extends HostedOAuthSignIn>({
       {...(app === undefined || app === null
         ? {}
         : {
-            check: (input: AccountSubmission) =>
-              checkCredentials({ organization, app, provider: provider.id, ...input }),
+            check: {
+              app,
+              run: (input: AccountSubmission) =>
+                checkCredentials({ organization, app, provider: provider.id, ...input }),
+            },
           })}
       onSaved={saved}
       {...(onPendingChange ? { onPendingChange } : {})}
@@ -332,11 +311,12 @@ export function HostedAccountForm<A extends HostedOAuthSignIn>({
             ),
           }
         : {})}
-      oauth={({ method, disabled, onPendingChange, access }) => (
+      oauth={({ method, disabled, clientGuide, onPendingChange, access }) => (
         <OAuthSetup query={oauthSetupAtom({ organization, provider: provider.id, method })}>
           {({ setup, action, refresh }) => (
             <OAuthFields
               providerName={provider.definition.name}
+              clientGuide={clientGuide}
               Failure={HostedFailure}
               setup={setup}
               setupAction={action}
@@ -379,11 +359,11 @@ export function HostedAccountForm<A extends HostedOAuthSignIn>({
                       : input.client !== undefined
                         ? { client: input.client }
                         : {}),
+                    ...(input.chooseAgain === true ? { chooseAgain: true } : {}),
                   }),
                 );
                 return Exit.map(exit, (value) => ({
                   ...value,
-                  // Entered details reopen after a failed return; chosen clients do not.
                   manualClient:
                     registeredClient === undefined &&
                     input.client !== undefined &&

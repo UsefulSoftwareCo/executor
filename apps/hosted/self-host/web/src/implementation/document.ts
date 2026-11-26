@@ -1,7 +1,6 @@
 import { getGlobalStartContext } from "@tanstack/react-start";
 import type { SelfHostDocumentContext } from "../contracts/document.ts";
 
-/** Server only: the context the product server passed with this document request. */
 export const serverDocument = (): SelfHostDocumentContext => {
   const document = getGlobalStartContext();
   if (document === undefined)

@@ -1,9 +1,7 @@
-/** Shared cloud homepage decision for the Worker and local development server. */
 import { Effect } from "effect";
 import { HttpServerRequest, HttpServerResponse } from "effect/http";
 import { hasSessionCookie } from "../contracts/browser.ts";
 
-/** Cookie presence is only a routing hint. Both outcomes remain private and uncached. */
 export const homepageResponse = <E, R, E2, R2>(
   cookiePrefix: string,
   marketing: Effect.Effect<HttpServerResponse.HttpServerResponse, E, R>,

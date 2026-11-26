@@ -1,4 +1,3 @@
-/** Run the same schema-checked client against either hosted runtime. */
 import { HostedApi } from "@executor-js/hosted-server/contracts";
 import { Config, Console, Effect } from "effect";
 import { FetchHttpClient } from "effect/http";

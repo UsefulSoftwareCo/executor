@@ -1,7 +1,3 @@
-/**
- * Some services sign in through an emailed link, which opens a new tab. The local callback there
- * has neither the connection grant nor the return target the starting tab saved.
- */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Redacted, Schema } from "effect";
 import { FetchHttpClient, HttpClient } from "effect/http";
@@ -81,7 +77,6 @@ export default defineApp({user: { accounts:{service} }},async()=>({tools:router(
             .then(() => page.getByRole("heading", { name: /^Apps/ }).waitFor({ state: "visible" })),
         );
         yield* browser.omitNetworkTrace;
-        // The service would email its sign-in link; this tab never receives the redirect.
         const authorizationUrl = yield* browser.use("Start sign-in from the link page", (page) =>
           page.goto(link.url).then(
             () =>
@@ -116,8 +111,6 @@ export default defineApp({user: { accounts:{service} }},async()=>({tools:router(
             .then((tab) =>
               tab
                 .goto(callbackUrl.href)
-                // Server rendering shows no sign-in until the page reads its address, so wait
-                // for the outcome: the page returns to Accounts once the account is saved.
                 .then(() =>
                   tab
                     .waitForURL((url) => url.pathname === "/accounts", { timeout: 15_000 })

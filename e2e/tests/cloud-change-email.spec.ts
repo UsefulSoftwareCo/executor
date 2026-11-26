@@ -1,4 +1,3 @@
-/** A Cloud account moves to a new email only after both inboxes return their codes. */
 import { expect, layer } from "@effect/vitest";
 import { randomUUID } from "node:crypto";
 import { Effect, Layer, Redacted, Schema } from "effect";
@@ -41,7 +40,6 @@ layer(TestLive, { excludeTestServices: true })("Cloud email change", (it) => {
         yield* onboarding.emailSignIn(original);
         yield* browser.use("Open the profile", (page) => page.goto("/account/profile"));
         expect(yield* shownEmail).toBe(original);
-        // An email-code sign-up has no name; the profile offers one without saving it.
         expect(
           yield* browser.use("Read the suggested name", (page) =>
             Promise.all([
@@ -96,7 +94,6 @@ layer(TestLive, { excludeTestServices: true })("Cloud email change", (it) => {
         );
         const beforeResend = yield* emulators.received(original);
         yield* browser.checkpoint("The dialog asks for the approval code");
-        // A resent code replaces the first one, so the rest of the flow uses the newest code.
         yield* browser.use("Resend the approval code", (page) =>
           dialog(page).getByRole("button", { name: "Resend code", exact: true }).click(),
         );
@@ -121,7 +118,6 @@ layer(TestLive, { excludeTestServices: true })("Cloud email change", (it) => {
             dialog(page).getByRole("alert").innerText(),
           ),
         ).toBe("This code is incorrect. Check the code and try again.");
-        // No code reaches the new address before the current one approves the change.
         expect(yield* emulators.received(replacement)).toEqual([]);
         expect((yield* session).user.email).toBe(original);
         yield* browser.checkpoint("The current address must approve an email change");
@@ -142,7 +138,6 @@ layer(TestLive, { excludeTestServices: true })("Cloud email change", (it) => {
         yield* browser.use("Wait for the confirmation step", (page) =>
           dialog(page).getByLabel("Confirmation code", { exact: true }).waitFor(),
         );
-        // The account keeps its address until the new one proves it receives mail.
         expect((yield* session).user.email).toBe(original);
         yield* browser.checkpoint("The new address confirms with its own code");
 
@@ -170,7 +165,6 @@ layer(TestLive, { excludeTestServices: true })("Cloud email change", (it) => {
         yield* browser.use("Reload the profile", (page) => page.reload());
         expect(yield* shownEmail).toBe(replacement);
 
-        // The old address no longer names an account: its next code would create one.
         const freed = yield* emulators.received(original);
         expect(
           yield* browser.use("Request a code for the old address", (page) =>

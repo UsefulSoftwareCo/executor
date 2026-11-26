@@ -1,8 +1,6 @@
-/** Request-owned services for an isolate-owned router. No live resource enters the router's cache. */
 import { Effect, Layer, Scope } from "effect";
 import { HttpRouter } from "effect/http";
 
-/** Build each request's services in its event scope with an independent memo map. */
 export const requestServices = <A, E, R>(services: Layer.Layer<A, E, R>) =>
   HttpRouter.middleware<{ provides: A }>()((handler) =>
     Effect.gen(function* () {

@@ -12,7 +12,6 @@ import {
 } from "apps";
 import { always } from "apps/operations/approval";
 
-/** The `notes` table is created by migrations/0001_notes.sql. */
 const requirements = {};
 const record = mutation(
   { input: object({ message: string() }), approval: always() },

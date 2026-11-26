@@ -1,7 +1,5 @@
-/** Shared Postgres configuration and SDK construction; hosts own driver lifetimes. */
 import { Config, Effect, Schema } from "effect";
 
-/** Explicit connection URL shared by Better Auth and Executor; never logged or returned. */
 export const databaseUrl = Config.Redacted("DATABASE_URL").pipe(
   Effect.flatMap(
     Schema.decodeUnknownEffect(

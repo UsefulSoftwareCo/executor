@@ -1,4 +1,3 @@
-/** Code-managed native PostHog experiments. PostHog owns allocation and all result statistics. */
 import { isDeepStrictEqual } from "node:util";
 import { Credentials } from "@distilled.cloud/posthog/Credentials";
 import { Resource } from "alchemy";
@@ -6,11 +5,15 @@ import { isResolved } from "alchemy/Diff";
 import * as Provider from "alchemy/Provider";
 import { Effect, Redacted, Schema } from "effect";
 import { HttpClient, HttpClientRequest } from "effect/http";
-import { onboardingExperiment, onboardingSkipExperiment } from "../contracts/onboarding.ts";
+import { onboardingSkipExperiment } from "../contracts/onboarding.ts";
+
+const onboardingExperiment = {
+  flag: "onboarding-order-v1",
+  attributionDays: 7,
+} as const;
 import { PostHogProvisioningFailed } from "./posthog-provider.ts";
 
 const ownership = (key: string) => `[executor-next:${key}]`;
-/** An event property that must match one of the listed values. */
 const PropertyFilter = Schema.Struct({
   key: Schema.String,
   value: Schema.Array(Schema.String),
@@ -65,25 +68,12 @@ const Definition = Schema.Struct({
   only_count_matured_users: Schema.Boolean,
 });
 
-/** Declared native configuration carried in Alchemy resource props and state. */
 export type PostHogExperimentDefinition = typeof Definition.Type;
 
-/**
- * Where an experiment is in PostHog's lifecycle: `draft` serves nothing, `running` serves the
- * variants and counts exposures, `paused` deactivates the flag so everyone gets the application
- * default, and `stopped` freezes the results window at its end date.
- */
 export type PostHogExperimentStatus = "draft" | "running" | "paused" | "stopped";
 
-/** PostHog's experiment actions (`POST experiments/{id}/{action}/`) that change the status. */
 type Action = "launch" | "pause" | "resume" | "end";
 
-/**
- * The actions that move an experiment between statuses, keyed by current then declared status.
- * A missing pair is a move PostHog cannot make or that would discard results: an experiment never
- * returns to draft or leaves stopped, and a draft only launches. Ending a running experiment leaves
- * its flag serving the assigned variants, as PostHog's end does; ending a paused one leaves it off.
- */
 const transitions: Record<
   PostHogExperimentStatus,
   Partial<Record<PostHogExperimentStatus, ReadonlyArray<Action>>>
@@ -94,7 +84,6 @@ const transitions: Record<
   stopped: { stopped: [] },
 };
 
-/** PostHog's own derivation: launched sets start_date, ending sets end_date, pausing the flag. */
 const statusOf = (experiment: {
   readonly start_date: string | null;
   readonly end_date: string | null;
@@ -123,18 +112,11 @@ const onboardingAction = (action: string) => ({
   ],
 });
 
-/**
- * Accounts first or the assistant first, for members creating their first Cloud team. Native
- * funnel metrics include exposure automatically, so no series repeats it. The primary metric is
- * activation that neither order reaches by construction: the first successful tool call.
- */
 export const onboardingExperimentDefinition: PostHogExperimentDefinition = {
   name: "Onboarding order: accounts or assistant first",
   description: `Members creating their first Cloud team connect their accounts before their assistant (control), or connect their assistant over MCP before their accounts. Both orders end at the first prompt.\n${ownership(onboardingExperiment.flag)}`,
   feature_flag_key: onboardingExperiment.flag,
   feature_flag: {
-    // Cloud keeps each team's assignment, and the person's ID never changes, so PostHog does
-    // not need to persist one too.
     ensure_experience_continuity: false,
     filters: {
       groups: [{ properties: [], rollout_percentage: 100 }],
@@ -216,12 +198,6 @@ export const onboardingExperimentDefinition: PostHogExperimentDefinition = {
 
 const skipWindow = { ...window, conversion_window: onboardingSkipExperiment.attributionDays };
 
-/**
- * Skippable or required setup steps, for members creating their first Cloud team, assigned
- * independently of the order. Its metrics mirror the order experiment's; skipping cannot happen in
- * `required`, so instead of the skip actions it counts signing out of setup, the only way out of a
- * required setup and the one leaving that both variants record.
- */
 export const onboardingSkipExperimentDefinition: PostHogExperimentDefinition = {
   name: "Onboarding skip: skippable or required setup steps",
   description: `Members creating their first Cloud team can skip connecting accounts and their assistant (control), or must do both before the dashboard opens; signing out is the only way out. Both end at the first prompt.\n${ownership(onboardingSkipExperiment.flag)}`,
@@ -320,7 +296,6 @@ const NativeFlag = Schema.Struct({
   ...FlagConfig.fields,
 });
 
-/** A narrow REST adapter retains conversion_window_unit, which the generated write DTO omits. */
 export const nativeExperiments = Effect.gen(function* () {
   const credentials = yield* yield* Credentials;
   const client = yield* HttpClient.HttpClient;
@@ -402,7 +377,6 @@ export const nativeExperiments = Effect.gen(function* () {
       offset += page.results.length;
     }
   });
-  /** Writes the declared definition to a draft, creating it first when absent. */
   const define = Effect.fn(function* (
     project: number,
     definition: PostHogExperimentDefinition,
@@ -424,8 +398,6 @@ export const nativeExperiments = Effect.gen(function* () {
           `An existing ${definition.feature_flag_key} flag is not owned by its experiment`,
         );
     }
-    // Register the intentional event names without emitting synthetic production events
-    // or disabling PostHog's unknown-event validation.
     for (const name of new Set(
       [...definition.metrics, ...definition.metrics_secondary].flatMap((metric) =>
         metric.series.map((source) => source.event),
@@ -462,11 +434,6 @@ export const nativeExperiments = Effect.gen(function* () {
       return yield* Effect.die("PostHog did not retain the declared draft configuration");
     return result;
   });
-  /**
-   * Moves the experiment to the declared definition and status. Every refusal happens before the
-   * first write: an unowned experiment, a move the lifecycle does not allow, or a changed
-   * definition for an experiment that has already launched.
-   */
   const sync = Effect.fn(function* (
     project: number,
     definition: PostHogExperimentDefinition,
@@ -514,22 +481,14 @@ export const nativeExperiments = Effect.gen(function* () {
 interface Props {
   readonly projectId: number;
   readonly definition: PostHogExperimentDefinition;
-  /** The status each deploy moves the experiment to; see `transitions` for the allowed moves. */
   readonly status: PostHogExperimentStatus;
 }
 interface Attributes extends Props {
   readonly id: number;
   readonly featureFlagId: number;
 }
-/** A native experiment lifecycle retained separately from the application deployment. */
 export type PostHogExperiment = Resource<"Executor.PostHogExperiment", Props, Attributes>;
-/** Declares an experiment, its native multivariate feature flag and its lifecycle status. */
 export const PostHogExperiment = Resource<PostHogExperiment>("Executor.PostHogExperiment");
-/**
- * Deploys launch, pause, resume and end an experiment as its declared status says. No deployment
- * deletes an experiment, returns one to draft, restarts a stopped one or changes a launched
- * definition.
- */
 export const postHogExperimentProvider = () =>
   Provider.effect(
     PostHogExperiment,
@@ -572,8 +531,6 @@ export const postHogExperimentProvider = () =>
             yield* api.sync(news.projectId, news.definition, news.status),
           );
         }),
-        // Removing the declaration orphans the state and leaves the experiment, its flag and its
-        // results in PostHog as they are, so declare it stopped and deploy before removing it.
         delete: () => Effect.void,
       };
     }),
@@ -585,22 +542,14 @@ interface RetiredProps {
 interface RetiredAttributes extends RetiredProps {
   readonly id: number;
 }
-/**
- * The retired homepage hero experiment. The stack no longer declares it, and its state row was
- * retained, so the next deploy orphans the row and leaves the experiment and its results in
- * PostHog. Alchemy needs this provider registered to plan that orphaning; it never creates,
- * changes or deletes anything. Remove it once every stage has deployed without the resource.
- */
 export type PostHogHeroExperiment = Resource<
   "Executor.PostHogHeroExperiment",
   RetiredProps,
   RetiredAttributes
 >;
-/** Not declared by any stack; exists only so Alchemy can resolve the retained row's type. */
 export const PostHogHeroExperiment = Resource<PostHogHeroExperiment>(
   "Executor.PostHogHeroExperiment",
 );
-/** Never touches PostHog: the experiment and its data stay there. */
 export const retiredExperimentProvider = () =>
   Provider.succeed(PostHogHeroExperiment, {
     reconcile: () => Effect.die("The hero experiment is retired; do not declare it"),

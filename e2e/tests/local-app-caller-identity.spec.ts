@@ -1,4 +1,3 @@
-/** Local calls expose the product's one caller even without linked accounts. */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Redacted, Schema } from "effect";
 import { Api, body } from "../support/api.ts";

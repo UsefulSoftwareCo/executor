@@ -1,4 +1,3 @@
-/** Real browser requests retain the timing headers used to join platform and application traces. */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Schema } from "effect";
 import { randomUUID } from "node:crypto";

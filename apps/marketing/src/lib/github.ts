@@ -1,25 +1,13 @@
-// GitHub repo metadata for the nav's "Star on GitHub" pill.
-//
-// The marketing site is static, so this runs once during the build. To keep
-// that build resilient we:
-//   - memoize the count in module scope with a TTL, so a warm isolate hits the
-//     GitHub API at most once per window and dedupes concurrent requests;
-//   - hint compatible fetch hosts to edge-cache the upstream response;
-//   - time out fast so a slow upstream never holds up the homepage; and
-//   - resolve to null on any failure, in which case the nav simply drops the
-//     count and keeps the link.
-
 const REPO = "UsefulSoftwareCo/executor";
 
 export const GITHUB_REPO_URL = `https://github.com/${REPO}`;
 
-/** Compact star count, e.g. 1234 -> "1.2k". */
 export function formatStars(n: number): string {
   return n >= 1000 ? `${(n / 1000).toFixed(1).replace(/\.0$/, "")}k` : String(n);
 }
 
-const TTL_OK_MS = 30 * 60 * 1000; // cache a real count for ~30 min per isolate
-const TTL_FAIL_MS = 60 * 1000; // but retry soon after a miss, never pin a null
+const TTL_OK_MS = 30 * 60 * 1000;
+const TTL_FAIL_MS = 60 * 1000;
 const TIMEOUT_MS = 4000;
 
 /* oxlint-disable executor/no-module-level-mutable-state -- the static site build shares one count across its pages */
@@ -47,7 +35,6 @@ async function fetchStars(): Promise<number | null> {
   }
 }
 
-/** Live star count, memoized per isolate with a TTL. null when unavailable. */
 export function getStars(): Promise<number | null> {
   const now = Date.now();
   if (cached) {

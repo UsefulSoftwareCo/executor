@@ -1,14 +1,10 @@
-/**
- * The dashboard sends the reads a page starts together as one batch. Each read names an endpoint
- * of the host's API, and the host answers it with that endpoint's own handler, middleware and
- * schemas under the batch request's identity, streaming each answer as it finishes.
- */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Schedule, Schema } from "effect";
 import { randomUUID } from "node:crypto";
 import { Actors } from "../support/actors.ts";
 import { Api, body } from "../support/api.ts";
 import { Browser } from "../support/browser.ts";
+import { replaceResponses } from "../support/browser-responses.ts";
 import { HostedLive, withHostedCase } from "../support/case.ts";
 import { openInApp, openThroughBrowser } from "../support/in-app-navigation.ts";
 import { appsManifest } from "../support/apps-release.ts";
@@ -22,27 +18,20 @@ import { scenarios } from "../test-plan.ts";
 const Viewer = Schema.Struct({ userId: Schema.String });
 const App = Schema.Struct({ id: Schema.String });
 
-/** One read in a batch, with the URL the same read has as the page's own request. */
 interface Read {
   readonly group: string;
   readonly endpoint: string;
   readonly params?: Record<string, string>;
   readonly path: string;
-  /** Anything else a read could try to carry. A batch ignores it. */
   readonly extra?: Record<string, unknown>;
 }
 
-/** What one read answers, and when its answer arrived after the batch was sent. */
 interface Answer {
   readonly status: number;
   readonly body: string;
   readonly at?: number;
 }
 
-/**
- * Send `reads` as one batch from the page, reading each answer as it streams in, and each read
- * also as the page's own request.
- */
 const batchFromPage = (reads: ReadonlyArray<Read>) =>
   Effect.flatMap(Browser, (browser) =>
     browser.use("Send the reads as one batch and as the page's own requests", (page) =>
@@ -107,7 +96,6 @@ const batchFromPage = (reads: ReadonlyArray<Read>) =>
     ),
   );
 
-/** The answers without their arrival times, to compare with the page's own requests. */
 const contents = (answers: ReadonlyArray<Answer | null>) =>
   answers.map((answer) => (answer === null ? null : { status: answer.status, body: answer.body }));
 
@@ -150,7 +138,6 @@ layer(HostedLive, { excludeTestServices: true })("Dashboard read batches", (it) 
         const prefix = `/api/organizations/${organization}`;
         const member = yield* body(Viewer, yield* api.request(actors.member, "GET", "/api/viewer"));
         const app = yield* deploy("Batched reads", "");
-        // Its first evaluation takes two seconds.
         const slow = yield* deploy(
           "Slow batched read",
           "await new Promise((resolve) => setTimeout(resolve, 2000));",
@@ -163,7 +150,6 @@ layer(HostedLive, { excludeTestServices: true })("Dashboard read batches", (it) 
           path: `${prefix}/apps/${app.id}/source`,
         };
 
-        // Signed out, a batch reads nothing a signed-out request could not.
         yield* browser.use("Open the product signed out", (page) => page.goto("/"));
         const signedOut = yield* batchFromPage([viewer, source]);
         expect(signedOut.status).toBe(200);
@@ -174,8 +160,6 @@ layer(HostedLive, { excludeTestServices: true })("Dashboard read batches", (it) 
         yield* browser.use("Open the organization's apps", (page) =>
           page.goto(`/org/${actors.organization.slug}`),
         );
-        // A member reads its own identity. The app source is for administrators: that read is
-        // refused by its own middleware, with the endpoint's own error.
         const answered = yield* batchFromPage([viewer, source]);
         expect(answered.status).toBe(200);
         expect(contents(answered.batched)).toEqual(answered.direct);
@@ -185,7 +169,6 @@ layer(HostedLive, { excludeTestServices: true })("Dashboard read batches", (it) 
         });
         expect(JSON.parse(answered.direct[1]?.body ?? "null")).toHaveProperty("_tag");
 
-        // A read cannot name another session, client address or method.
         const forged = yield* batchFromPage(
           [viewer, source].map((read) => ({
             ...read,
@@ -199,7 +182,6 @@ layer(HostedLive, { excludeTestServices: true })("Dashboard read batches", (it) 
         );
         expect(contents(forged.batched)).toEqual(answered.direct);
 
-        // Only reads of the API travel in a batch: writes and unknown endpoints refuse it whole.
         const refuse = (reads: ReadonlyArray<unknown>) =>
           browser.use("Send a batch the dashboard never sends", (page) =>
             page.evaluate(
@@ -224,7 +206,6 @@ layer(HostedLive, { excludeTestServices: true })("Dashboard read batches", (it) 
         expect(yield* refuse([read("viewer", "get"), read("auth", "session")])).toBe(400);
         expect(yield* refuse([])).toBe(400);
 
-        // Another site cannot send a batch with the member's cookies.
         const crossSite = yield* api.request(
           actors.member,
           "POST",
@@ -257,7 +238,6 @@ layer(HostedLive, { excludeTestServices: true })("Dashboard read batches", (it) 
         for (const site of ["same-site", "cross-site", "none"])
           expect((yield* attested(site, own.origin)).status, site).toBe(403);
 
-        // A slow read does not hold back the others: each answer streams as it finishes.
         yield* browser.login(actors.owner);
         yield* browser.use("Open the organization's apps", (page) =>
           page.goto(`/org/${actors.organization.slug}`),
@@ -274,7 +254,6 @@ layer(HostedLive, { excludeTestServices: true })("Dashboard read batches", (it) 
         expect(fastAnswer?.status).toBe(200);
         expect((slowAnswer?.at ?? 0) - (fastAnswer?.at ?? Infinity)).toBeGreaterThan(1000);
 
-        // Opening an app inside the running dashboard sends its reads in batches.
         let sent = 0;
         yield* browser.use("Count the page's batches", (page) => {
           page.on("request", (request) => {
@@ -291,22 +270,17 @@ layer(HostedLive, { excludeTestServices: true })("Dashboard read batches", (it) 
         );
         expect(sent).toBeGreaterThan(0);
 
-        // A batch reply that ends early fails every read it did not answer, as a lost request
-        // fails, instead of leaving it waiting.
         let unanswered = 0;
-        yield* browser.use("Cut each batch reply off after its first answer", (page) =>
-          page.route(
-            (url) => url.pathname === batchPath,
-            (route) =>
-              route.fetch().then((response) =>
-                response.text().then((text) => {
-                  const lines = text.split("\n").filter((line) => line !== "");
-                  unanswered += batchedReads(route.request().postData()).length - 1;
-                  return route.fulfill({ response, body: `${lines[0] ?? ""}\n` });
-                }),
-              ),
-          ),
-        );
+        yield* replaceResponses(`*${batchPath}*`, (response) => {
+          if (new URL(response.url).pathname !== batchPath) return "unchanged";
+          const contentType = response.headers["content-type"];
+          if (contentType === undefined) throw new Error("A batch reply has no content type");
+          return response.body().then((text) => {
+            const lines = text.split("\n").filter((line) => line !== "");
+            unanswered += batchedReads(response.requestBody).length - 1;
+            return { status: response.status, body: `${lines[0] ?? ""}\n`, contentType };
+          });
+        });
         yield* browser.use("Open a page that does not read the app", (page) =>
           page.goto(`/org/${actors.organization.slug}/organization`),
         );
@@ -349,7 +323,6 @@ layer(HostedLive, { excludeTestServices: true })("Dashboard read batches", (it) 
         const evidence = yield* Evidence;
         const organization = actors.organization.id;
         const prefix = `/api/organizations/${organization}`;
-        // Listing this app's tools fails on the server: its factory throws.
         const failing = yield* deploy(
           "Failing batched read",
           'throw new Error("Synthetic factory failure");',
@@ -376,7 +349,6 @@ layer(HostedLive, { excludeTestServices: true })("Dashboard read batches", (it) 
             route: index,
           },
         ];
-        // Each read joins a trace of its own, as a page's reads do, so its span is found by it.
         const reads = planned.map(({ read, route }) => {
           const traceId = randomUUID().replaceAll("-", "");
           return {
@@ -399,8 +371,6 @@ layer(HostedLive, { excludeTestServices: true })("Dashboard read batches", (it) 
         expect(missing).toBeLessThan(500);
         expect(failed).toBe(502);
 
-        // The batch answered 200, but each read's span records the status it answered itself. A
-        // refusal is the endpoint's answer; only a server error fails the span.
         const spans: Array<unknown> = [];
         for (const [position, { route, traceId, read }] of reads.entries()) {
           const status = batch.direct[position]?.status;
@@ -461,12 +431,10 @@ layer(HostedLive, { excludeTestServices: true })("Dashboard read batches", (it) 
         );
         expect(yield* servedBuild()).toBe(target.metadata.commit);
 
-        // The operator upgrades the server while the tab stays open.
         yield* serverControl("stop");
         yield* serverControl("environment", 200, { EXECUTOR_BUILD_VERSION: upgrade });
         yield* serverControl("start");
 
-        // The tab's batches name endpoints the new server no longer has, so it refuses them.
         yield* browser.use("Send the previous build's batches", (page) =>
           page.route(
             (url) => url.pathname === batchPath,
@@ -489,7 +457,6 @@ layer(HostedLive, { excludeTestServices: true })("Dashboard read batches", (it) 
             .getByRole("button", { name: "Reload" })
             .waitFor(),
         );
-        // A refused read explains the update instead of reporting an unreachable server.
         yield* browser.use("Wait for the refused read's explanation", (page) =>
           page.getByText(updated).first().waitFor(),
         );
@@ -504,7 +471,6 @@ layer(HostedLive, { excludeTestServices: true })("Dashboard read batches", (it) 
           yield* browser.use("Capture the reload notice", (page) => page.screenshot()),
         );
 
-        // Reloading loads the new build, which reads normally.
         yield* browser.use("Reload from the notice", (page) =>
           page
             .unroute((url) => url.pathname === batchPath)

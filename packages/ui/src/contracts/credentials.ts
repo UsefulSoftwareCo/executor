@@ -18,16 +18,12 @@ const Fields = Schema.Struct({
   properties: Schema.Record(Schema.String, Schema.Unknown),
   required: Schema.optional(Schema.Array(Schema.String)),
 });
-/** Supported credential fields shared by account creation and replacement. */
 export type AccountFormFields = {
   readonly properties: Readonly<Record<string, typeof Field.Type>>;
   readonly required?: readonly string[] | undefined;
-  /** Fields the provider marks as not secret; the form shows their values. */
   readonly plain?: readonly string[] | undefined;
-  /** Secret fields the app reads as real values; the form says so. */
   readonly raw?: readonly string[] | undefined;
 };
-/** Serialize only the submitted method's fields. No saved secret is read into the browser. */
 export const credentialValues = (
   fields: AccountFormFields,
   values: Readonly<Record<string, string>>,
@@ -48,12 +44,10 @@ export const credentialValues = (
       ];
     }),
   );
-/** Select controls need explicit required-field validation as well as native input validation. */
 export const credentialsComplete = (
   fields: AccountFormFields,
   values: Readonly<Record<string, string>>,
 ) => (fields.required ?? []).every((name) => values[name] !== undefined && values[name] !== "");
-/** Parse only form shapes we can actually render; unfamiliar schemas remain explicit. */
 export const accountFields = (
   method:
     | {
@@ -96,22 +90,18 @@ export const accountFields = (
       })
     : undefined;
 
-/** A submission contains only the selected method's fields, redacted at the form boundary. */
-/** New accounts are named after they are saved. */
 export interface AccountSubmission {
   readonly method: string;
   readonly fields: Redacted.Redacted<Readonly<Record<string, string | number | boolean>>>;
 }
-/** Product OAuth renderers receive the same pending state as credential submission. */
 export interface AccountOAuthProps {
   readonly method: string;
   readonly disabled: boolean;
+  readonly clientGuide: string | undefined;
   readonly onPendingChange: (pending: boolean) => void;
-  /** Where the sign-in goes once it is saved; the OAuth form shows it just above its action. */
   readonly access: ReactNode;
 }
 
-/** A method the app signs in itself; the product runs its steps for the chosen method. */
 export interface AccountInteractiveProps {
   readonly method: string;
   readonly label: string;
@@ -119,13 +109,9 @@ export interface AccountInteractiveProps {
   readonly onPendingChange: (pending: boolean) => void;
 }
 
-/** Client selection submitted to the product's OAuth start operation. */
-/** New accounts are named after sign-in, once the connected identity is known. */
 export interface OAuthSubmission {
-  /** Omitted on a reconnect that keeps its account's client. */
   readonly client?: OAuthClientSelection;
-  /** Register the entered client for the organization before signing in with it. */
   readonly register?: boolean;
-  /** Update this registered client with the entered details before signing in with it. */
   readonly update?: OAuthClientId;
+  readonly chooseAgain?: true;
 }

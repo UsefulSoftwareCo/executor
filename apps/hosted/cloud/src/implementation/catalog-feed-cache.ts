@@ -1,29 +1,31 @@
-/** Colo cache of the official app feed, so listing and installing do not each wait on R2. */
-import { Effect, Schema } from "effect";
+import { makeExecutionMemo } from "alchemy/Runtime/ExecutionMemo";
+import { Effect, FiberSet, Schema } from "effect";
 import { HttpClient, HttpClientResponse } from "effect/http";
 
 class FeedCacheFailed extends Schema.TaggedError<FeedCacheFailed>()("FeedCacheFailed", {}) {}
 const cached = <A>(read: () => Promise<A>) =>
   Effect.tryPromise({ try: read, catch: () => new FeedCacheFailed() });
 
-/** The feed itself declares `max-age=300`; a delisted app can stay installable for that long. */
 const retentionSeconds = 5 * 60;
 
-/**
- * Serve successful GETs under the feed's directory from the colo cache, filling it on a miss. Other
- * requests, failures and non-200 responses pass through uncached. A cache failure only costs the
- * origin read.
- */
-export const cachedFeedClient = (
+export const cachedFeedClient = Effect.fn(function* (
   origin: string,
   feedUrl: string,
   client: HttpClient.HttpClient,
-): HttpClient.HttpClient => {
+) {
   const feedDirectory = new URL(".", feedUrl).href;
+  const writes = yield* makeExecutionMemo(
+    Effect.gen(function* () {
+      const writes = yield* FiberSet.make();
+      yield* Effect.addFinalizer(() =>
+        FiberSet.awaitEmpty(writes).pipe(Effect.timeoutOption("2 seconds"), Effect.asVoid),
+      );
+      return writes;
+    }),
+  );
   return HttpClient.transform(client, (response, request) => {
     if (request.method !== "GET" || !request.url.startsWith(feedDirectory)) return response;
     return Effect.gen(function* () {
-      // Separate from browser assets. No route serves this synthetic URL.
       const key = new URL(
         `/_executor/catalog-feed-cache/${encodeURIComponent(request.url)}`,
         origin,
@@ -49,12 +51,15 @@ export const cachedFeedClient = (
         "content-type": fresh.headers["content-type"] ?? "application/json",
         "cache-control": `public, max-age=${retentionSeconds}`,
       };
-      yield* cached(() => cache.put(key, new Response(body, { headers }))).pipe(
-        Effect.catchTag("FeedCacheFailed", () =>
-          Effect.logWarning("Catalog feed cache write failed"),
+      yield* FiberSet.run(
+        yield* writes,
+        cached(() => cache.put(key, new Response(body, { headers }))).pipe(
+          Effect.catchTag("FeedCacheFailed", () =>
+            Effect.logWarning("Catalog feed cache write failed"),
+          ),
         ),
       );
       return HttpClientResponse.fromWeb(request, new Response(body, { status: 200, headers }));
     }).pipe(Effect.withSpan("catalog.feed.read"));
   });
-};
+});

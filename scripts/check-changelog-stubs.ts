@@ -1,19 +1,4 @@
 #!/usr/bin/env bun
-/**
- * Verifies every workspace package directory has a `CHANGELOG.md` file.
- *
- * `changesets/action@v1` (the GitHub Action wrapping the Changesets CLI in a
- * release workflow) creates the Version Packages PR after `changeset version`
- * updates package versions and changelogs. Every workspace package should have
- * a `CHANGELOG.md` seed so Changesets has a stable file to update and the
- * action never falls back to missing-file behavior. Keep seed files H1-only:
- * Changesets inserts generated version sections immediately after the H1, so
- * any placeholder prose would become part of the first generated release notes.
- *
- * Usage:
- *   bun run scripts/check-changelog-stubs.ts        # fail on missing
- *   bun run scripts/check-changelog-stubs.ts --fix  # create missing stubs
- */
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, relative, resolve } from "node:path";
 
@@ -28,7 +13,6 @@ const findWorkspacePackages = (): string[] => {
   const patterns = root.workspaces ?? [];
   const dirs = new Set<string>();
   for (const pattern of patterns) {
-    // Bun.Glob — handles workspace patterns like "packages/*", "playground/demo-apps/*"
     for (const match of new Bun.Glob(`${pattern}/package.json`).scanSync({ cwd: repoRoot })) {
       dirs.add(dirname(resolve(repoRoot, match)));
     }

@@ -14,7 +14,6 @@ type Node = Record<string, unknown>;
 const isNode = (value: unknown): value is Node =>
   typeof value === "object" && value !== null && !Array.isArray(value);
 
-// Maps of named subschemas: their keys are names, never schema keywords.
 const namedSchemaMaps = new Set(["properties", "patternProperties", "$defs", "definitions"]);
 /** Whether `path.slice(0, end)` is a map of named subschemas. */
 const isNamedSchemaMap = (path: readonly string[], end: number) => {
@@ -23,7 +22,6 @@ const isNamedSchemaMap = (path: readonly string[], end: number) => {
   if (last === "schemas" && path[end - 2] === "components") return true;
   return namedSchemaMaps.has(last);
 };
-// Keywords whose value is data rather than a schema.
 const dataKeywords = new Set(["example", "default", "const", "enum"]);
 /**
  * Whether the path's last segment enters a data value: a data keyword, or the `value` of an Example
@@ -60,7 +58,6 @@ const replaceKeys = (node: Node, set: Node, drop: readonly string[]): Node => {
 /** One node's rules, outside any data value. Returns the node or its replacement. */
 const upgradeNode = (input: Node, path: readonly string[]): Node => {
   let schema = input;
-  // Nullable types, then nullable references, which 3.1 writes as a union with null.
   if (schema.type !== undefined && schema.nullable === true) {
     schema = replaceKeys(schema, { type: [schema.type, "null"] }, ["nullable"]);
   } else if (schema.nullable === true && schema.type === undefined) {
@@ -74,7 +71,6 @@ const upgradeNode = (input: Node, path: readonly string[]): Node => {
       return { ...rest, anyOf: [base, { type: "null" }] };
     }
   }
-  // Boolean exclusive bounds become numeric ones.
   if (schema.exclusiveMinimum === true && schema.minimum !== undefined)
     schema = replaceKeys(schema, { exclusiveMinimum: schema.minimum }, ["minimum"]);
   else if (typeof schema.exclusiveMinimum === "boolean")
@@ -83,7 +79,6 @@ const upgradeNode = (input: Node, path: readonly string[]): Node => {
     schema = replaceKeys(schema, { exclusiveMaximum: schema.maximum }, ["maximum"]);
   else if (typeof schema.exclusiveMaximum === "boolean")
     schema = replaceKeys(schema, {}, ["exclusiveMaximum"]);
-  // `example` becomes `examples`, except where it names a member or already sits in an examples map.
   if (
     schema.example !== undefined &&
     !isInsideExamplesMap(path) &&
@@ -96,7 +91,6 @@ const upgradeNode = (input: Node, path: readonly string[]): Node => {
       },
       ["example"],
     );
-  // Binary and base64 string formats.
   if (schema.type === "string" || (Array.isArray(schema.type) && schema.type.includes("string"))) {
     if (schema.format === "binary") {
       const { format: _format, type: _type, ...binarySchema } = schema;
@@ -110,7 +104,6 @@ const upgradeNode = (input: Node, path: readonly string[]): Node => {
       return { ...rest, contentEncoding: "base64" };
     }
   }
-  // `x-webhooks` is a document-root extension.
   if (schema["x-webhooks"] !== undefined && path.length === 0)
     schema = replaceKeys(schema, { webhooks: schema["x-webhooks"] }, ["x-webhooks"]);
   return schema;

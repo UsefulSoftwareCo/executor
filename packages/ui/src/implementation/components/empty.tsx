@@ -2,7 +2,6 @@ import type * as React from "react";
 import { cva, type VariantProps } from "class-variance-authority";
 import { cn } from "../lib/utils.ts";
 
-/** Empty primitive; accepts native props and composes caller styles. */
 function Empty({ className, ...props }: React.ComponentProps<"div">) {
   return (
     <div
@@ -16,7 +15,6 @@ function Empty({ className, ...props }: React.ComponentProps<"div">) {
   );
 }
 
-/** Empty Header primitive; accepts native props and composes caller styles. */
 function EmptyHeader({ className, ...props }: React.ComponentProps<"div">) {
   return (
     <div
@@ -42,7 +40,6 @@ const emptyMediaVariants = cva(
   },
 );
 
-/** Empty Media primitive; accepts native props and composes caller styles. */
 function EmptyMedia({
   className,
   variant = "default",
@@ -58,7 +55,6 @@ function EmptyMedia({
   );
 }
 
-/** Empty Title primitive; accepts native props and composes caller styles. */
 function EmptyTitle({ className, ...props }: React.ComponentProps<"div">) {
   return (
     <div
@@ -69,7 +65,6 @@ function EmptyTitle({ className, ...props }: React.ComponentProps<"div">) {
   );
 }
 
-/** Empty Description primitive; accepts native props and composes caller styles. */
 function EmptyDescription({ className, ...props }: React.ComponentProps<"div">) {
   return (
     <div
@@ -83,7 +78,6 @@ function EmptyDescription({ className, ...props }: React.ComponentProps<"div">) 
   );
 }
 
-/** Empty Content primitive; accepts native props and composes caller styles. */
 function EmptyContent({ className, ...props }: React.ComponentProps<"div">) {
   return (
     <div

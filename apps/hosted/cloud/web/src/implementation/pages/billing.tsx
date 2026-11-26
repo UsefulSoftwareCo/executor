@@ -23,7 +23,6 @@ import type { BillingPlan } from "../../../../src/contracts/billing.ts";
 const members = (count: number) =>
   `${count.toLocaleString("en-US")} member${count === 1 ? "" : "s"}`;
 
-/** What a plan includes, stated from the billing catalog's own items. */
 const planFeatures = (plan: typeof BillingPlan.Type) => [
   ...(plan.trial === null
     ? []
@@ -37,11 +36,6 @@ const planFeatures = (plan: typeof BillingPlan.Type) => [
   ...(plan.purchase === "contact" ? ["Custom contract and dedicated support"] : []),
 ];
 
-/**
- * The checkout and portal answers are navigation targets, so the browser checks one thing at the
- * moment it navigates: an HTTPS URL that carries no credentials. `javascript:`, `data:` and plain
- * HTTP never reach `location.assign`.
- */
 const openBillingUrl = (url: string) => {
   const target = URL.parse(url);
   if (target === null || target.protocol !== "https:" || target.username || target.password)
@@ -50,7 +44,6 @@ const openBillingUrl = (url: string) => {
   return true;
 };
 
-/** Checkout return context is only a UI hint, never evidence of payment or authority. */
 export const billingSearch = (
   search: Record<string, unknown>,
 ): { readonly organization?: string; readonly plan?: string } => ({
@@ -60,7 +53,6 @@ export const billingSearch = (
 
 interface BillingProps {
   readonly returned: ReturnType<typeof billingSearch>;
-  /** Drop the checkout return from the address, so reloading or a bookmark does not wait again. */
   readonly onCheckoutSettled: () => void;
 }
 
@@ -68,7 +60,6 @@ function BillingDetails({ returned, onCheckoutSettled }: BillingProps) {
   const organization = useOrganizationRoute();
   const awaitingPlan =
     returned.organization === organization.id && returned.plan ? returned.plan : undefined;
-  /** A returned checkout whose plan was still not in effect when the page stopped waiting. */
   const [unconfirmedPlan, setUnconfirmedPlan] = useState<string>();
   const { result, data, refresh } = useQuery(billingAtom(organization.organization, awaitingPlan));
   const checkout = useAtomSet(checkoutAtom, { mode: "promiseExit" });
@@ -281,7 +272,6 @@ function BillingFailure({ retry }: { readonly retry?: (() => void) | undefined }
     </EmptyState>
   );
 }
-/** Members never fetch billing; the backend independently enforces the same rule. */
 export function BillingPage({ returned, onCheckoutSettled }: BillingProps) {
   const organization = useOrganizationRoute();
   if (organization.role === undefined) return <PageSkeleton title="Billing" />;

@@ -1,4 +1,3 @@
-/** Browser navigation edge for limited connection grants, distinct from dashboard pairing. */
 import { Effect, Option, Redacted, Schema } from "effect";
 import { AccountConnectionId } from "@executor-js/sdk";
 import { ConnectionGrant } from "@executor-js/local-server/account-connections";
@@ -9,7 +8,6 @@ import { oauthCallbackUrl } from "./oauth.ts";
 const key = (id: string) => `executor.account-connect.${id}`;
 const oauthKey = (state: string) => `executor.account-connect.oauth.${state}`;
 const decode = Schema.decodeUnknownOption(Schema.fromJsonString(ConnectionGrant));
-/** Remove the grant fragment before rendering. Session storage only holds this limited grant, never submitted fields. */
 export const readAccountConnection = Effect.sync((): ConnectionEntry | undefined => {
   const url = new URL(window.location.href);
   const match = /^\/account-connect\/([^/]+)$/.exec(url.pathname);
@@ -39,7 +37,6 @@ export const readAccountConnection = Effect.sync((): ConnectionEntry | undefined
   window.history.replaceState(null, "", `/account-connect/${grant.value.connection}`);
   return { ...grant.value, callbackUrl: oauthCallbackUrl(url) };
 });
-/** Match only this OAuth attempt on return, so ordinary dashboard sign-in cannot be intercepted. */
 export const openConnectionOAuth = (authorizationUrl: string, grant: ConnectionGrant) =>
   Effect.sync(() => {
     const state = new URL(authorizationUrl).searchParams.get("state");

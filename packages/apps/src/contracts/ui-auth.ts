@@ -1,6 +1,7 @@
 /* oxlint-disable no-control-regex -- control characters in paths are rejected on purpose */
 /** Browser authentication protocol. Identity and session storage belong to the host. */
 import { Schema } from "effect";
+import { appMenuBarRoute } from "./ui.ts";
 
 /** Opaque correlation ID; possession alone does not authorize an app session. */
 export const AppSignInId = Schema.String.check(Schema.isPattern(/^[a-f0-9]{64}$/u)).pipe(
@@ -11,7 +12,10 @@ export type AppSignInId = typeof AppSignInId.Type;
 export const AppSignInCode = Schema.RedactedFromValue(
   Schema.String.check(Schema.isPattern(/^[a-f0-9]{64}$/u)),
 );
-/** A path on the current app origin, including its query and fragment; never a redirect to another host or host-owned route. */
+/**
+ * A path on the current app origin, including its query and fragment; never a redirect to another
+ * host or host-owned route, except the menu-bar page, which renders the app like its main page.
+ */
 export const AppReturnPath = Schema.String.check(
   Schema.isMaxLength(8192),
   Schema.makeFilter((value) => {
@@ -21,7 +25,8 @@ export const AppReturnPath = Schema.String.check(
       const url = new URL(value, "https://app.invalid");
       return (
         url.origin === "https://app.invalid" &&
-        !/^\/(?:_executor|dashboard|auth|v1|mcp)(?:\/|$)/.test(decodeURIComponent(url.pathname))
+        (url.pathname === appMenuBarRoute ||
+          !/^\/(?:_executor|dashboard|auth|v1|mcp)(?:\/|$)/.test(decodeURIComponent(url.pathname)))
       );
     } catch {
       return false;

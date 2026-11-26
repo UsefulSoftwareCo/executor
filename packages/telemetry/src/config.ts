@@ -1,7 +1,5 @@
-/** Telemetry configuration is parsed at composition roots; headers remain redacted. */
 import { Config, Context, Effect, Option, Schema } from "effect";
 
-/** Bound each collector request, including its acknowledgement; exporter retries retain the batch. */
 export const telemetryRequestTimeout = "5 seconds" as const;
 
 const Endpoint = Schema.String.check(
@@ -19,15 +17,12 @@ const Endpoint = Schema.String.check(
   ),
 );
 
-/** One private exporter target. Endpoints are complete signal URLs. */
 export const TelemetryTarget = Schema.Struct({
   url: Endpoint,
   headers: Schema.optional(Schema.RedactedFromValue(Schema.Record(Schema.String, Schema.String))),
 });
-/** Parsed target with redaction-safe headers. */
 export type TelemetryTarget = typeof TelemetryTarget.Type;
 
-/** Shared identity and independently selectable OTLP signals. */
 export const TelemetryConfig = Schema.Struct({
   service: Schema.NonEmptyString,
   version: Schema.NonEmptyString,
@@ -38,16 +33,13 @@ export const TelemetryConfig = Schema.Struct({
   metrics: Schema.optional(TelemetryTarget),
   metricsProtocol: Schema.optional(Schema.Literals(["http/json", "http/protobuf"])),
 });
-/** Resolved telemetry configuration. */
 export type TelemetryConfig = typeof TelemetryConfig.Type;
 
-/** Host-only destinations; never copied into an app's invocation telemetry capability. */
 export const CurrentTelemetryConfig = Context.Reference<TelemetryConfig | undefined>(
   "executor/TelemetryConfig",
   { defaultValue: () => undefined },
 );
 
-/** Read OTLP endpoints uniformly for all signals; development chooses which signals to configure. */
 export const telemetryConfig = (service: string) =>
   Effect.gen(function* () {
     const base = yield* Config.URL("OTEL_EXPORTER_OTLP_ENDPOINT").pipe(Config.option);
