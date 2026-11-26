@@ -1,4 +1,3 @@
-/** Drive real sign-ins against a loopback issuer that answers with standard and nonstandard errors. */
 import { expect, layer } from "@effect/vitest";
 import { Clock, DateTime, Effect, Schema } from "effect";
 import { FetchHttpClient, HttpClient } from "effect/http";
@@ -28,7 +27,6 @@ const Failure = Schema.Struct({
   serviceError: Schema.optional(ServiceError),
   retryAfter: Schema.optional(Schema.String),
 });
-/** The connection as an agent reads it through the hosted management API. */
 const Connection = Schema.Struct({
   state: Schema.Struct({
     status: Schema.String,
@@ -49,11 +47,9 @@ const Connection = Schema.Struct({
     ),
   }),
 });
-/** The secret every client the issuer registers authenticates with. */
 const registeredSecret = "synthetic-client-secret";
 const Echo = Schema.Struct({ authorization: Schema.NullOr(Schema.String) });
 
-/** An authorization-code app whose only query presents the account's token to the issuer. */
 const resourceAppFiles = (name: string, origin: string) => [
   {
     path: "index.ts",
@@ -90,7 +86,6 @@ layer(HostedLive, { excludeTestServices: true })("OAuth error responses", (it) =
             expect(response.status, JSON.stringify(response.body)).toBe(200);
             return (yield* body(Connection, response)).state;
           });
-        /** The service's words stay out of the curated explanation, and no sent secret returns. */
         const curated = (
           label: string,
           failure: typeof Failure.Type,
@@ -124,7 +119,6 @@ layer(HostedLive, { excludeTestServices: true })("OAuth error responses", (it) =
           refreshedExpiresIn: null,
         } as const;
 
-        /** Deploy an app, sign in through the issuer and complete the callback. */
         const signIn = (
           files: ReadonlyArray<{ readonly path: string; readonly content: string }>,
           name: string,
@@ -209,7 +203,6 @@ layer(HostedLive, { excludeTestServices: true })("OAuth error responses", (it) =
           };
           readonly reason: string;
           readonly evidence: string;
-          /** What the person connecting and agents reading the connection see the service say. */
           readonly serviceError?: typeof ServiceError.Type;
         }> = [
           {
@@ -220,7 +213,6 @@ layer(HostedLive, { excludeTestServices: true })("OAuth error responses", (it) =
             serviceError: { error: "invalid_grant" },
           },
           {
-            // The service repeats the client secret Executor sent; it never comes back out.
             name: "HTTP 200 invalid_client",
             tokenError: {
               status: 200,
@@ -236,8 +228,6 @@ layer(HostedLive, { excludeTestServices: true })("OAuth error responses", (it) =
               description: "Client secret [redacted] is not accepted for this client",
             },
           },
-          // Services that reject the client with their own code are read as invalid_client, so a
-          // client registered in this sign-in is reported as incompatible.
           {
             name: "GitHub incorrect_client_credentials",
             tokenError: { status: 200, body: { error: "incorrect_client_credentials" } },
@@ -291,7 +281,6 @@ layer(HostedLive, { excludeTestServices: true })("OAuth error responses", (it) =
             },
           },
           {
-            // A service that cannot answer: the callback page says Executor could not reach it.
             name: "HTTP 503 without a body",
             tokenError: { status: 503, body: {} },
             reason: "service_unavailable",
@@ -320,7 +309,6 @@ layer(HostedLive, { excludeTestServices: true })("OAuth error responses", (it) =
           expect(result.failure.recovery?.instructions, scenario.name).toContain(scenario.evidence);
           expect(result.exchanged, scenario.name).toBe(1);
           curated(scenario.name, result.failure, scenario.serviceError);
-          // The connection keeps the failure, so an agent that issued the link learns what happened.
           const state = yield* readConnection(result.connection.id);
           expect(state, scenario.name).toMatchObject({
             status: "pending",
@@ -335,7 +323,6 @@ layer(HostedLive, { excludeTestServices: true })("OAuth error responses", (it) =
           expect(state.failure?.error.serviceError, scenario.name).toEqual(scenario.serviceError);
           expect(state.failure?.error.message, scenario.name).toBe(result.failure.message);
           if (scenario.tokenError.status === 503) {
-            // A new sign-in has no outcome yet, so the earlier failure no longer describes it.
             const restarted = yield* api.request(
               actors.owner,
               "POST",
@@ -347,10 +334,6 @@ layer(HostedLive, { excludeTestServices: true })("OAuth error responses", (it) =
           }
         }
 
-        // An HTML error page that repeats the request, here a 429 of about 6 KB. Only its text is
-        // kept, without the code, PKCE verifier or client credentials the request sent, and never
-        // more than 500 characters, wherever it is returned or recorded. The service was reached
-        // and is limiting requests, so the failure says so, with the time its Retry-After names.
         {
           const escape = (text: string) =>
             text.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
@@ -377,14 +360,12 @@ layer(HostedLive, { excludeTestServices: true })("OAuth error responses", (it) =
             reason: "rate_limited",
             message: "The service asked Executor to wait before sending more sign-in requests.",
           });
-          // Retry-After: 120 is two minutes from the answer, and the copy rounds it up to a minute.
           const retryAfter = result.failure.retryAfter;
           if (retryAfter === undefined)
             return yield* Effect.die("Expected the time the service's Retry-After names");
           const retryAt = Date.parse(retryAfter);
           expect(retryAt).toBeGreaterThanOrEqual(before + 120_000);
           expect(retryAt).toBeLessThanOrEqual(after + 120_000);
-          // "Www, DD Mmm YYYY HH:MM:SS GMT"
           const utc = DateTime.toDateUtc(
             DateTime.makeUnsafe(Math.ceil(retryAt / 60_000) * 60_000),
           ).toUTCString();
@@ -426,9 +407,6 @@ layer(HostedLive, { excludeTestServices: true })("OAuth error responses", (it) =
           expect(state.failure?.error.recovery).toEqual(result.failure.recovery);
         }
 
-        // Registration refused for Executor's callback: the service's own error is returned and
-        // recorded on the connection, beside the stage and status. A client the organization
-        // registered earlier for this server would serve this app, so it is removed first.
         {
           yield* removeRegisteredClients(actors.owner, actors.organization.id, issuer.origin);
           const serviceError = {
@@ -527,7 +505,6 @@ layer(HostedLive, { excludeTestServices: true })("OAuth error responses", (it) =
             reason: scenario.reason,
           });
           expect(result.exchanged, label).toBe(0);
-          // The issuer check runs before the response's `error` is read.
           const serviceError =
             scenario.callbackIssuer === undefined ? { error: scenario.error } : undefined;
           curated(label, result.failure, serviceError);
@@ -544,11 +521,6 @@ layer(HostedLive, { excludeTestServices: true })("OAuth error responses", (it) =
           });
         }
 
-        // Executor uses only the access token. It sends no `nonce` even with `openid`, never reads
-        // OpenID metadata for ID token algorithms, and drops any ID token unchecked, so none of
-        // these can fail a sign-in. Miro signs HS256 without a nonce and lists HS256 only in its
-        // OpenID metadata. Readwise signs HS256 with a secret public clients lack and names an
-        // issuer its metadata does not.
         for (const scenario of [
           {
             name: "Unsigned ID token",
@@ -602,7 +574,6 @@ layer(HostedLive, { excludeTestServices: true })("OAuth error responses", (it) =
           );
         }
 
-        // Renewals never compare ID token subjects: one naming another subject still renews.
         for (const scenario of [
           { name: "Same subject", subject: "synthetic-subject" },
           { name: "Different subject", subject: "synthetic-other-subject" },
@@ -612,9 +583,7 @@ layer(HostedLive, { excludeTestServices: true })("OAuth error responses", (it) =
             scopes: ["openid", "read"],
             includeIdToken: true,
             refreshTokens: true,
-            // Inside the host's refresh window, so the first tool call renews the grant.
             expiresIn: 10,
-            // Renewed tokens stay valid, so one tool call renews once.
             refreshedExpiresIn: 3600,
             refreshSubject: scenario.subject,
           });

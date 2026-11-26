@@ -1,4 +1,3 @@
-/** The modal renders precise server-owned readiness without offering another app's controls. */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Schema } from "effect";
 import { randomUUID } from "node:crypto";
@@ -240,8 +239,6 @@ layer(HostedLive, { excludeTestServices: true })("Publishing dialog", (it) => {
                 .and(page.locator(":enabled"))
                 .waitFor(),
             );
-            // The rename reads the source before it commits. When that read fails, the dialog reports
-            // it and keeps the loaded source, so renaming again recovers.
             const failedRead = yield* holdQuery(
               [actors.organization.id, actors.organization.slug].map(
                 (organization) => `/api/organizations/${organization}/apps/${app.id}/workspace`,

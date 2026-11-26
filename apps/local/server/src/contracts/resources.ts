@@ -1,4 +1,3 @@
-/** Paired-dashboard access to workflow history and webhook lifecycle metadata. */
 import { withLegacyKeys } from "@executor-js/utils/legacy-keys";
 import {
   AccountId,
@@ -11,6 +10,7 @@ import {
   StartWorkflowFields,
   ListWorkflowRuns,
   WorkflowErrors,
+  WorkflowDefinitionErrors,
   WebhookSubscription,
   WebhookErrors,
   WebhookId,
@@ -22,10 +22,6 @@ import { Schema } from "effect";
 import { HttpApiEndpoint, HttpApiGroup } from "effect/http-api";
 const app = { app: AppId };
 const path = "/dashboard/api/apps/:app";
-/**
- * The paired browser has the same workflow capabilities as the local SDK. Runs use the accounts
- * linked to the app.
- */
 export const DashboardWorkflows = HttpApiGroup.make("workflows")
   .add(
     HttpApiEndpoint.get("definitions", `${path}/workflows`, {
@@ -34,7 +30,7 @@ export const DashboardWorkflows = HttpApiGroup.make("workflows")
         withLegacyKeys({ version: "deployment" }),
       ),
       success: Schema.Array(HostedWorkflow),
-      error: WorkflowErrors,
+      error: WorkflowDefinitionErrors,
     }),
   )
   .add(
@@ -62,7 +58,6 @@ export const DashboardWorkflows = HttpApiGroup.make("workflows")
       error: WorkflowErrors,
     }),
   );
-/** Setup secrets remain behind the existing browser-only webhook setup route. */
 export const DashboardWebhooks = HttpApiGroup.make("webhooks")
   .add(
     HttpApiEndpoint.get("list", `${path}/webhooks`, {

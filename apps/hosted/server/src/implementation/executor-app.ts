@@ -1,10 +1,8 @@
 import { SourceFiles } from "@executor-js/sdk/core";
 import { Effect } from "effect";
 import { packageFile } from "@executor-js/app-templates";
-/** Executor uses the same source generator, provider accounts and versions as other API apps. */
 import type { HostedApiDocument } from "../contracts/api.ts";
 
-/** The catalog retains the ordinary OAuth connection for explicitly installed copies. */
 const managementIndex = (
   origin: string,
   apiKey = false,
@@ -41,10 +39,6 @@ export default defineApp({ user: { accounts: { service: provider } } }, async (c
 });
 `;
 
-/**
- * Live OpenAPI settings for this installation's own API. The document is ours, so its origin and
- * credential placement are declared here rather than inferred from the document.
- */
 const managementConfiguration = (origin: string, document: HostedApiDocument) =>
   JSON.stringify(
     {
@@ -61,7 +55,6 @@ const managementConfiguration = (origin: string, document: HostedApiDocument) =>
     2,
   );
 
-/** The version installed from the catalog. Existing untouched copies are recognized by exact files. */
 export const executorAppSource = (origin: string, document: HostedApiDocument) =>
   Effect.succeed({
     files: SourceFiles.make([
@@ -83,7 +76,6 @@ export const provider = defineProvider({ name: "Executor", auth: {
     ]),
   });
 
-/** The default app accepts a saved user API key through the ordinary secrets method. */
 export const defaultExecutorAppSource = (origin: string, document: HostedApiDocument) =>
   Effect.succeed({
     files: SourceFiles.make([

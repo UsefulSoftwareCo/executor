@@ -1,4 +1,3 @@
-/** Orphan schedules left by older versions must not starve live schedules after an upgrade. */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Redacted, Schedule, Schema } from "effect";
 import { Api, body } from "../support/api.ts";
@@ -15,7 +14,6 @@ const Runs = Schema.Array(
 const source = `import { defineApp, mutation, userInterval, object, router } from "apps";
 const record = mutation({ input: object({}) }, async () => ({ done: true }));
 export default defineApp({}, async () => ({ tools: router({ record }), schedules: { record: userInterval({ minutes: 1 }, record, {}) } }));`;
-// Two full dispatch batches: the scheduler scans eight due candidates, oldest first.
 const orphans = 16;
 
 layer(TestLive, { excludeTestServices: true })("Legacy schedule storage", (it) => {
@@ -57,8 +55,6 @@ layer(TestLive, { excludeTestServices: true })("Legacy schedule storage", (it) =
           )).status,
         ).toBe(200);
 
-        // Older versions kept schedules after deleting their app. No current surface can
-        // create these rows, so write them as that version left them: enabled and long overdue.
         yield* legacyStorage([
           {
             sql: `INSERT INTO executor_schedules
@@ -70,7 +66,6 @@ layer(TestLive, { excludeTestServices: true })("Legacy schedule storage", (it) =
             params: [orphans],
           },
         ]);
-        // Cross the live schedule's first interval while stopped, then upgrade in place.
         yield* serverControl("clock/advance", 200, { milliseconds: 100_000 });
         yield* serverControl("start");
 

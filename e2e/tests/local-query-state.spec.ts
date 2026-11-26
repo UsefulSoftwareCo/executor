@@ -19,7 +19,6 @@ layer(TestLive, { excludeTestServices: true })("Local query state", (it) => {
         const target = yield* Target;
         const session = yield* api.session();
         const headers = { authorization: `Bearer ${Redacted.value(target.apiKey)}` };
-        // Agent calls carry the API key and no browser origin.
         const agent: Session = {
           ...session,
           send: (method, path, data, extra = {}) => {
@@ -158,7 +157,6 @@ export default defineApp({ user: { accounts: { service } } }, async () => ({  })
         yield* browser.use("Open the app's accounts", (page) =>
           page.goto(`/apps/${app.id}?view=accounts`),
         );
-        // The linked account fills the plain requirement, so connecting another replaces it.
         yield* browser.use("Start connecting another account", (page) =>
           page.getByRole("button", { name: "Connect new account", exact: true }).click(),
         );
@@ -172,8 +170,6 @@ export default defineApp({ user: { accounts: { service } } }, async () => ({  })
         expect(
           (yield* session.send("DELETE", `/v1/apps/${app.id}`, undefined, headers)).status,
         ).toBe(200);
-        // The app's page and its accounts section each report the removal from their own live
-        // read, in either order, so the page can show two such alerts by the time this looks.
         yield* browser.use("The live app query reports removal", (page) =>
           page
             .getByRole("alert", {

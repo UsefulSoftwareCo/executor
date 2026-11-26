@@ -1,9 +1,3 @@
-/**
- * Database introspection: read the live database into a FumaDB schema so the
- * migrator can diff against reality (`mode: "from-database"`).
- *
- * CONTRACT (implemented by the introspect worker; see docs/DESIGN.md).
- */
 import { Effect, type Schema } from "effect";
 import { SqlClient } from "effect/sql/SqlClient";
 import type { SqlError } from "effect/sql/SqlError";
@@ -29,27 +23,12 @@ import { type AnySchema, schema as makeSchema } from "../../contracts/schema/sch
 import { type AnyTable, table as makeTable } from "../../contracts/schema/table.ts";
 import type { ResolvedSqlAdapterConfig } from "../../contracts/sql.ts";
 
-/**
- * How to read the connected database into a schema.
- *
- * The mapping callbacks let the migrator align the introspected schema with a
- * target schema; with none of them, names pass through unchanged and each
- * column takes the first FumaDB type its raw database type can hold.
- */
 export interface IntrospectOptions {
   readonly provider: Provider;
-  /** Schema version to stamp on the result. @default "1.0.0" */
   readonly version?: string;
-  /** SQL table names to skip (the settings table). @default [] */
   readonly internalTables?: ReadonlyArray<string>;
-  /** Map a SQL table name to the ORM name to use. @default identity */
   readonly tableNameMapping?: (tableName: string) => string;
-  /** Map a SQL column name to the ORM name to use. @default identity */
   readonly columnNameMapping?: (tableName: string, columnName: string) => string;
-  /**
-   * Choose the FumaDB type for a database column.
-   * @default first candidate of `dbToSchemaType` (for a primary key, the first candidate an id column accepts)
-   */
   readonly columnTypeMapping?: (
     dataType: string,
     options: {
@@ -59,15 +38,9 @@ export interface IntrospectOptions {
       readonly isPrimaryKey: boolean;
     },
   ) => StorageType;
-  /** @default true */
   readonly includeRelations?: boolean;
 }
 
-// ---------------------------------------------------------------------------
-// Raw catalogue shapes
-// ---------------------------------------------------------------------------
-
-/** One column as the database catalogue describes it. */
 interface RawColumn {
   readonly name: string;
   readonly dataType: string;
@@ -76,21 +49,17 @@ interface RawColumn {
   readonly defaultValue: string | undefined;
 }
 
-/** One base table as the database catalogue describes it. */
 interface RawTable {
   readonly name: string;
-  /** The owning database schema, when the provider has one. */
   readonly schema: string | undefined;
   readonly columns: ReadonlyArray<RawColumn>;
 }
 
-/** A unique constraint or unique index, with its columns in key order. */
 interface RawUnique {
   readonly name: string;
   readonly columns: ReadonlyArray<string>;
 }
 
-/** A foreign key, with its columns in key order. */
 interface RawForeignKey {
   readonly name: string;
   readonly columns: ReadonlyArray<string>;
@@ -100,10 +69,6 @@ interface RawForeignKey {
   readonly onDelete: ForeignKeyAction;
 }
 
-/**
- * Database schemas that never hold user tables. The list covers every provider
- * so one constant serves all catalogue queries.
- */
 const internalSchemaList =
   "('pg_catalog', 'pg_toast', 'pg_extension', 'information_schema', 'crdb_internal', 'mysql', 'performance_schema', 'sys')";
 
@@ -114,7 +79,6 @@ const introspectionError = (message: string, cause?: unknown): MigrationError =>
     ...(cause === undefined ? {} : { cause }),
   });
 
-/** `-1` means "unbounded" on MSSQL and MySQL, so it is reported as absent. */
 const optionalNumber = (value: unknown): number | undefined => {
   if (value === null || value === undefined) return undefined;
   const converted = Number(value);
@@ -125,7 +89,6 @@ const optionalNumber = (value: unknown): number | undefined => {
 const optionalText = (value: unknown): string | undefined =>
   value === null || value === undefined ? undefined : String(value);
 
-/** Catalogue booleans arrive as `boolean`, `0`/`1`, bigint, or `"YES"`/`"NO"`. */
 const toBoolean = (value: unknown): boolean => {
   if (typeof value === "boolean") return value;
   if (typeof value === "number") return value !== 0;
@@ -146,12 +109,10 @@ const mapAction = (action: unknown): ForeignKeyAction => {
     case "SET NULL":
       return "SET NULL";
     default:
-      // RESTRICT, NO ACTION, NONE, SET DEFAULT, and anything unknown.
       return "RESTRICT";
   }
 };
 
-/** Group `{ constraint_name, column_name }` rows, keeping the row order per constraint. */
 const groupUniques = (
   rows: ReadonlyArray<{ readonly constraint_name: unknown; readonly column_name: unknown }>,
 ): ReadonlyArray<RawUnique> => {
@@ -167,19 +128,10 @@ const groupUniques = (
   return Array.from(map, ([name, columns]) => ({ name, columns }));
 };
 
-// ---------------------------------------------------------------------------
-// Default value normalisation
-// ---------------------------------------------------------------------------
-
-/** A database default, reduced to something a FumaDB column can express. */
 type IntrospectedDefault =
   | { readonly _tag: "Now" }
   | { readonly _tag: "Value"; readonly value: unknown };
 
-/**
- * Remove the parentheses MSSQL wraps around every default constraint
- * definition (`('text')`, `((1))`, `(getdate())`).
- */
 const stripOuterParens = (input: string): string => {
   let str = input.trim();
   for (;;) {
@@ -211,14 +163,11 @@ const parseJson = (str: string): IntrospectedDefault | undefined => {
 };
 
 const parseBigInt = (str: string): IntrospectedDefault | undefined => {
-  // SQLite stores a bigint as an 8-byte big-endian blob and reports the default as `X'...'`.
   const blob = /^[xX]'([0-9a-fA-F]{16})'$/.exec(str);
   if (blob?.[1] !== undefined) {
     const bytes = Uint8Array.from(blob[1].match(/../g) ?? [], (pair) => Number.parseInt(pair, 16));
     return { _tag: "Value", value: new DataView(bytes.buffer).getBigInt64(0) };
   }
-  // MSSQL reports an integer default as a numeric literal (`90071992547409910.`),
-  // which `BigInt` rejects; a zero fraction is dropped, anything else is not a bigint.
   const text = /^[+-]?\d+\.0*$/.test(str) ? str.replace(/\.0*$/, "") : str;
   try {
     return { _tag: "Value", value: BigInt(text) };
@@ -227,11 +176,6 @@ const parseBigInt = (str: string): IntrospectedDefault | undefined => {
   }
 };
 
-/**
- * Undo the backslash escapes in a PostgreSQL/CockroachDB escape string
- * (`e'it\'s'`). Unknown escapes yield the escaped character itself, which is
- * what PostgreSQL does.
- */
 const unescapeBackslashes = (input: string): string =>
   input.replace(/\\(.)/g, (_match: string, char: string) => {
     switch (char) {
@@ -250,23 +194,8 @@ const unescapeBackslashes = (input: string): string =>
     }
   });
 
-/** `YYYY-MM-DD` with an optional `HH:MM[:SS[.fff]]` part and no timezone. */
 const naiveDateTime = /^(\d{4}-\d{2}-\d{2})(?:[ T](\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?))?$/;
 
-/**
- * Parse a date or timestamp default.
- *
- * SQLite keeps a `date` or `timestamp` column as epoch milliseconds (the codec
- * matrix in `schema/codec.ts`), and `sql/ddl.ts` writes the default as that
- * number, so an all-digit literal is read back as a timestamp there. Without
- * it a from-database migration on SQLite re-emitted the same default on every
- * run.
- *
- * A literal with no timezone is read as UTC, because that is the convention
- * the whole package uses for a naive database timestamp. `new Date("2020-01-02
- * 00:00:00")` would instead read it in the host timezone, so every
- * from-database migration would re-emit the same default change.
- */
 const parseDate = (str: string, provider: Provider): IntrospectedDefault | undefined => {
   if (provider === "sqlite" && /^[+-]?\d+$/.test(str)) {
     const epoch = new Date(Number(str));
@@ -278,13 +207,6 @@ const parseDate = (str: string, provider: Provider): IntrospectedDefault | undef
   return Number.isNaN(parsed.getTime()) ? undefined : { _tag: "Value", value: parsed };
 };
 
-/**
- * Turn a raw database default into a FumaDB default.
- *
- * Returns `undefined` when the default is absent or cannot be represented
- * (a sequence, an expression, an unparsable literal); the column then simply
- * has no default, which is safer than failing the whole introspection.
- */
 const normalizeDefault = (
   raw: unknown,
   type: StorageType,
@@ -301,14 +223,10 @@ const normalizeDefault = (
     return { _tag: "Now" };
   }
 
-  // Drop a trailing cast: `::text` on PostgreSQL, `:::STRING` on CockroachDB.
   str = str.replace(/:{2,3}[\w\s[\]."]+$/, "").trim();
   if (/^[eE]'/.test(str) && str.endsWith("'") && str.length >= 3) {
-    // PostgreSQL/CockroachDB escape string; CockroachDB renders the prefix in
-    // lower case and escapes an embedded quote with a backslash.
     str = unescapeBackslashes(str.slice(2, -1).replace(/''/g, "'"));
   } else if (/^[nN]'/.test(str) && str.endsWith("'") && str.length >= 3) {
-    // MSSQL national string; only `''` is an escape.
     str = str.slice(2, -1).replace(/''/g, "'");
   } else if (str.startsWith("'") && str.endsWith("'") && str.length >= 2) {
     str = str.slice(1, -1).replace(/''/g, "'");
@@ -342,35 +260,18 @@ const normalizeDefault = (
   }
 };
 
-// ---------------------------------------------------------------------------
-// Column type selection
-// ---------------------------------------------------------------------------
-
 const isVarcharType = (type: StorageType | "varchar(n)"): type is `varchar(${number})` =>
   type !== "varchar(n)" && type.startsWith("varchar(");
 
-/**
- * `sys.columns.max_length` counts bytes; `nvarchar` and `nchar` store two
- * bytes per character, and `-1` means `max`.
- */
 const nvarcharLength = (dataType: string, bytes: number | undefined): number | undefined => {
   if (bytes === undefined || bytes < 0) return undefined;
   const type = dataType.toLowerCase();
   return type === "nvarchar" || type === "nchar" ? bytes / 2 : bytes;
 };
 
-/** `varchar(n)` stands for "a varchar of unknown length"; 255 is FumaDB's recommended width. */
 const resolveVarchar = (type: StorageType | "varchar(n)"): StorageType =>
   type === "varchar(n)" ? "varchar(255)" : type;
 
-/**
- * The FumaDB type used when the caller gives no `columnTypeMapping`.
- *
- * It is the first candidate of {@link dbToSchemaType}, except for a primary
- * key, where the first candidate that an id column accepts (`varchar(n)` or
- * `uuid`) wins. Without that rule every text primary key on SQLite would be
- * read as `json`.
- */
 const defaultStorageType = (
   dataType: string,
   provider: Provider,
@@ -387,11 +288,6 @@ const defaultStorageType = (
   return first === undefined ? "string" : resolveVarchar(first);
 };
 
-// ---------------------------------------------------------------------------
-// Catalogue queries
-// ---------------------------------------------------------------------------
-
-/** Every base table with its columns, ordered by table then column position. */
 const listTables = Effect.fnUntraced(function* (provider: Provider) {
   const sql = yield* SqlClient;
 
@@ -435,7 +331,6 @@ const listTables = Effect.fnUntraced(function* (provider: Provider) {
             dataType: optionalText(row.data_type) ?? "",
             isNullable: toBoolean(row.is_nullable),
             metadata: {
-              // sys.columns.max_length is in bytes; nvarchar stores two per character.
               length: nvarcharLength(String(row.data_type ?? ""), optionalNumber(row.col_length)),
               precision: optionalNumber(row.col_precision),
               scale: optionalNumber(row.col_scale),
@@ -446,10 +341,6 @@ const listTables = Effect.fnUntraced(function* (provider: Provider) {
       );
     }
     case "cockroachdb": {
-      // CockroachDB's information_schema also lists `crdb_internal` tables and
-      // reports a normalised `data_type`, so the table list comes from
-      // pg_catalog (like upstream's CockroachIntrospector) and only the length,
-      // precision, scale, and default come from information_schema.
       const columns = yield* sql<{
         table_schema: unknown;
         table_name: unknown;
@@ -560,7 +451,6 @@ const listTables = Effect.fnUntraced(function* (provider: Provider) {
             dataType: optionalText(row.data_type) ?? "",
             isNullable: toBoolean(row.is_nullable),
             metadata: {
-              // sys.columns.max_length is in bytes; nvarchar stores two per character.
               length: nvarcharLength(String(row.data_type ?? ""), optionalNumber(row.col_length)),
               precision: optionalNumber(row.col_precision),
               scale: optionalNumber(row.col_scale),
@@ -595,7 +485,6 @@ const listTables = Effect.fnUntraced(function* (provider: Provider) {
                 name: columnName,
                 dataType: optionalText(col.type) ?? "",
                 isNullable: !toBoolean(col.not_null),
-                // SQLite stores no length, precision, or scale.
                 metadata: {},
                 defaultValue: optionalText(col.dflt_value),
               },
@@ -628,7 +517,6 @@ const collectTables = (
   return tables;
 };
 
-/** Primary key columns, in key order. FumaDB supports exactly one. */
 const listPrimaryKeys = Effect.fnUntraced(function* (provider: Provider, table: RawTable) {
   const sql = yield* SqlClient;
   switch (provider) {
@@ -669,7 +557,6 @@ const listPrimaryKeys = Effect.fnUntraced(function* (provider: Provider, table: 
   }
 });
 
-/** Declared unique constraints (not unique indexes). */
 const listUniqueConstraints = Effect.fnUntraced(function* (provider: Provider, table: RawTable) {
   const sql = yield* SqlClient;
   switch (provider) {
@@ -703,17 +590,10 @@ const listUniqueConstraints = Effect.fnUntraced(function* (provider: Provider, t
       return groupUniques(rows);
     }
     case "sqlite":
-      // SQLite exposes table-level UNIQUE only as an index; see listUniqueIndexes.
       return [];
   }
 });
 
-/**
- * Unique indexes that do not back a primary key or a unique constraint.
- *
- * MSSQL and SQLite are the providers whose FumaDB DDL creates unique indexes
- * instead of constraints.
- */
 const listUniqueIndexes = Effect.fnUntraced(function* (provider: Provider, table: RawTable) {
   const sql = yield* SqlClient;
   switch (provider) {
@@ -737,8 +617,6 @@ const listUniqueIndexes = Effect.fnUntraced(function* (provider: Provider, table
       return groupUniques(rows);
     }
     case "sqlite": {
-      // `origin = 'pk'` is the implicit index behind the primary key; it is not
-      // a unique constraint of its own and must not enter the schema.
       const indexes = yield* sql<{ name: unknown; is_unique: unknown; origin: unknown }>`
         SELECT name, "unique" AS is_unique, origin FROM pragma_index_list(${table.name})`;
       const result: Array<RawUnique> = [];
@@ -773,12 +651,6 @@ const unquoteSqlite = (raw: string): string => {
   return value;
 };
 
-/**
- * Recover foreign key constraint names from the stored `CREATE TABLE` text.
- *
- * `PRAGMA foreign_key_list` reports actions and columns but never the
- * constraint name, and the migration diff matches foreign keys by name.
- */
 const sqliteForeignKeyNames = Effect.fnUntraced(function* (tableName: string) {
   const sql = yield* SqlClient;
   const rows = yield* sql<{ sql: unknown }>`
@@ -802,7 +674,6 @@ const sqliteForeignKeyNames = Effect.fnUntraced(function* (tableName: string) {
   return names;
 });
 
-/** Foreign keys declared on `table`, with their columns in key order. */
 const listForeignKeys = Effect.fnUntraced(function* (provider: Provider, table: RawTable) {
   const sql = yield* SqlClient;
   switch (provider) {
@@ -1046,17 +917,6 @@ const collectForeignKeyRows = (
   return Array.from(pending, ([name, value]) => ({ name, ...value }));
 };
 
-// ---------------------------------------------------------------------------
-// Schema construction
-// ---------------------------------------------------------------------------
-
-/**
- * Pass an explicit `{ type }` only when the schema alone would infer a
- * different storage type (a `date` column reads back as a `Schema.Date`, which
- * infers `timestamp`). Every other introspected column counts as inferred, so a
- * SQLite `text` foreign key can adopt the `varchar(255)` width of the id it
- * references; SQLite cannot tell the two apart.
- */
 const storageOptions = (
   schema: Schema.Top,
   columnType: StorageType,
@@ -1090,20 +950,6 @@ const buildColumn = (
   return col;
 };
 
-/**
- * Read the connected database into a FumaDB schema.
- *
- * Every base table outside the provider's internal schemas becomes a table.
- * Primary keys become id columns, unique constraints and unique indexes become
- * table-level unique constraints (so their names survive a round trip), and
- * foreign keys become explicit `one` relations named after the constraint
- * without its `_fk` suffix.
- *
- * Fails with `MigrationError` (`reason: "Introspection"`) when the database
- * cannot be expressed as a FumaDB schema, for example a table without exactly
- * one primary key column, or an id column that is neither `varchar` nor
- * `uuid`. Driver failures stay `SqlError`.
- */
 export const introspectSchema: (
   options: IntrospectOptions,
 ) => Effect.Effect<AnySchema, MigrationError | SqlError, SqlClient> = Effect.fn(
@@ -1173,9 +1019,7 @@ export const introspectSchema: (
     const built = yield* Effect.try({
       try: () => {
         const table = makeTable(rawTable.name, columns);
-        // Every unique constraint is table-level so that custom names survive.
         for (const con of uniques) {
-          // The database already has this index, so the indexability guard does not apply.
           table.uniqueUnchecked(
             con.name,
             con.columns.map((col) => columnNameMapping(rawTable.name, col)),
@@ -1192,8 +1036,6 @@ export const introspectSchema: (
         ),
     });
 
-    // The relation builders below address tables by ORM name, and `schema()`
-    // names its own copies rather than these.
     built.ormName = ormName;
     tables[ormName] = built;
     sqlNameToTable.set(rawTable.name, built);
@@ -1237,7 +1079,6 @@ export const introspectSchema: (
           }
           on.push([local.ormName, remote.ormName]);
         }
-        // Upstream names the relation after the constraint without its `_fk` suffix.
         const relationName = key.name.endsWith("_fk") ? key.name.slice(0, -"_fk".length) : key.name;
         definitions.push({ name: relationName, key, target, on });
       }
@@ -1270,20 +1111,6 @@ export const introspectSchema: (
   });
 });
 
-/**
- * Diff the live database against `target`, like upstream
- * `adapters/kysely/migration/auto-from-database.ts`.
- *
- * `nameVariants` are the variants the last migration stored, so they describe
- * the names the database uses now; `target` carries the names it must use
- * afterwards. Database columns are therefore matched to ORM names through the
- * stored variants, and the target's column type wins whenever the raw database
- * type can carry it, so a lossless representation is not reported as a change.
- *
- * Tables the target does not know are never dropped (`dropUnusedTables: false`);
- * a column the target does not know is dropped only when `dropUnusedColumns`
- * is set. Otherwise it is kept, and made nullable when it is required.
- */
 export const generateMigrationFromDatabase: (
   target: AnySchema,
   config: ResolvedSqlAdapterConfig,
@@ -1303,8 +1130,6 @@ export const generateMigrationFromDatabase: (
     },
   ) {
     const { dropUnusedColumns, internalTables, nameVariants } = options;
-    // The stored variants describe the names the database currently uses; the
-    // target carries the names it should use after the migration.
     const stored = nameVariants === undefined ? target : applyNameVariants(target, nameVariants);
 
     const ormNameOf = new Map<string, string>();
@@ -1324,8 +1149,6 @@ export const generateMigrationFromDatabase: (
       columnTypeMapping: (dataType, { columnName, isPrimaryKey, metadata, tableName }) => {
         const existing = storedTable(tableName)?.getColumnBySqlName(columnName);
         if (existing !== undefined) {
-          // Keep the target's type whenever the raw database type can carry it,
-          // so a lossless representation is not reported as a type change.
           for (const candidate of dbToSchemaType(dataType, config.provider, metadata)) {
             if (candidate === existing.type) return candidate;
             if (candidate === "varchar(n)" && existing.type.startsWith("varchar"))

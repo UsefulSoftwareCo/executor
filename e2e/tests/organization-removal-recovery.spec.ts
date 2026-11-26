@@ -1,21 +1,3 @@
-/**
- * A removal whose Workflow start stalls through its request's window is started by the recovery
- * object's alarm, not by cron: a new deployment's Cron Triggers can begin hours late. Local
- * Workflows never stalls by itself, so the local Worker's test hook stalls `create` for the
- * organizations this scenario names in `e2e_organization_removal_stall`; deployed Workers never
- * install it.
- *
- * A stall lasts until the scenario releases it, never for a fixed time: the scenario first sees
- * each request's window end and arm the alarm, and a recovery run fail on the stall. Then it holds
- * the next run before it reads the pending starts, adds the older tombstones, releases the stalls
- * and lets that run go, so one run reads everything with nothing stalled.
- *
- * The scenario runs between two of the local Worker's minute crons, so no cron job runs while a
- * start is pending, and it checks every start's trace for the alarm that ran it. 50 older
- * tombstones whose workflow already exists stand in for removals that started and are still
- * erasing; one run of the job must page past them. A row lock on the last one's start record holds
- * that run open while another removal arms the alarm, which must survive the run's success.
- */
 import { randomBytes, randomUUID } from "node:crypto";
 import { expect, layer } from "@effect/vitest";
 import { Clock, Effect, Schedule, Schema } from "effect";
@@ -31,13 +13,11 @@ import { targetHosts } from "../support/role-hosts.ts";
 
 type Span = (typeof SpanQuery.Type)["data"][number]["span"];
 
-/** More running tombstones than one page of the job, which reads 50. */
 const olderTombstones = 50;
 const Status = Schema.Array(Schema.Struct({ status: Schema.Literals(["running", "done"]) }));
 const Instance = Schema.Tuple([Schema.Struct({ instance_id: Schema.String })]);
 const Holder = Schema.Tuple([Schema.Struct({ pid: Schema.Number })]);
 
-/** Every span of a trace, once `until` holds or `by` (epoch milliseconds) passes. */
 const traceSpans = (traceId: string, until: (spans: ReadonlyArray<Span>) => boolean, by: number) =>
   Effect.flatMap(Telemetry, (telemetry) => telemetry.query(traceId)).pipe(
     Effect.map((found) => found.data.map(({ span }) => span)),
@@ -45,7 +25,6 @@ const traceSpans = (traceId: string, until: (spans: ReadonlyArray<Span>) => bool
     Effect.retry({ schedule: Schedule.spaced("500 millis"), while: () => Date.now() < by }),
   );
 
-/** The span names from a span up to its trace's root. */
 const ancestry = (spans: ReadonlyArray<Span>, span: Span) => {
   const byId = new Map(spans.map((entry) => [entry.spanId, entry]));
   const chain: Array<Span> = [];
@@ -77,8 +56,6 @@ layer(HostedLive, { excludeTestServices: true })("Organization removal recovery"
           const suffix = randomUUID().slice(0, 8);
           const created: Array<string> = [];
           const removed = new Set<string>();
-          // A synthetic organization ID sorts after every generated one, so the held tombstone is
-          // the last row the run reads and the run reads no page after it.
           const older = Array.from(
             { length: olderTombstones },
             (_, index) => `zzzzzzzz-${suffix}-${String(index).padStart(2, "0")}`,
@@ -130,7 +107,6 @@ layer(HostedLive, { excludeTestServices: true })("Organization removal recovery"
               }),
               Effect.tap(() => Effect.sync(() => removed.add(organization))),
             );
-          /** A DELETE under a trace this scenario names, so its spans can be read afterwards. */
           const remove = (organization: string) =>
             Effect.gen(function* () {
               const traceId = randomBytes(16).toString("hex");
@@ -146,7 +122,6 @@ layer(HostedLive, { excludeTestServices: true })("Organization removal recovery"
               expect(response.status, JSON.stringify(response.body)).toBe(200);
               return traceId;
             });
-          /** Stall this organization's Workflows creates until `releaseStalls`, then accept its removal. */
           const removeStalled = (organization: string) =>
             locks
               .run({
@@ -161,28 +136,22 @@ layer(HostedLive, { excludeTestServices: true })("Organization removal recovery"
               sql: "delete from e2e_organization_removal_stall where organization_id = any(string_to_array($1, ','))",
               params: [organizations.join(",")],
             });
-          /** The recovery object's arm for one removal; the object's spans start their own trace. */
           const armed = (organization: string, by: number) =>
-            telemetry
-              .search("organization.removal.recovery.arm", {
-                "executor.organization.id": organization,
-              })
-              .pipe(
-                Effect.map((found) =>
-                  found.data
-                    .map(({ span }) => span)
-                    .filter((span) => span.operationName === "organization.removal.recovery.arm"),
-                ),
-                Effect.filterOrFail(
-                  (found) => found.length > 0,
-                  () => new Error(`Removal of ${organization} has not armed recovery`),
-                ),
-                Effect.retry({
-                  schedule: Schedule.spaced("500 millis"),
-                  while: () => Date.now() < by,
-                }),
-              );
-          /** Server statements matching `query` that wait on the held transaction. */
+            telemetry.search("organization.removal.recovery.arm", { organization }).pipe(
+              Effect.map((found) =>
+                found.data
+                  .map(({ span }) => span)
+                  .filter((span) => span.operationName === "organization.removal.recovery.arm"),
+              ),
+              Effect.filterOrFail(
+                (found) => found.length > 0,
+                () => new Error(`Removal of ${organization} has not armed recovery`),
+              ),
+              Effect.retry({
+                schedule: Schedule.spaced("500 millis"),
+                while: () => Date.now() < by,
+              }),
+            );
           const waiting = (holder: number, query: string) =>
             locks.run({
               sql: `select pid from pg_stat_activity where $1 = any(pg_blocking_pids(pid))
@@ -239,8 +208,6 @@ layer(HostedLive, { excludeTestServices: true })("Organization removal recovery"
             )`,
           });
 
-          // The local Worker fires its minute cron at second 0, and its job would start what is
-          // pending. Start just after one so the whole run ends before the next.
           const clock = new Date(yield* Clock.currentTimeMillis).getUTCSeconds();
           yield* Effect.sleep(`${clock >= 2 && clock <= 4 ? 0 : (62 - clock) % 60} seconds`);
           const window = yield* Clock.currentTimeMillis;
@@ -266,7 +233,7 @@ layer(HostedLive, { excludeTestServices: true })("Organization removal recovery"
           );
           yield* evidence.step(
             "A recovery run fails while the starts stay stalled, and the alarm tries again",
-            telemetry.search("organization.removal.recovery", {}).pipe(
+            telemetry.searchWholeEnvironment("organization.removal.recovery", {}).pipe(
               Effect.map((found) =>
                 found.data
                   .map(({ span }) => span)
@@ -284,9 +251,6 @@ layer(HostedLive, { excludeTestServices: true })("Organization removal recovery"
               Effect.retry({ schedule: Schedule.spaced("500 millis"), times: 40 }),
             ),
           );
-          // Hold the next run before it reads the pending starts. Only the job reads this table, the
-          // alarm runs one job at a time and no cron fires in this window, so no other run can read
-          // or start anything meanwhile. A run already past its read fails on the stall and ends.
           yield* locks.hold({ sql: "savepoint gate" });
           yield* locks.hold({
             sql: "lock table cloud_organization_removal_start in access exclusive mode",
@@ -311,7 +275,6 @@ layer(HostedLive, { excludeTestServices: true })("Organization removal recovery"
             }),
           );
           yield* releaseStalls([first, second]);
-          // Lets the run read; the row lock on the held tombstone's start record stays.
           yield* locks.hold({ sql: "rollback to savepoint gate" });
           yield* evidence.step(
             "The recovery alarm's run reaches the held tombstone after starting the others",
@@ -332,7 +295,6 @@ layer(HostedLive, { excludeTestServices: true })("Organization removal recovery"
               return traceId;
             }),
           );
-          // Still held: the run has not finished, so the late removal armed during it.
           expect(
             yield* waiting(holder.pid, "insert into cloud_organization_removal_start%"),
           ).not.toEqual([]);
@@ -346,31 +308,24 @@ layer(HostedLive, { excludeTestServices: true })("Organization removal recovery"
             }),
           );
 
-          // Each stalled removal's request tried, failed and armed recovery; a recovery run
-          // started it. No cron job started any of them.
-          // A request's last attempt ends with its window, interrupted rather than failed.
           const startsOf = (organization: string, requestTrace: string) =>
-            telemetry
-              .search("organization.removal.start", { "executor.organization.id": organization })
-              .pipe(
-                Effect.map((found) => found.data.filter(({ span }) => isStart(span))),
-                Effect.filterOrFail(
-                  (found) =>
-                    found.some(
-                      ({ traceId, span }) => traceId !== requestTrace && span.status === "ok",
-                    ),
-                  () => new Error(`No successful start of ${organization} has arrived`),
-                ),
-                Effect.retry({ schedule: Schedule.spaced("500 millis"), times: 40 }),
-              );
+            telemetry.search("organization.removal.start", { organization }).pipe(
+              Effect.map((found) => found.data.filter(({ span }) => isStart(span))),
+              Effect.filterOrFail(
+                (found) =>
+                  found.some(
+                    ({ traceId, span }) => traceId !== requestTrace && span.status === "ok",
+                  ),
+                () => new Error(`No successful start of ${organization} has arrived`),
+              ),
+              Effect.retry({ schedule: Schedule.spaced("500 millis"), times: 40 }),
+            );
           const runs = new Map<string, Span>();
           for (const [organization, requestTrace] of [
             [first, stalled[0]],
             [second, stalled[1]],
             [late, lateTrace],
           ] as const) {
-            // The provider stalled the request's attempts, and the start was still pending when
-            // its window ended: only then does a request arm recovery.
             yield* traceSpans(
               requestTrace,
               (spans) => spans.some((span) => isStart(span) && span.status === "error"),
@@ -421,7 +376,10 @@ layer(HostedLive, { excludeTestServices: true })("Organization removal recovery"
             "The alarm stops once nothing is pending",
             Effect.gen(function* () {
               yield* Effect.sleep("8 seconds");
-              const recoveries = (yield* telemetry.search("organization.removal.recovery", {})).data
+              const recoveries = (yield* telemetry.searchWholeEnvironment(
+                "organization.removal.recovery",
+                {},
+              )).data
                 .map(({ span }) => span)
                 .filter(isRecovery)
                 .filter((span) => Date.parse(span.startTime) >= window);
@@ -450,7 +408,6 @@ layer(HostedLive, { excludeTestServices: true })("Organization removal recovery"
           expect(elapsed, "The run ended before the next minute cron").toBeLessThan(56_000);
         }),
       ),
-    // Up to a minute waits for a cron-free window; the window itself takes about 40 seconds.
     { timeout: 240_000 },
   );
 });

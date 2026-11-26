@@ -45,8 +45,6 @@ layer(HostedLive, { excludeTestServices: true })("Root entry loading", (it) => {
         );
         yield* waitForLastOrganization(actors.organization.id);
 
-        // Keep the original reproduction's preparation hold installed. Entry must
-        // now complete without requesting or releasing that first-team operation.
         const preparation = yield* onboarding.delayPreparation;
         const loaded = Effect.gen(function* () {
           yield* browser.use("The existing organization opens", (page) =>
@@ -80,8 +78,6 @@ layer(HostedLive, { excludeTestServices: true })("Root entry loading", (it) => {
                 yield* browser.use(`${viewport.name}: set the viewport`, (page) =>
                   page.setViewportSize({ width: viewport.width, height: viewport.height }),
                 );
-                // The server checks membership while answering `/`. A browser read of the list
-                // would stall here, so restoration completing proves nothing waits for one.
                 const list = yield* holdOrganizationEntry;
                 const resources = yield* trackOrganizationResources;
                 const paths = yield* trackEntryNavigations;
@@ -127,8 +123,6 @@ layer(HostedLive, { excludeTestServices: true })("Root entry loading", (it) => {
                     page.getByPlaceholder("Search apps…", { exact: true }).inputValue(),
                   ),
                 ).toBe("Executor");
-                // The page never shows another address and never replaces its own URL, and its
-                // resources arrive with the document instead of being read again.
                 expect(new Set(paths)).toEqual(new Set([destination]));
                 expect(resources).toEqual([]);
                 expect(yield* list.wasRequested).toBe(false);
@@ -162,8 +156,6 @@ layer(HostedLive, { excludeTestServices: true })("Root entry loading", (it) => {
                 yield* browser.use("A fresh session has no remembered organization", (page) =>
                   page.goto("/"),
                 );
-                // Entry without history resolves its only organization from the membership the
-                // server read for the document.
                 yield* loaded;
                 expect(yield* list.wasRequested).toBe(false);
                 yield* browser.checkpoint(

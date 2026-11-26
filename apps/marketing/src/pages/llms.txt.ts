@@ -1,12 +1,15 @@
 import type { APIRoute } from "astro";
 
 import { siteOrigin } from "../content/site-origin.ts";
+import { docsOverviewMarkdown, setupLinksMarkdown } from "../content/docs-overview.ts";
 
-const body = `# Executor
+const body = (overview: string) => `# Executor
 
 > The cloud for agent apps.
 
 Deploy personal software for your agents. Start with an MCP server, a tool, or a skill.
+
+${setupLinksMarkdown}
 
 Everything’s an app. Add the Axiom MCP or PostHog MCP and use it from your agent. Add custom approval rules, caching, or a UI when you need them. It is still the same app.
 
@@ -27,9 +30,7 @@ Build with Claude. Use the same apps from Codex, Cursor, or another connected ag
 
 Executor hosts your apps, connects your accounts, and keeps the source and version history. Start small and keep improving them.
 
-## Docs
-
-- [Documentation](${siteOrigin}/docs): Executor documentation.
+${overview}
 
 ## Product
 
@@ -54,9 +55,8 @@ Markdown representations of the pages above, for machines rather than browsers.
 - [Discord](https://discord.gg/eF29HBHwM6): support and discussion.
 `;
 
-/** Serve the agent index with links belonging to this deployment. */
-export const GET: APIRoute = () =>
-  new Response(body, {
+export const GET: APIRoute = async () =>
+  new Response(body(await docsOverviewMarkdown()), {
     headers: {
       "Content-Type": "text/plain; charset=utf-8",
       "Cache-Control": "public, max-age=300",

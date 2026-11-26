@@ -1,10 +1,3 @@
-/**
- * Before every connection had to name an app, provider-only requests, account-level reconnects
- * and 1.3.0-era requests were stored without a target: SQL null when a server wrote it, JSON null
- * when the column's default filled it. Upgrading deletes those requests and the pending sign-ins
- * they point at, makes the target required, and keeps every connection that has a target. A
- * second start finds nothing left to do.
- */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Redacted, Schema } from "effect";
 import { randomUUID } from "node:crypto";
@@ -30,15 +23,11 @@ interface Statement {
   readonly sql: string;
   readonly params?: ReadonlyArray<string | number | boolean | null>;
 }
-/** The rows an older server left, copied from the targeted connection's owner and provider. */
 const legacyRows = (template: string, ids: Ids): [Statement, ...Statement[]] => [
-  // The layout before 4.0.8: a nullable target whose default is JSON null, and none of the
-  // tables, columns and triggers later steps add.
   {
     sql: `ALTER TABLE executor_account_connections
       ALTER COLUMN target DROP NOT NULL, ALTER COLUMN target SET DEFAULT 'null'::json`,
   },
-  // Nor the scopes app accounts added since, which connections record with their target.
   ...beforeAppAccounts(),
   {
     sql: `UPDATE executor_account_connections SET target = (target::jsonb - 'scope')::json
@@ -59,7 +48,6 @@ const legacyRows = (template: string, ids: Ids): [Statement, ...Statement[]] => 
         ($2, decode('00', 'hex'), now() + interval '30 minutes', 'pending')`,
     params: [ids.attempt, ids.unrelatedAttempt],
   },
-  // A provider-only request in the middle of its sign-in.
   {
     sql: `INSERT INTO executor_account_connections
       (id, owner, provider, reconnect_account, state, revision, oauth_attempt, created_at, expires_at, target)
@@ -67,7 +55,6 @@ const legacyRows = (template: string, ids: Ids): [Statement, ...Statement[]] => 
       FROM executor_account_connections WHERE id = $1`,
     params: [template, ids.pending, ids.attempt],
   },
-  // An account-level reconnect.
   {
     sql: `INSERT INTO executor_account_connections
       (id, owner, provider, reconnect_account, state, revision, oauth_attempt, created_at, expires_at, target)
@@ -75,7 +62,6 @@ const legacyRows = (template: string, ids: Ids): [Statement, ...Statement[]] => 
       FROM executor_account_connections WHERE id = $1`,
     params: [template, ids.reconnect],
   },
-  // A 1.3.0-era request, whose target the column default filled with JSON null.
   {
     sql: `INSERT INTO executor_account_connections
       (id, owner, provider, reconnect_account, state, revision, oauth_attempt, created_at, expires_at)
@@ -103,7 +89,10 @@ const legacyIds = (): Ids => {
   };
 };
 
-/** What the upgrade left: the stored layout, version and the connections and sign-ins named. */
+const currentVersion: Statement = {
+  sql: `SELECT value FROM private_executor_settings WHERE key = 'version'`,
+};
+
 const stored = (
   template: string,
   ids: Ids,
@@ -113,7 +102,7 @@ const stored = (
     sql: `SELECT is_nullable, column_default FROM information_schema.columns
         WHERE table_name = 'executor_account_connections' AND column_name = 'target'`,
   },
-  { sql: `SELECT value FROM private_executor_settings WHERE key = 'version'` },
+  currentVersion,
   {
     sql: `SELECT id, json_typeof(target) AS target FROM executor_account_connections
         WHERE id = ANY($1::text[]) ORDER BY id`,
@@ -130,10 +119,10 @@ const expectUpgraded = (
   [column, version, connections, attempts]: ReadonlyArray<ReadonlyArray<unknown>>,
   template: string,
   ids: Ids,
+  current: ReadonlyArray<unknown> | undefined,
 ) => {
   expect(column).toEqual([{ is_nullable: "NO", column_default: null }]);
-  expect(version).toEqual([{ value: "4.0.16" }]);
-  // Only the connection with a target is left, and only the sign-in no connection pointed at.
+  expect(version, "the current schema version").toEqual(current);
   expect(connections).toEqual([{ id: template, target: "object" }]);
   expect(attempts).toEqual([{ id: ids.unrelatedAttempt }]);
 };
@@ -175,18 +164,16 @@ layer(TestLive, { excludeTestServices: true })("Legacy targetless connections", 
           }),
         );
         const ids = legacyIds();
-        yield* legacyStorage(legacyRows(connection, ids));
+        const [current] = yield* legacyStorage([currentVersion, ...legacyRows(connection, ids)]);
         yield* serverControl("start");
 
-        // The connection with a target still works; the others are gone.
         expect((yield* agent.send("GET", `/v1/account-connections/${connection}`)).status).toBe(
           200,
         );
         for (const id of [ids.pending, ids.reconnect, ids.defaulted])
           expect((yield* agent.send("GET", `/v1/account-connections/${id}`)).status, id).toBe(404);
-        expectUpgraded(yield* legacyStorage(stored(connection, ids)), connection, ids);
+        expectUpgraded(yield* legacyStorage(stored(connection, ids)), connection, ids, current);
 
-        // Starting again changes nothing.
         yield* serverControl("start");
         expectUpgraded(
           yield* legacyStorage(
@@ -199,10 +186,9 @@ layer(TestLive, { excludeTestServices: true })("Legacy targetless connections", 
           ),
           connection,
           ids,
+          current,
         );
 
-        // The kept connection was started before targets recorded a scope, for a profile: it
-        // completes as the user's own link.
         yield* serverControl("start");
         const submitted = yield* api.request(agent, "POST", "/account-connect/api/submit", {
           connection,
@@ -253,15 +239,12 @@ layer(TestLive, { excludeTestServices: true })("Legacy targetless hosted connect
         const connection = (yield* body(Resource, pending)).id;
         const ids = legacyIds();
         const legacy = [ids.pending, ids.reconnect, ids.defaulted];
-        yield* legacyStorage([
-          // Step 9 runs again with steps 7 and 8; it creates the link table and converts profiles
-          // idempotently, and none are left to convert.
-          { sql: `DELETE FROM private_hosted_migrations WHERE migration_id = 9` },
-          // Before step 8 no client had an audience, whose rows name stored clients.
+        const [current] = yield* legacyStorage([
+          currentVersion,
+          { sql: `DELETE FROM private_hosted_migrations WHERE migration_id >= 9` },
           { sql: `DROP TABLE hosted_oauth_client_groups, hosted_oauth_client_access` },
           { sql: `DELETE FROM private_hosted_migrations WHERE migration_id = 8` },
           ...legacyRows(connection, ids),
-          // Before step 7 the product's access rows could have no target either.
           { sql: `ALTER TABLE hosted_connection_access ALTER COLUMN target DROP NOT NULL` },
           {
             sql: `DELETE FROM private_hosted_migrations WHERE migration_id = 7`,
@@ -296,8 +279,7 @@ layer(TestLive, { excludeTestServices: true })("Legacy targetless hosted connect
           },
         ];
         const expectHostedUpgraded = (results: ReadonlyArray<ReadonlyArray<unknown>>) => {
-          expectUpgraded(results, connection, ids);
-          // Access rows went with their connections, and the product then required a target.
+          expectUpgraded(results, connection, ids, current);
           expect(results.slice(4, 7)).toEqual([
             [{ connection_id: connection }],
             [{ is_nullable: "NO" }],
@@ -306,7 +288,6 @@ layer(TestLive, { excludeTestServices: true })("Legacy targetless hosted connect
         };
         expectHostedUpgraded(yield* legacyStorage(stored(connection, ids, hosted)));
 
-        // Starting again changes nothing and records no step twice.
         yield* serverControl("start");
         expectHostedUpgraded(
           yield* legacyStorage(

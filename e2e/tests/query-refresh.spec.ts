@@ -55,11 +55,7 @@ layer(HostedLive, { excludeTestServices: true })("Dashboard refresh", (it) => {
           });
         const paths = ["/api/auth/organization/list-members"];
         const failed = yield* holdQuery(paths, "fail");
-        // The same focus refresh re-reads organization access. Its unchanged answer must not
-        // restart the held member read and hide that read's failure.
         const accessPath = `/api/organizations/${actors.organization.id}/access`;
-        // The dashboard batches reads that start together. A read a test route matches leaves the
-        // batch as the page's own request, so routing the access read lets its response be seen.
         const isAccess = (url: URL) => url.pathname === accessPath;
         const passAccess = (route: Route) => route.fallback();
         const access = yield* Effect.acquireRelease(
@@ -252,7 +248,6 @@ export default defineApp({}, async () => ({
             Effect.orDie,
           ),
         );
-        // Reads may use the URL slug or the verified organization ID.
         const directory = /^\/api\/organizations\/[^/]+\/resources$/;
         let directoryReads = 0;
         yield* browser.login(actors.owner);
@@ -270,7 +265,6 @@ export default defineApp({}, async () => ({
           browser.use(label, (page) =>
             page.getByText(name, { exact: true }).first().waitFor({ state: "visible" }),
           );
-        // An app still installing has its own card skeleton; the list's loading state is this one.
         const listLoading = (label: string) =>
           browser.use(label, (page) =>
             page.getByRole("status", { name: "Loading apps", exact: true }).count(),
@@ -286,7 +280,6 @@ export default defineApp({}, async () => ({
         yield* appCard("The list shows the app");
 
         yield* openDetail;
-        // Long enough for the list's views to close, within the retained value's freshness.
         yield* browser.use("Leave the list for a few seconds", (page) => page.clock.runFor(5_000));
         const before = directoryReads;
 

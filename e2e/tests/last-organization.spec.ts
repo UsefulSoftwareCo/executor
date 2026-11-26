@@ -48,8 +48,6 @@ layer(TestLive, { excludeTestServices: true })("Last active organization", (it) 
         yield* waitForLastOrganization(second.id);
         const resume = (organization: { id: string; slug: string }) =>
           Effect.gen(function* () {
-            // The server sends the current address, so the page never replaces its own URL
-            // while its data is still arriving.
             const entry = yield* browser.use("Request the bare root", (page) =>
               page
                 .context()
@@ -114,7 +112,6 @@ layer(TestLive, { excludeTestServices: true })("Last active organization", (it) 
             },
           ]),
         );
-        // The server checks access before opening the saved organization.
         yield* browser.use("Return with the stale destination", (page) => page.goto("/"));
         yield* browser.use(
           "Unavailable remembered organizations fall back without a loop",

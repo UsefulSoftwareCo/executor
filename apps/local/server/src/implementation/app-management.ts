@@ -6,7 +6,6 @@ import {
 } from "../contracts/app-management.ts";
 import { DashboardAccess } from "../contracts/dashboard.ts";
 import { dashboardAccess } from "./dashboard.ts";
-/** Local authoring shares pairing, persistent app IDs, and the ordinary Git source store. */
 import {
   AppIdentity,
   AppGitAccess,
@@ -33,20 +32,14 @@ import {
 } from "./auth.ts";
 import type { ServerConfig } from "../contracts/config.ts";
 
-/**
- * Local has one paired user, who may see, manage and edit every app. Requests still need the
- * pairing or API key that `LocalAppAccess` checks, and protected apps stay read-only.
- */
 const pairedUserAppAccess = (apps: ReadonlyArray<App>) =>
   Effect.succeed(apps.map((): AppCapabilities => ({ visible: true, manage: true, edit: true })));
 
-/** Local has one real owner and no invented publishing organization. */
 export const localAppManagement = (
   config: ServerConfig,
   auth: LocalAuth,
   managedApp: AppId,
   resources: { readonly executor: Executor },
-  /** Packaged authoring assets; they include this build's framework reference. */
   assets: readonly { readonly path: string; readonly content: string }[],
 ) =>
   Effect.gen(function* () {
@@ -81,7 +74,6 @@ export const localAppManagement = (
             if (scope !== "local" || request.headers.origin !== undefined)
               return yield* new AppAccessDenied({ reason: "forbidden" });
             const authorization = request.headers.authorization;
-            // Git sends the credential as a Basic password; any user name is accepted.
             if (!localBearer(config, authorization)) {
               if (!authorization?.startsWith("Basic "))
                 return yield* new AppAccessDenied({ reason: "authentication" });
@@ -111,7 +103,6 @@ export const localAppManagement = (
       Layer.provide(access),
       HttpRouter.provideRequest(localSourceFormatter),
       HttpRouter.provideRequest(gitAccess),
-      // Local serves Git on each origin it accepts; remotes name the one the client called.
       HttpRouter.provideRequest(
         Layer.succeed(AppGitOrigins, (request) => [requestOrigin(config, request)]),
       ),

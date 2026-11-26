@@ -1,4 +1,3 @@
-/** Persistent V2 billing catalog. Autumn creates and owns the matching Stripe prices. */
 import * as Alchemy from "alchemy";
 import { stackState } from "./src/infrastructure/state.ts";
 import { retain } from "alchemy/RemovalPolicy";
@@ -25,9 +24,7 @@ export default Alchemy.Stack(
     if (!/^[a-z0-9-]+$/.test(stage))
       return yield* Effect.die("Billing stage must be a lowercase slug");
     const environment = yield* Config.Literals(["sandbox", "live"], "AUTUMN_ENVIRONMENT");
-    // The same declaration a private Autumn instance is seeded with; only the transport differs.
     const { catalog, features, plans } = billingCatalogDeclaration(stage, environment);
-    // Features are created first so a plan never references an identity Autumn has not seen.
     const members = yield* AutumnFeature("Members", features.members).pipe(retain());
     const domainVerification = yield* AutumnFeature(
       "DomainVerification",
@@ -41,7 +38,6 @@ export default Alchemy.Stack(
       plan.items.map((item) => {
         const feature = resources.get(item.featureId);
         if (feature === undefined) throw new Error("Plan references an undeclared feature");
-        // Output references establish the provisioning dependency in Alchemy's graph.
         return { ...item, featureId: feature.featureId };
       });
     yield* AutumnPlan("Free", { ...plans.free, items: items(plans.free) }).pipe(retain());

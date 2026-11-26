@@ -1,8 +1,3 @@
-/**
- * Pack and compare staged `apps` packages exactly as npm publishes them. npm packs `package.json`
- * unchanged and publishes the packed archive, so no file is exempt. Comparing unpacked files keeps
- * the comparison independent of the npm version's tar and gzip output.
- */
 import { createHash } from "node:crypto";
 import { Effect, FileSystem, Path, Schema } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
@@ -20,7 +15,6 @@ export class AppsReleaseMismatch extends Schema.TaggedError<AppsReleaseMismatch>
 export const integrityOf = (bytes: Uint8Array) =>
   `sha512-${createHash("sha512").update(bytes).digest("base64")}`;
 
-/** The version of a staged package, failing when it has not been built. */
 export const stagedVersion = (directory: string) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
@@ -37,7 +31,6 @@ export const stagedVersion = (directory: string) =>
     );
   });
 
-/** Pack a staged package into an empty `destination` without running scripts. */
 export const pack = (directory: string, destination: string) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
@@ -57,7 +50,6 @@ export const pack = (directory: string, destination: string) =>
     return { archive, integrity: integrityOf(yield* fs.readFile(archive)) };
   });
 
-/** Unpack an npm archive into a new `target` directory. */
 export const unpack = (archive: string, target: string) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
@@ -67,7 +59,6 @@ export const unpack = (archive: string, target: string) =>
     return target;
   });
 
-/** Every file present in only one of two unpacked packages or differing in bytes, sorted. */
 export const differingFiles = (left: string, right: string) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;

@@ -3,13 +3,13 @@ import { Effect } from "effect";
 import type { Page } from "playwright";
 import { Actors } from "../support/actors.ts";
 import { Browser } from "../support/browser.ts";
+import { replaceResponses } from "../support/browser-responses.ts";
 import { Evidence } from "../support/evidence.ts";
 import { HostedLive, withHostedCase } from "../support/case.ts";
 import { openInApp } from "../support/in-app-navigation.ts";
 import { Target, type DriverFailed } from "../support/platform.ts";
 import { scenarios } from "../test-plan.ts";
 
-/** The visible level-one headings, in page order; a placeholder heading has no text. */
 const headings = (page: Page) =>
   page
     .getByRole("heading", { level: 1 })
@@ -17,10 +17,6 @@ const headings = (page: Page) =>
     .allTextContents()
     .then((texts) => texts.map((text) => text.trim()));
 
-/**
- * Where the page draws its first visible level-one heading. Its width follows whatever the header
- * holds beside it, such as actions that load later, so only its position counts.
- */
 const headingAt = (page: Page) =>
   page
     .getByRole("heading", { level: 1 })
@@ -29,14 +25,9 @@ const headingAt = (page: Page) =>
     .boundingBox()
     .then((box) => box && { x: box.x, y: box.y });
 
-/** Whether the page fits its viewport, so nothing on it needs scrolling into view. */
 const fits = (page: Page) =>
   page.evaluate(() => document.documentElement.scrollHeight <= window.innerHeight);
 
-/**
- * What the page draws: each visible element with no children that shows text, an image, a field,
- * a fill or a border. Text only a screen reader reads is not drawn.
- */
 const drawn = (page: Page) =>
   page.evaluate(() =>
     Array.from(document.body.querySelectorAll("*")).flatMap((element) => {
@@ -56,28 +47,24 @@ const drawn = (page: Page) =>
     }),
   );
 
-/**
- * Open a document as the server streamed it. Its scripts are refused, including React's inline
- * reveals, so the page stays at its first paint: the server's loading fallback for every region
- * still waiting, or the page itself where it was ready. That is the window a person sees before
- * the page streams in.
- */
+const refuseScripts = (path: string) => {
+  const pathname = path.split("?")[0];
+  return replaceResponses(`*${path}`, (response) => {
+    if (new URL(response.url).pathname !== pathname) return "unchanged";
+    const contentType = response.headers["content-type"];
+    if (contentType === undefined) throw new Error(`${path} was served without a content type`);
+    return response.body().then((body) => ({
+      status: response.status,
+      body,
+      contentType,
+      headers: { "content-security-policy": "script-src 'none'" },
+    }));
+  });
+};
+
 const firstPaint = (page: Page, path: string) =>
   page
-    .route(
-      (url) => url.pathname === path.split("?")[0],
-      (route) =>
-        route.fetch().then((response) =>
-          route.fulfill({
-            response,
-            headers: {
-              ...response.headers(),
-              "content-security-policy": "script-src 'none'",
-            },
-          }),
-        ),
-    )
-    .then(() => page.goto(path, { waitUntil: "load" }))
+    .goto(path, { waitUntil: "load" })
     .then(() =>
       Promise.all([
         headings(page),
@@ -92,12 +79,8 @@ const firstPaint = (page: Page, path: string) =>
       heading,
       screenshot,
     }))
-    // The page can never hydrate; later steps start from a page that is not a dashboard.
-    .finally(() =>
-      page.unrouteAll({ behavior: "ignoreErrors" }).then(() => page.goto("about:blank")),
-    );
+    .finally(() => page.goto("about:blank"));
 
-/** The same document once it has hydrated and `ready` resolves, where it draws its heading. */
 const readyPaint = (page: Page, path: string, ready: (page: Page) => Promise<unknown>) =>
   page
     .goto(path)
@@ -107,10 +90,8 @@ const readyPaint = (page: Page, path: string, ready: (page: Page) => Promise<unk
     .then(([heading, fitted, screenshot]) => ({ heading, fits: fitted, screenshot }))
     .finally(() => page.goto("about:blank"));
 
-/** React reports a server/browser markup difference with one of these messages or codes. */
 const hydrationFailure = /hydrat|Minified React error #(418|419|423|425)/i;
 
-/** Run `use` at a viewport size, then return the page to the size it had. */
 const atViewport = <A>(
   page: Page,
   size: { readonly width: number; readonly height: number } | undefined,
@@ -140,11 +121,6 @@ layer(HostedLive, { excludeTestServices: true })("Route loading", (it) => {
         const cloud = target.metadata.target === "cloud";
         const signIn = cloud ? "Sign in" : "Sign in to Executor";
 
-        /**
-         * Before any script runs, the page shows its own heading or a placeholder for it, never
-         * another page's. Where the loading view is a card the ready page keeps, the heading is
-         * where the ready page draws it, at the same viewport, so nothing moves when it arrives.
-         */
         const checkPaint = ({
           label,
           path,
@@ -158,13 +134,17 @@ layer(HostedLive, { excludeTestServices: true })("Route loading", (it) => {
           readonly allowed: ReadonlyArray<string>;
           readonly ready?: ((page: Page) => Promise<unknown>) | undefined;
           readonly viewport?: typeof desktop | undefined;
-          /** The ready page must fit the viewport: a card that has room is not pushed below it. */
           readonly fit?: boolean | undefined;
         }) =>
           Effect.gen(function* () {
             const name = viewport === undefined ? label : `${label} ${viewport.width}`;
-            const paint = yield* browser.use(`${name}: the server's first paint`, (page) =>
-              atViewport(page, viewport, () => firstPaint(page, path)),
+            const paint = yield* Effect.scoped(
+              Effect.gen(function* () {
+                yield* refuseScripts(path);
+                return yield* browser.use(`${name}: the server's first paint`, (page) =>
+                  atViewport(page, viewport, () => firstPaint(page, path)),
+                );
+              }),
             );
             expect(paint.hydrated, `${name} was read before any script ran`).toBe(false);
             expect(paint.visible, `${name} shows its own heading`).not.toEqual([]);
@@ -181,9 +161,6 @@ layer(HostedLive, { excludeTestServices: true })("Route loading", (it) => {
             if (fit) expect(settled.fits, `${name} fits without scrolling`).toBe(true);
           });
 
-        // Sign-in is resolved before the server renders it, so its first paint is the form itself,
-        // centred where the ready page keeps it. A return to an invitation adds a way to join below
-        // the form. First-run setup cannot be opened here: the instance is already set up.
         const invitationReturn = "/login?redirect=%2Finvite%3Finvitation%3Dsynthetic-invitation";
         const hydrationFailures = yield* browser.use("Watch hydration", (page) => {
           const failures: string[] = [];
@@ -208,12 +185,10 @@ layer(HostedLive, { excludeTestServices: true })("Route loading", (it) => {
               label,
               path,
               allowed: [signIn],
-              // Both products ask for an email address first.
               ready: (page) => page.getByRole("textbox").first().waitFor(),
               viewport,
               fit: !cloud,
             });
-        // Joining asks for a name too; the taller card still fits a laptop screen.
         if (!cloud)
           for (const viewport of [desktop, phone]) {
             const joined = yield* browser.use(
@@ -245,7 +220,6 @@ layer(HostedLive, { excludeTestServices: true })("Route loading", (it) => {
           path: "/account/profile",
           allowed: ["Profile"],
         });
-        // An unknown client: the consent card loads, then says the request cannot be loaded.
         yield* checkPaint({
           label: "MCP consent",
           path: "/mcp/authorize?client_id=client_route_loading&response_type=code&redirect_uri=http%3A%2F%2F127.0.0.1%2Fcallback",
@@ -263,14 +237,10 @@ layer(HostedLive, { excludeTestServices: true })("Route loading", (it) => {
           path: `/org/${slug}/approvals`,
           allowed: ["Approvals"],
         });
-        // The entry opens the organization's apps once its memberships are known, so self-host's
-        // entry already draws the apps page's frame and heading. Cloud's entry checks for a first
-        // team in its own card, which then gives way to the apps page.
         yield* checkPaint({
           label: "Entry",
           path: "/",
           allowed: [cloud ? "Opening Executor" : "Apps"],
-          // The organization and its apps replace their placeholders once the apps page opens.
           ready: cloud
             ? undefined
             : (page) =>
@@ -285,13 +255,6 @@ layer(HostedLive, { excludeTestServices: true })("Route loading", (it) => {
                   ),
         });
 
-        /**
-         * Open `path` in the running dashboard from a page that loads none of it, holding every
-         * later script until `whileHeld` has looked at the loading window. `whileHeld` receives
-         * the release, so it can watch the page arrive. `open` replaces the in-app navigation with
-         * whatever makes the dashboard open the page itself; `alsoHold` holds a request the page
-         * makes once its code has arrived.
-         */
         const openWithCodeHeld = <A, E, R>(
           title: string,
           path: string,
@@ -353,8 +316,6 @@ layer(HostedLive, { excludeTestServices: true })("Route loading", (it) => {
             );
           });
 
-        // In the running dashboard, a page whose code has not arrived shows that page's frame and
-        // loading state, then the page replaces it in place.
         const pages = [
           [
             "Groups",
@@ -398,10 +359,6 @@ layer(HostedLive, { excludeTestServices: true })("Route loading", (it) => {
             }),
           );
 
-        /**
-         * Record every status the page adds and each text it says, so a check can tell an
-         * announcement (text that changes inside a live region) from text it held when it appeared.
-         */
         const recordStatuses = (current: Page) =>
           current.evaluate(() => {
             const said: Array<{ added: string; later: Array<string> }> = [];
@@ -434,7 +391,6 @@ layer(HostedLive, { excludeTestServices: true })("Route loading", (it) => {
               ).statusesSaid,
           );
 
-        /** The loading status saying `text`, and everything the page's statuses have said. */
         const statusSaying = (current: Page, text: string) =>
           Promise.all([
             current
@@ -448,12 +404,6 @@ layer(HostedLive, { excludeTestServices: true })("Route loading", (it) => {
             statusesSaid(current),
           ]).then(([status, said]) => ({ ...status, said }));
 
-        /**
-         * A loading status a screen reader hears: a live region outside any busy region, which
-         * appeared empty and then said `text`. Assistive technology may hold back what a busy
-         * region says until it is no longer busy, and need not announce what a live region held
-         * when it appeared.
-         */
         const expectAnnounced = (
           title: string,
           status: Awaited<ReturnType<typeof statusSaying>>,
@@ -467,9 +417,6 @@ layer(HostedLive, { excludeTestServices: true })("Route loading", (it) => {
           });
         };
 
-        // A page the dashboard cannot name stays blank rather than guess, but still says it is
-        // loading: inside the dashboard for a connection link, and across the whole screen for a
-        // page outside any organization.
         const unnamed = [
           [
             "A connection",
@@ -507,10 +454,6 @@ layer(HostedLive, { excludeTestServices: true })("Route loading", (it) => {
             },
           );
 
-        // A session that ends in the running dashboard opens sign-in in the browser. The dashboard
-        // did not arrive with the sign-in settings, which decide the form's size, so until they
-        // and the code arrive the screen draws nothing a form could move and says it is loading.
-        // The settings read is held too. Self-host only: Cloud's sign-in has no settings to read.
         if (!cloud)
           for (const viewport of [desktop, phone]) {
             const title = `Sign-in after the session ends at ${viewport.width}`;
@@ -555,7 +498,6 @@ layer(HostedLive, { excludeTestServices: true })("Route loading", (it) => {
                   expect(after, `${title}: the form fits without scrolling`).toBe(true);
                 }),
               {
-                // The dashboard notices the ended session when the tab is shown again.
                 open: browser.use(`${title}: end the session`, (current) =>
                   recordStatuses(current)
                     .then(() => current.context().clearCookies())

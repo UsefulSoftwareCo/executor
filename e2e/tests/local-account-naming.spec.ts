@@ -1,4 +1,3 @@
-/** Local accounts are named after they connect, in a dialog over the page that follows. */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Redacted, Schema } from "effect";
 import type { Page } from "playwright";
@@ -40,7 +39,6 @@ layer(TestLive, { excludeTestServices: true })("Local account naming", (it) => {
         const target = yield* Target;
         const session = yield* api.session();
         const headers = { authorization: `Bearer ${Redacted.value(target.apiKey)}` };
-        // The agent API takes the host-issued bearer credential, not a browser origin.
         const agent: Session = {
           ...session,
           send: (method, path, data, extra = {}) => {
@@ -72,8 +70,6 @@ export default defineApp({ user: { accounts: { service: service.many() } } }, as
         );
         expect(deployed.status).toBe(200);
         const { app } = yield* body(Published, deployed);
-        // A many() requirement uses every linked account, so each account connected from the app
-        // stays linked beside the others.
         const provider = app.requirements.accounts.service.provider;
         const accounts: string[] = [];
         yield* Effect.addFinalizer(() =>
@@ -92,7 +88,6 @@ export default defineApp({ user: { accounts: { service: service.many() } } }, as
             Effect.flatMap((response) => body(Detail, response)),
             Effect.map((detail) => detail.account.label),
           );
-        // Every dashboard connection fills an app requirement.
         const add = (label?: string) =>
           Effect.gen(function* () {
             const account = yield* body(
@@ -114,7 +109,6 @@ export default defineApp({ user: { accounts: { service: service.many() } } }, as
         expect(yield* add()).toBe("Default");
         expect(yield* add()).toBe("Default 2");
         expect(yield* add("Supplied name")).toBe("Supplied name");
-        // Nothing connects or replaces credentials outside an app.
         for (const [method, path, payload] of [
           [
             "POST",
@@ -128,8 +122,6 @@ export default defineApp({ user: { accounts: { service: service.many() } } }, as
           ],
           ["POST", `/dashboard/api/accounts/${accounts[0]}/oauth/start`, {}],
           ["POST", "/dashboard/api/accounts/oauth/start", { provider, method: "key" }],
-          // Nor can an agent save or replace credentials through the API: they go through a
-          // connection link the user completes.
           [
             "POST",
             "/v1/accounts",
@@ -236,7 +228,6 @@ export default defineApp({ user: { accounts: { service: service.many() } } }, as
         yield* browser.use("Save the dialog account's name", (page) =>
           nameConnectedAccount(page, "Dialog key"),
         );
-        // An account connected from the app is linked to it, listed in place under its new name.
         yield* browser.use("The app lists the renamed account as linked", (page) =>
           linkedChoice(
             page.getByRole("region", { name: "Local naming fixture", exact: true }),
@@ -247,7 +238,6 @@ export default defineApp({ user: { accounts: { service: service.many() } } }, as
         expect(yield* savedLabel(fromDialog.id)).toBe("Dialog key");
         yield* browser.checkpoint("Named account linked to the app");
 
-        // Every linked account row keeps its menu in view, not only on hover.
         expect(
           yield* browser.use("Other linked accounts show their menu without hover", (page) =>
             page.mouse
@@ -260,7 +250,6 @@ export default defineApp({ user: { accounts: { service: service.many() } } }, as
           ),
         ).toBe("1");
         expect(
-          // A linked account's menu edits it or unlinks it from the app; none deletes the account.
           yield* browser.use("Another linked account's menu edits or unlinks it", (page) =>
             page
               .getByRole("button", { name: "Manage Supplied name", exact: true })
@@ -268,7 +257,6 @@ export default defineApp({ user: { accounts: { service: service.many() } } }, as
               .then(() =>
                 page.getByRole("menuitem", { name: "Edit details", exact: true }).waitFor(),
               )
-              // Let the menu finish opening so the checkpoint shows it, not its fade-in.
               .then(() =>
                 page
                   .getByRole("menu")
@@ -284,7 +272,6 @@ export default defineApp({ user: { accounts: { service: service.many() } } }, as
           page.keyboard.press("Escape"),
         );
 
-        // Every linked account's menu opens the same dialogs.
         const edit = yield* browser.use("Edit another linked account's details", (page) =>
           page
             .getByRole("button", { name: "Manage Supplied name", exact: true })
@@ -325,7 +312,6 @@ export default defineApp({ user: { accounts: { service: service.many() } } }, as
             .then(() => otherCredentials.waitFor({ state: "hidden" })),
         );
 
-        // Credentials are replaced from an app the account is linked to, through its menu.
         yield* browser.use("Update the named account's credentials", (page) =>
           page
             .getByRole("button", { name: "Manage Dialog key", exact: true })
@@ -472,13 +458,11 @@ export default defineApp({user: { accounts:{service} }},async()=>({tools:router(
             ),
         );
         expect(returned.name).toBe("Default");
-        // The return names only the app's accounts view and carries no other state.
         expect([...returned.url.searchParams.keys()]).toEqual(["view"]);
         yield* browser.checkpoint("Name a local OAuth account after sign-in returns");
         yield* browser.use("Name the OAuth account", (page) =>
           nameConnectedAccount(page, "Local reports"),
         );
-        // Completing the app's connection linked the account; nothing links it afterwards.
         yield* browser.use("The app lists the named account as linked", (page) =>
           linkedChoice(
             page.getByRole("region", { name: "Sample service", exact: true }),

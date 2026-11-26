@@ -1,7 +1,3 @@
-/**
- * An MCP provider checks an account by opening a session with it, not with a REST read, and the
- * account passes only when the server refuses the same session without credentials.
- */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Schema } from "effect";
 import { randomUUID } from "node:crypto";
@@ -31,11 +27,6 @@ const Check = Schema.Struct({
   message: Schema.optionalKey(Schema.String),
 });
 
-/**
- * The provider sends its key only to the server, so app code and the check hold a handle. Each check
- * passes on its check context, whose deadline bounds both attempts. `service` keeps the default
- * timeout; `patient` asks for the longest one an author can set.
- */
 const source = (
   origin: string,
 ) => `import { defineApp, defineProvider, object, router, secrets, string } from "apps";
@@ -95,7 +86,6 @@ layer(HostedLive, { excludeTestServices: true })("MCP account health", (it) => {
         if (service === undefined || patient === undefined)
           return yield* Effect.die("Missing account requirement");
 
-        // Credentials entered in the account form are checked before they are saved.
         const check = (token: string, requirement = service) =>
           Effect.gen(function* () {
             const response = yield* api.request(
@@ -111,23 +101,18 @@ layer(HostedLive, { excludeTestServices: true })("MCP account health", (it) => {
           });
 
         const refusedToken = "synthetic-refused-token";
-        // The server initializes any client but lists tools only for the accepted key. The check
-        // repeats without credentials, and that refused listing shows the key was checked.
         const listed = yield* upstream.anonymousRequests;
         expect(yield* check(acceptedToken)).toEqual({ status: "healthy", info: null });
         expect(yield* upstream.anonymousRequests).toBeGreaterThan(listed);
-        // Only listing its tools shows the key is refused.
         expect(yield* check(refusedToken)).toEqual({
           status: "credentials_rejected",
           info: null,
         });
 
-        // An OAuth-style server refuses initialization without a valid token.
         yield* upstream.answer({ kind: "protected" });
         const challenged = yield* upstream.anonymousRequests;
         expect(yield* check(acceptedToken)).toEqual({ status: "healthy", info: null });
         expect(yield* upstream.anonymousRequests).toBeGreaterThan(challenged);
-        // A refused token ends the check before it tries the server without credentials.
         const rejected = yield* upstream.anonymousRequests;
         expect(yield* check(refusedToken)).toEqual({
           status: "credentials_rejected",
@@ -135,7 +120,6 @@ layer(HostedLive, { excludeTestServices: true })("MCP account health", (it) => {
         });
         expect(yield* upstream.anonymousRequests).toBe(rejected);
 
-        // A server that answers without credentials accepts any key, so no key can be verified.
         yield* upstream.answer({ kind: "open" });
         for (const token of [acceptedToken, refusedToken])
           expect(yield* check(token)).toEqual({
@@ -144,8 +128,6 @@ layer(HostedLive, { excludeTestServices: true })("MCP account health", (it) => {
             message:
               "This MCP server answers without credentials, so Executor can't check this account. A refused key will show up when a tool is called.",
           });
-        // When the attempt without credentials fails for another reason, the check cannot tell. A
-        // server that never answers it uses up the check's time, and the check still says why.
         const undecided: ReadonlyArray<readonly [AccountCheckAnswer, string]> = [
           [
             { kind: "anonymous", failure: { kind: "status", status: 503 } },
@@ -164,7 +146,6 @@ layer(HostedLive, { excludeTestServices: true })("MCP account health", (it) => {
             message: `The MCP server accepted the credentials, but the same check without them failed, so Executor can't tell whether it requires them. ${reason}`,
           });
         }
-        // An author's longer timeout cannot outlast the account check's deadline.
         yield* upstream.answer({ kind: "anonymous", failure: { kind: "hang" } });
         expect(yield* check(acceptedToken, patient)).toEqual({
           status: "check_failed",
@@ -173,7 +154,6 @@ layer(HostedLive, { excludeTestServices: true })("MCP account health", (it) => {
             "The MCP server accepted the credentials, but the same check without them failed, so Executor can't tell whether it requires them. The MCP server did not respond in time while connecting.",
         });
 
-        // Service answers map to the same account statuses as any other provider check.
         const answers: ReadonlyArray<readonly [AccountCheckAnswer, string]> = [
           [
             {
@@ -194,15 +174,12 @@ layer(HostedLive, { excludeTestServices: true })("MCP account health", (it) => {
           });
         }
 
-        // A URL with no MCP server cannot verify the account, and the form is told why.
         yield* upstream.answer({ kind: "status", status: 404 });
         expect(yield* check(acceptedToken)).toEqual({
           status: "check_failed",
           info: null,
           message: "The MCP server answered HTTP 404 while connecting.",
         });
-        // A web page at the URL is not an HTTP failure, whether it answers the MCP request or only
-        // the legacy SSE stream Executor falls back to.
         for (const page of [{ kind: "page" }, { kind: "page", post: 405 }] as const) {
           yield* upstream.answer(page);
           expect(yield* check(acceptedToken), JSON.stringify(page)).toEqual({
@@ -212,7 +189,6 @@ layer(HostedLive, { excludeTestServices: true })("MCP account health", (it) => {
               "The MCP server returned a response Executor could not use while connecting, such as an unreadable message or an address on another origin.",
           });
         }
-        // A JSON-RPC error is the server's answer, not a server Executor could not reach.
         yield* upstream.answer({ kind: "list-error" });
         expect(yield* check(acceptedToken)).toEqual({
           status: "check_failed",

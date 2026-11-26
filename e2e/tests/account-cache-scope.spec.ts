@@ -1,9 +1,3 @@
-/**
- * An account's cache scope is the account, never its credentials. It is the same on every call
- * although a provider that declares hosts gives app code a fresh token handle each time, a
- * credential larger than the cache's key limit never reaches a key, and two accounts never share
- * entries, even with byte-identical credentials. Credentials appear in no response.
- */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Schema } from "effect";
 import { randomUUID } from "node:crypto";
@@ -17,7 +11,6 @@ import { connectionsPath } from "../support/app-accounts.ts";
 
 const Scoped = Schema.Struct({ value: Schema.String, token: Schema.String });
 const handle = /^exsec_[0-9a-f]+_$/;
-/** Larger than the cache's 8,192-byte key limit, like a grant listing hundreds of OAuth scopes. */
 const grantBytes = 12_000;
 
 layer(HostedLive, { excludeTestServices: true })("Account cache scope", (it) => {
@@ -34,7 +27,6 @@ layer(HostedLive, { excludeTestServices: true })("Account cache scope", (it) => 
           files: [
             {
               path: "index.ts",
-              // The app sends nothing; the declared host only makes secret fields sealed handles.
               content: `import { defineApp, defineProvider, secrets, object, plain, string, query, router } from "apps";
 const service = defineProvider({
   name: ${JSON.stringify(name)},
@@ -67,14 +59,12 @@ export default defineApp({ user: { accounts: { service: service.many() } } }, as
           api.request(actors.owner, "DELETE", path).pipe(Effect.orDie),
         );
 
-        // Both accounts hold the same credential bytes: a scope derived from them would collide.
         const marker = randomUUID();
         const fields = {
           grant: `grant-${marker} ${"scope:read ".repeat(grantBytes / 11)}`,
           token: `secret-${marker}`,
         };
         expect(fields.grant.length).toBeGreaterThan(grantBytes);
-        /** Connect an account from the app, which links it for the owner. */
         const connect = (label: string) =>
           Effect.gen(function* () {
             const pending = yield* api.request(
@@ -103,7 +93,6 @@ export default defineApp({ user: { accounts: { service: service.many() } } }, as
         const second = yield* connect("Synthetic second");
 
         const responses: unknown[] = [];
-        // Both accounts are linked and the call chooses none, so the app receives both.
         const call = (tool: string, id: string) =>
           api
             .request(actors.owner, "POST", `${path}/tools/call`, {
@@ -118,19 +107,16 @@ export default defineApp({ user: { accounts: { service: service.many() } } }, as
             return yield* body(Scoped, response);
           });
 
-        // Every call seals the token afresh, and every call reads the entry the first one wrote.
         const firstCalls = yield* Effect.forEach([1, 2, 3], () => scoped(first));
         for (const result of firstCalls) expect(result.token).toMatch(handle);
         expect(new Set(firstCalls.map((result) => result.token)).size).toBe(3);
         expect(new Set(firstCalls.map((result) => result.value)).size).toBe(1);
 
-        // Identical credentials, another account: its own entry, also stable across calls.
         const secondCalls = yield* Effect.forEach([1, 2], () => scoped(second));
         expect(new Set(secondCalls.map((result) => result.value)).size).toBe(1);
         expect(secondCalls[0]?.value).not.toBe(firstCalls[0]?.value);
         expect((yield* scoped(first)).value).toBe(firstCalls[0]?.value);
 
-        // A refused key is reported without the account's credentials.
         const refused = yield* call("oversized", first);
         expect(refused.status, JSON.stringify(refused.body)).not.toBe(200);
         expect(JSON.stringify(refused.body)).toContain("CacheError");

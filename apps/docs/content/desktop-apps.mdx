@@ -1,0 +1,324 @@
+---
+title: Desktop apps
+description: "Install a deployed Executor app as its own desktop app, in its own window, and add desktop abilities such as shortcuts and notifications."
+---
+
+Use **Install as app** in the Executor desktop app to turn a deployed Executor
+app's UI into its own desktop app, in its own window. Mac and Windows also get a
+launcher.
+
+To build from a shell, install the Executor 2 beta CLI:
+
+```bash
+npm i -g executor@beta
+```
+
+Include `@beta`: the bare `executor` package is the older version 1 and has no
+apps.
+
+Start a React desktop app with `package.json`, `index.ts`, `ui/index.html` and
+`ui/main.tsx`. Agents can read the built-in authoring skill with
+`executor skills --app executor --name app-authoring`.
+
+## What you need
+
+- **[Executor 2 desktop beta](https://executor.sh/#install)** for Mac, Windows
+  or Linux. On Linux (x64 and arm64 AppImages), you install and open apps inside
+  the desktop dashboard, without individual OS launchers, browser handoff or
+  system audio capture.
+- **An MCP agent** (Claude Code, Codex or Cursor) or the `executor@beta` CLI
+  targeting the same Executor.
+
+## From nothing to an installed desktop app
+
+<Steps>
+  <Step title="Install and open Executor 2 desktop">
+    Download and open Executor 2 desktop. Choose **Run locally** to start
+    without a Cloud team, or **Sign in** for Executor Cloud.
+  </Step>
+  <Step title="Connect your agent to the same server and team">
+    In the desktop dashboard, open **Connections**. On **Full access**, click
+    **Connect** and follow the instructions for your agent. On Cloud or
+    self-host, approve **All apps** for the same organization using an account
+    that can manage apps, then restart your agent or open a new session. See
+    [Check that it worked](/mcp-clients#check-that-it-worked).
+  </Step>
+  <Step title="Build and deploy an app with a UI">
+    Ask your agent to deploy an app with `ui/index.html` and return its name and
+    dashboard link (prompt below). Link any service accounts on its **Accounts**
+    tab.
+  </Step>
+  <Step title="Install and open it">
+    In Executor desktop, open **Apps**, select the app, click **Install as app**
+    and confirm **Install**. Click **Open app**, or open its launcher on Mac or
+    Windows.
+  </Step>
+</Steps>
+
+## Prompt for your agent
+
+Paste this into an agent connected to Executor (or one with web access):
+
+```text
+Help me build and deploy a desktop app with Executor (https://executor.sh).
+
+1. Ask what the app should do and start with the smallest useful version.
+2. If not connected to my Executor MCP endpoint, guide me to
+   Connections → Full access → Connect in Executor desktop and follow the
+   instructions there for this client. On Cloud or self-host, have me approve
+   "All apps" for the organization shown in desktop using an account that can
+   manage apps. Continue once Executor's tools are available.
+3. Read `app-authoring`'s `ui.md` and `deploy.md` via MCP `skills` or
+   `executor skills --app executor --name app-authoring --file <file>`.
+4. Confirm my desktop's server and team. On Cloud or self-host, call
+   `context.get` and pass the organization; local calls omit it. Pin the exact
+   version from `framework.release` in `package.json` (`dependencies.apps`).
+5. Build a React UI with `package.json`, `index.ts`, `ui/index.html` and
+   `ui/main.tsx`. Use `desktop` from `apps/client` and hooks from `apps/react`,
+   guarding imperative calls with `desktop.available`.
+6. Create and deploy via `appManagement` with the full file list. Guide me to
+   link service accounts on the Accounts tab.
+7. Verify the rendered UI in an authenticated session if available; otherwise
+   say what was checked. Give me the app name and dashboard link and tell me
+   to click "Install as app", confirm "Install" and click "Open app".
+```
+
+## Minimal complete example
+
+This example uses four files (`package.json`, `index.ts`, `ui/index.html`,
+`ui/main.tsx`). Tailwind CSS v4 is built in (`@import "tailwindcss";`).
+Optional: `ui/icon.svg` (launcher, tray and main window's icon outside macOS;
+plain self-contained SVG up to 64 KiB or deploy fails) and `ui/menubar.html`
+(menu-bar popover with its own entry).
+
+Replace `<version>` with the version from `framework.release` or `executor apps framework`:
+
+<CodeGroup>
+
+```json package.json
+{
+  "name": "status-board",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "apps": "<version>",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0"
+  }
+}
+```
+
+```ts index.ts
+import { defineApp, object, query, router, string } from "apps";
+
+export const status = query(
+  { description: "Read the current status", input: object({}), output: string() },
+  async () => "All systems normal",
+);
+
+export default defineApp({}, { tools: router({ status }) });
+```
+
+```html ui/index.html
+<!doctype html>
+<html>
+  <head>
+    <title>Status Board</title>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="./main.tsx"></script>
+  </body>
+</html>
+```
+
+```tsx ui/main.tsx
+import React from "react";
+import { createRoot } from "react-dom/client";
+import { string } from "apps";
+import { createAppClient, queryReference } from "apps/client";
+import { useAppQuery } from "apps/react";
+import type { status } from "../index.ts";
+
+const client = createAppClient();
+const statusAtom = client.queryAtom(queryReference<typeof status>("status"), {}, string());
+
+function App() {
+  const { data, pending, error } = useAppQuery(statusAtom);
+  return (
+    <main>
+      <h1>Status Board</h1>
+      <p role="status">{error ?? (pending ? "Loading…" : data)}</p>
+    </main>
+  );
+}
+
+createRoot(document.getElementById("root")!).render(<App />);
+```
+
+</CodeGroup>
+
+Import server operations as **types only** (`import type`). Deploy over MCP
+([Author an app](/author-an-app#deploying)), or from a shell. The CLI uses local
+Executor by default. For Cloud or self-host, [sign in](/run/cli) with **All
+apps** and check the host and organization with `executor whoami`.
+
+Run `executor apps framework`, copy `version` into `dependencies.apps`, save the
+four files under `./status-board`, then create and deploy in order (passing the
+`id` field from `create` to `deploy`):
+
+```bash
+APP_ID=$(executor apps create --name "Status Board" --files ./status-board | node -pe 'JSON.parse(require("fs").readFileSync(0, "utf8")).id')
+executor apps deploy --app "$APP_ID" --files ./status-board
+```
+
+Install **Status Board**, click **Open app**, and verify **All systems normal**.
+
+## Desktop abilities and permissions
+
+`desktop` (`apps/client`) and hooks (`apps/react`) work in installed windows.
+In a browser tab, `desktop.available` is `false`, permission checks resolve
+`"unavailable"`, other promise methods reject with `DesktopUnavailable`, and
+window-event listeners are no-ops.
+
+New installs start without grants. Use `desktop.requestPermission(name)` to ask
+for a grant. Manage grants in **\<App name\> →
+Permissions**, the tray menu or **Settings → Desktop**. Errors (`apps/client`):
+`DesktopUnavailable`, `DesktopPermissionDenied`, `ShortcutTaken`,
+`DesktopInvalidInput`, `SystemAudioBlocked`. Badges (`desktop.badge.set` /
+`useDesktopBadge`) and downloads need no grant.
+
+| Permission | Settings label | Allows |
+| --- | --- | --- |
+| `menuBar` | Menu bar | `ui/menubar.html` popover and menu-bar title (macOS) or tray tooltip (Windows). |
+| `shortcuts` | Keyboard shortcuts | Up to 8 global shortcuts per app. |
+| `floating` | Float above other windows | Float an app window above others. |
+| `startAtLogin` | Start at login | Open hidden at login (`desktop.requestPermission("startAtLogin")`). |
+| `microphone` | Microphone | `getUserMedia({ audio: true })`. |
+| `camera` | Camera | `getUserMedia({ video: true })`. |
+| `systemAudio` | System audio | `desktop.audio.system()` from a user action (Windows, macOS 13+). |
+| `clipboardRead` | Read clipboard | `navigator.clipboard.readText()`. |
+| `notifications` | Notifications | System notifications via `Notification`. |
+
+### Menu bar
+
+Add `ui/menubar.html` (`<meta name="executor:menubar" content="width=320, height=240" />`)
+with its own entry, and update its label with `desktop.menuBar.setTitle` (up to
+24 characters, or `null`):
+
+```tsx
+import { desktop, DesktopPermissionDenied } from "apps/client";
+
+export async function showUnread(count: number) {
+  if (!desktop.available || !Number.isSafeInteger(count) || count < 0) return;
+  try {
+    await desktop.menuBar.setTitle(count > 0 ? `${count} unread` : null);
+  } catch (error) {
+    if (!(error instanceof DesktopPermissionDenied)) throw error;
+  }
+}
+```
+
+### Global shortcuts
+
+Register Electron accelerators such as `CommandOrControl+Shift+K` with
+`useDesktopShortcut` (or `desktop.shortcuts.register`, which resolves an async
+cleanup):
+
+```tsx
+import { DesktopPermissionDenied, ShortcutTaken } from "apps/client";
+import { useDesktopShortcut } from "apps/react";
+
+export function SearchShortcut({ onOpen }: { onOpen: () => void }) {
+  const err = useDesktopShortcut("CommandOrControl+Shift+K", onOpen);
+  if (err instanceof ShortcutTaken) return <p>{err.accelerator} is unavailable.</p>;
+  if (err instanceof DesktopPermissionDenied) return <p>Shortcuts are off.</p>;
+  return null;
+}
+```
+
+### Notifications
+
+Ask from a user action if `Notification.permission` is not `"granted"`. Pass
+`{ data: { path } }` to open a route on click (handle that route in your UI):
+
+```tsx
+export async function notifyReady(taskId: string) {
+  const perm =
+    Notification.permission === "granted"
+      ? "granted"
+      : await Notification.requestPermission();
+  if (perm !== "granted") return;
+  new Notification("Report ready", {
+    data: { path: `/reports?task=${encodeURIComponent(taskId)}` },
+  });
+}
+```
+
+### Keep on top and window controls
+
+`desktop.window.setFloating(true)` floats the main window (`false` clears it).
+`show()`, `hide()`, `focus()` and `toggle()` control the calling window;
+`desktop.window.open(path, options?)` opens another;
+`useDesktopWindowEvent("blur", fn)` or `useDesktopWindowEvent("focus", fn)`
+watches focus:
+
+```tsx
+import { useState } from "react";
+import { desktop, DesktopPermissionDenied } from "apps/client";
+
+export function PinButton() {
+  const [pinned, setPinned] = useState(false);
+  if (!desktop.available) return null;
+  const toggle = async () => {
+    try {
+      await desktop.window.setFloating(!pinned);
+      setPinned(!pinned);
+    } catch (e) {
+      if (!(e instanceof DesktopPermissionDenied)) console.error(e);
+    }
+  };
+  return <button type="button" onClick={() => void toggle()}>{pinned ? "Unpin" : "Keep on top"}</button>;
+}
+```
+
+## Cloud, self-hosted, and browser install
+
+Use the bottom-left account button in Executor desktop to switch or add Cloud,
+self-hosted or local accounts (on the welcome screen, **Customize** → **Sign in
+to this server**). Self-hosted servers need
+[serving app web pages](/run/self-host#serving-app-web-pages)
+(`EXECUTOR_APP_UI_BASE_URL` outside localhost, matching the dashboard protocol).
+
+From a Mac or Windows browser (HTTPS or localhost), click **Install as app** →
+**Open in Executor**, sign in to the named team if prompted and confirm
+**Install**.
+
+## Opening and uninstalling
+
+Open installed apps via **Open app** in desktop or their launcher
+(`~/Applications/Executor Apps/` on Mac; **Executor Apps** in the Windows Start
+menu), which starts Executor if needed.
+
+Uninstall via **Uninstall** on the app page or
+**\<App name\> → Remove \<App name\>…** (**Remove**). Uninstalling closes the
+app, clears saved grants and tries to remove its launcher; the app and data
+stay on the server. In the account menu, **Sign out of \<team\>** keeps
+installed apps; **Remove from this computer…** uninstalls them and clears local
+account data.
+
+## Troubleshooting
+
+- **Install as app missing**: Confirm an active deploy with `ui/index.html` and
+  app access (**Open app** and **Uninstall** mean it is already installed). On
+  hosted servers, check `appUi.location` returns `status: "ready"`.
+- **Open in Executor missing or does nothing**: Use a Mac or Windows browser
+  over HTTPS or localhost with current
+  [Executor desktop](https://executor.sh/#install).
+- **Installed app will not open or shows unavailable**: Check that the server is
+  running (**Start** or `executor service start` locally), hosted sign-in is
+  active, and the app has an active UI and working app domain (matching the
+  dashboard protocol on self-host).
+- **Deploy fails on `ui/icon.svg`**: Use a plain, self-contained SVG up to
+  64 KiB; unsafe or invalid SVGs fail the deploy.
+- **Shortcut fails with `ShortcutTaken`**: Choose another combination.

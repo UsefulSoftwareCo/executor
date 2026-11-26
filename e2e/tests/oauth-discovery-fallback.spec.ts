@@ -1,4 +1,3 @@
-/** Path-based discovery consults the server origin only when the path publishes no metadata. */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Schema } from "effect";
 import { Actors } from "../support/actors.ts";
@@ -62,8 +61,6 @@ export default defineApp({user: { accounts:{service} }},async()=>({tools: router
             };
           });
 
-        // Served path metadata is authoritative: a mismatched issuer or unusable document
-        // fails setup instead of silently switching to the origin's issuer.
         for (const pathDiscovery of ["issuer-mismatch", "invalid-metadata"] as const) {
           yield* issuer.configure({ pathDiscovery });
           const { result: response, requested } = yield* requestedDuring(
@@ -77,8 +74,6 @@ export default defineApp({user: { accounts:{service} }},async()=>({tools: router
           );
         }
 
-        // Atlassian's shape: the path-inserted URL is missing and the appended OpenID path
-        // refuses the request, so the origin's metadata is the authorization server.
         yield* issuer.configure({ pathDiscovery: "atlassian" });
         const { result: setup, requested } = yield* requestedDuring(
           api.request(actors.owner, "GET", setupPath),

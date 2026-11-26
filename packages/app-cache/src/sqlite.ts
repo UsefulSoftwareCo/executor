@@ -1,5 +1,3 @@
-/** SQLite-backed cache, separate from app tables and owned by the app's supervisor. */
-/** Minimal synchronous SQL adapter; implementations own the database handle. */
 export interface CacheSqlStorage {
   readonly sql: {
     readonly exec: (
@@ -27,10 +25,6 @@ const Row = Schema.Struct({
 const Usage = Schema.Struct({ bytes: Schema.Number, count: Schema.Number });
 const Count = Schema.Struct({ count: Schema.Number });
 
-/**
- * Totals are kept by triggers, so bounding a write reads one row instead of every entry.
- * Stores created before the usage table are counted once, in the transaction that adds it.
- */
 const initialize = (storage: CacheSqlStorage) =>
   storage.transactionSync(() => {
     storage.sql.exec(`CREATE TABLE IF NOT EXISTS executor_cache (
@@ -57,17 +51,11 @@ const initialize = (storage: CacheSqlStorage) =>
       BEGIN UPDATE executor_cache_usage SET bytes = bytes - OLD.bytes + NEW.bytes WHERE id = 0; END`);
   });
 
-/**
- * A command's reply, and whether it replaced or removed a retained value: overwrote it with
- * different data, invalidated it, or swept it once expired. A routine refresh that publishes what
- * it read before, a write of the same value, or a load that fills an empty key replaces nothing.
- */
 export interface SqliteCacheResult {
   readonly reply: Schema.Json;
   readonly replaced: boolean;
 }
 
-/** Create a bounded, fenced cache store. All commands execute in a synchronous SQL transaction. */
 export const sqliteCache = (storage: CacheSqlStorage) => {
   let initialized = false;
   return (namespace: string, input: unknown) =>
@@ -82,8 +70,6 @@ export const sqliteCache = (storage: CacheSqlStorage) => {
         const now = Date.now();
         let replaced = false;
         const reply = storage.transactionSync((): Schema.Json => {
-          // Expired entries are disposable. Active loaders keep their fencing row. Removing a value
-          // is a change: a kept result may reflect it, and a later load may differ.
           const expired = Schema.decodeUnknownSync(Count)(
             storage.sql
               .exec(
@@ -124,11 +110,8 @@ export const sqliteCache = (storage: CacheSqlStorage) => {
             if (bytes > cacheLimits.entryBytes)
               throw new CacheError({ reason: "capacity", limit: "entryBytes" });
             if (entry.freshUntil > entry.staleUntil) throw new CacheError({ reason: "capacity" });
-            // Nothing is kept past the retention, whatever the caller's clock said.
             const staleUntil = Math.min(entry.staleUntil, now + cacheLimits.retentionMs);
             const freshUntil = Math.min(entry.freshUntil, staleUntil);
-            // Filling an empty key changes nothing a kept result reflects: a result that read the
-            // key while it was empty loaded this value itself, or waited for the load that did.
             const previous = read(key)?.value ?? null;
             if (previous !== null && previous !== value) replaced = true;
             storage.sql.exec(
@@ -194,8 +177,6 @@ export const sqliteCache = (storage: CacheSqlStorage) => {
                 wanted && (row === undefined || row.lease_until <= now) ? claim(command.key) : null;
               if (command.reads === undefined || command.reads.length > cacheLimits.batchEntries)
                 return { entry: current, lease };
-              // The same reads a `read` makes, in this transaction. Past the batch's byte bound the
-              // reply leaves them out and the caller reads them on its own, as it would without them.
               let bytes = 0;
               const reads: (CacheEntry | null)[] = [];
               for (const key of command.reads) {
@@ -240,7 +221,6 @@ export const sqliteCache = (storage: CacheSqlStorage) => {
             }
             case "invalidate":
               if ((read(command.key)?.value ?? null) !== null) replaced = true;
-              // Revoke an in-flight publication as well as the retained value.
               storage.sql.exec(
                 "DELETE FROM executor_cache WHERE namespace = ? AND key = ?",
                 namespace,

@@ -1,10 +1,3 @@
-/**
- * MCP events as ChatGPT uses them: protocol 2026-07-28, webhook delivery only. A client discovers
- * the `events` capability, lists an app's events, subscribes with a callback URL and a Standard
- * Webhooks secret, and receives each matching occurrence, signed, after the callback echoed a
- * challenge. The receiver is an Executor app's own webhook: it checks every signature and records
- * what arrived, so the scenario needs no outside service and runs on deployed Cloudflare.
- */
 import { expect, layer } from "@effect/vitest";
 import { Clock, Effect, Schema } from "effect";
 import { randomUUID } from "node:crypto";
@@ -15,6 +8,7 @@ import { HostedLive, withHostedCase } from "../support/case.ts";
 import {
   Discovered,
   EventList,
+  appEvent,
   Granted,
   Occurrence,
   eventFixtures,
@@ -47,7 +41,6 @@ layer(HostedLive, { excludeTestServices: true })("MCP events", (it) => {
             createKey,
             name,
           } = yield* eventFixtures;
-          // A personal access token connects as ChatGPT's plugin would, at the organization's MCP URL.
           const key = yield* createKey(`Events ${suffix}`);
           const rpc = (method: string, params: Readonly<Record<string, unknown>> = {}) =>
             rpcAs(key.key, method, params);
@@ -65,28 +58,22 @@ layer(HostedLive, { excludeTestServices: true })("MCP events", (it) => {
               ttlMs: 60 * 60_000,
             });
 
-          // Discovery advertises events beside tools.
           const discovered = yield* ok(Discovered, yield* rpc("server/discover"));
           expect(discovered.capabilities.events).toEqual({});
           const listed = yield* ok(EventList, yield* rpc("events/list"));
-          const listedEvent = listed.events.find((event) => event.name === name);
-          expect(listedEvent, JSON.stringify(listed)).toMatchObject({
-            description: "An issue was opened in a repository.",
+          expect(listed.events.map((event) => event.name)).toEqual([appEvent]);
+          expect(listed.events[0]).toMatchObject({
             delivery: ["webhook"],
             inputSchema: {
               type: "object",
-              properties: { repo: { type: "string" } },
-              additionalProperties: false,
+              properties: { app: { type: "string" }, event: { type: "string" } },
             },
-            payloadSchema: { type: "object" },
+            payloadSchema: { type: "object", required: ["app", "event", "data"] },
           });
-          expect(listedEvent?.inputSchema.required).toBeUndefined();
-          // The receiver declares no events, so it lists none.
-          expect(listed.events.some((event) => event.name.startsWith(`${receiver.slug}.`))).toBe(
-            false,
-          );
+          expect(listed.events[0]?.inputSchema.required).toBeUndefined();
+          expect(JSON.stringify(listed)).not.toContain(emitter.slug);
+          expect(JSON.stringify(listed)).not.toContain(receiver.slug);
 
-          // Requests that do not fit are refused with the extension's codes.
           expect(yield* refused(yield* subscribe({ secret: "not-a-secret" }))).toMatchObject({
             code: -32602,
             data: { field: "secret" },
@@ -101,7 +88,6 @@ layer(HostedLive, { excludeTestServices: true })("MCP events", (it) => {
             code: -32602,
             data: { field: "arguments" },
           });
-          // The filter's own schema applies: this repository name is shorter than it allows.
           expect(yield* refused(yield* subscribe({ arguments: { repo: "" } }))).toMatchObject({
             code: -32602,
             data: { field: "arguments" },
@@ -110,12 +96,10 @@ layer(HostedLive, { excludeTestServices: true })("MCP events", (it) => {
             code: -32602,
             data: { field: "arguments" },
           });
-          // A callback that does not echo its challenge is not subscribed.
           expect(
             yield* refused(yield* subscribe({ url: `${callbackUrl}?variant=refuse` })),
           ).toMatchObject({ code: -32015, data: { reason: "challenge_failed" } });
 
-          // A subscription verifies its callback once, with a signed challenge.
           const startedAt = yield* Clock.currentTimeMillis;
           const granted = yield* ok(Granted, yield* subscribe());
           expect(granted.id).toMatch(/^evs_[0-9a-f]{32}$/);
@@ -128,13 +112,11 @@ layer(HostedLive, { excludeTestServices: true })("MCP events", (it) => {
           expect(verifications, JSON.stringify(yield* deliveries)).toHaveLength(1);
           expect(verifications[0]).toMatchObject({ subscription: granted.id, signedBy: "0" });
           expect(verifications[0]!.id).toMatch(/^msg_verification_/);
-          // Repeating it refreshes the same subscription without another challenge.
           const again = yield* ok(
             Granted,
             yield* subscribe({ arguments: { repo: "acme/widgets" } }),
           );
           expect(again.id).toBe(granted.id);
-          // Identical requests at the same time make one subscription.
           const concurrent = yield* Effect.all(
             [
               subscribe({ arguments: { repo: "acme/concurrent" } }),
@@ -144,8 +126,6 @@ layer(HostedLive, { excludeTestServices: true })("MCP events", (it) => {
           );
           const [left, right] = yield* Effect.forEach(concurrent, (value) => ok(Granted, value));
           expect(left!.id).toBe(right!.id);
-          // A second subscription with no filter receives every occurrence. Its callback was just
-          // verified for this subscriber, so it is not challenged again.
           const everything = yield* ok(Granted, yield* subscribe({ arguments: {} }));
           expect(everything.id).not.toBe(granted.id);
           const afterSecond = yield* deliveries;
@@ -156,8 +136,6 @@ layer(HostedLive, { excludeTestServices: true })("MCP events", (it) => {
             JSON.stringify(afterSecond),
           ).toHaveLength(1);
 
-          // Concurrent refreshes with different secrets both succeed on the same subscription, and
-          // what it then delivers is signed by a secret the receiver holds.
           const rotating = yield* Effect.all(
             [
               subscribe({ arguments: { repo: "acme/rotating" }, secret: secrets[0] }),
@@ -177,10 +155,8 @@ layer(HostedLive, { excludeTestServices: true })("MCP events", (it) => {
             (delivery) => delivery.id === rotatingEvent && delivery.subscription === rotatedOne!.id,
           );
           expect(signedRotating?.signedBy).not.toBe("");
-          // The rest counts only the issues below.
           const tracked = (all: Parameters<typeof events>[0]) =>
             events(all).filter((delivery) => delivery.id !== rotatingEvent);
-          // Each matching occurrence arrives once per subscription, signed, with its event ID.
           const first = yield* emit("acme/widgets", 1);
           const other = yield* emit("acme/gadgets", 2);
           const delivered = yield* awaitDeliveries((all) => tracked(all).length >= 3);
@@ -199,14 +175,12 @@ layer(HostedLive, { excludeTestServices: true })("MCP events", (it) => {
               .map((delivery) => delivery.id);
           expect(to(granted.id)).toEqual([first]);
           expect(to(everything.id).sort()).toEqual([first, other].sort());
-          const firstBody = yield* Schema.decodeUnknownEffect(Occurrence)(
-            tracked(delivered)[0]!.body,
-          );
+          const firstDelivery = tracked(delivered).find((delivery) => delivery.id === first);
+          expect(firstDelivery, "Issue 1's delivery").toBeDefined();
+          const firstBody = yield* Schema.decodeUnknownEffect(Occurrence)(firstDelivery!.body);
           expect(firstBody.data).toEqual({ title: "Issue 1", number: 1 });
 
-          // The same upstream event, emitted again, is not delivered again.
           yield* emit("acme/widgets", 1, first);
-          // A failed invocation keeps none of the events it emitted.
           const failed = yield* api.request(
             actors.owner,
             "POST",
@@ -214,8 +188,6 @@ layer(HostedLive, { excludeTestServices: true })("MCP events", (it) => {
             { tool: "broken", kind: "mutation", input: { id: randomUUID() } },
           );
           expect(failed.status).not.toBe(200);
-          // A transaction that rolls back discards its events with its writes, even when the
-          // invocation catches the failure and succeeds.
           const rolledBack = yield* api.request(
             actors.owner,
             "POST",
@@ -224,14 +196,12 @@ layer(HostedLive, { excludeTestServices: true })("MCP events", (it) => {
           );
           expect(rolledBack.status, JSON.stringify(rolledBack.body)).toBe(200);
           expect(JSON.stringify(rolledBack.body)).toContain('"count":0');
-          // A later event marks the point by which those would have arrived.
           const marker = yield* emit("acme/marker", 3);
           const marked = yield* awaitDeliveries((all) =>
             tracked(all).some((delivery) => delivery.id === marker),
           );
           expect(tracked(marked)).toHaveLength(4);
 
-          // A failed delivery is retried with the same event ID and a fresh signature.
           expect(
             (yield* callReceiver("respond", "mutation", { statuses: { list: "500" } })).status,
           ).toBe(200);
@@ -249,10 +219,8 @@ layer(HostedLive, { excludeTestServices: true })("MCP events", (it) => {
               delivery.status === 200 && delivery.subscription === failedTry!.subscription,
           );
           expect(retry).toBeDefined();
-          // Re-signed at the retry's own time.
           expect(Number(retry!.timestamp)).toBeGreaterThan(Number(failedTry!.timestamp));
 
-          // 410 refuses that delivery for good; the subscription keeps delivering.
           expect(
             (yield* callReceiver("respond", "mutation", { statuses: { list: "410,410" } })).status,
           ).toBe(200);
@@ -266,7 +234,6 @@ layer(HostedLive, { excludeTestServices: true })("MCP events", (it) => {
           );
           expect(events(settled).filter((delivery) => delivery.id === gone)).toHaveLength(2);
 
-          // A refresh with a new secret rotates it; both sign while the previous one overlaps.
           const rotated = yield* ok(Granted, yield* subscribe({ secret: secrets[1] }));
           expect(rotated.id).toBe(granted.id);
           const signedTwice = yield* emit("acme/widgets", 7);
@@ -278,7 +245,6 @@ layer(HostedLive, { excludeTestServices: true })("MCP events", (it) => {
           );
           expect(byGranted?.signedBy).toBe("0,1");
 
-          // Unsubscribing stops delivery; repeating it succeeds.
           const unsubscribe = (args: unknown) =>
             rpc("events/unsubscribe", {
               name,
@@ -301,8 +267,6 @@ layer(HostedLive, { excludeTestServices: true })("MCP events", (it) => {
             ),
           ).toHaveLength(0);
 
-          // Revoking the token that subscribed stops every subscription it made. Another token's
-          // subscription marks when the revoked ones would have received the event.
           const otherKey = yield* createKey(`Events marker ${suffix}`);
           const markerSubscription = yield* ok(
             Granted,

@@ -19,6 +19,11 @@
       "message": "accounts",
       "protocols": [6, 7, 8, 9, 10, 11, 12],
       "adapter": "Every adapter for protocols 1 to 12 sends a bundle its invocation's user accounts as the flat record it reads, in the invocation (whose accounts protocols 1 to 5 carry only there) and in workflow step contexts. Such a bundle declares no app requirements, so it has no app accounts."
+    },
+    {
+      "message": "accounts",
+      "protocols": [13],
+      "adapter": "The protocol 13 adapter, which every earlier one shares, sends each account without its credential hosts that hold an underscore, which those bundles reject. A sealed handle keeps the hosts it was sealed for, and the outbound network checks those, so what the bundle reads changes nothing it does."
     }
   ],
   "additions": [

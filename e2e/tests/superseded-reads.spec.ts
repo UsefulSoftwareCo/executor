@@ -1,4 +1,3 @@
-/** A dashboard read that a refresh supersedes while it is in flight cancels its request. */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Schedule } from "effect";
 import type { Page, Request, Route } from "playwright";
@@ -8,9 +7,7 @@ import { HostedLive, withHostedCase } from "../support/case.ts";
 import { Evidence } from "../support/evidence.ts";
 import { scenarios } from "../test-plan.ts";
 
-/** Billing's overview is the page's only polled read, so each poll sends it on its own. */
 const overview = "**/api/organizations/*/billing";
-/** Long enough that the next poll starts while the previous read is still in flight. */
 const held = 1_500;
 const pollInterval = 30_000;
 const polls = 3;
@@ -50,7 +47,6 @@ layer(HostedLive, { excludeTestServices: true })("Superseded reads", (it) => {
             if (read !== undefined) read.ended = "failed";
           });
         };
-        // A cancelled read is never continued; the route then reports it is already handled.
         const hold = (route: Route) =>
           new Promise((resolve) => setTimeout(resolve, held)).then(() =>
             route.continue().catch(() => undefined),
@@ -70,8 +66,6 @@ layer(HostedLive, { excludeTestServices: true })("Superseded reads", (it) => {
           page.route(overview, hold),
         );
         const before = reads.length;
-        // A poll fires near the end of the advanced interval, and its request event can arrive
-        // after `runFor` returns, so each poll waits for the read it sends.
         for (let poll = 1; poll <= polls; poll += 1)
           yield* browser.use(`Poll ${poll} while the previous read is held`, (page) =>
             Promise.all([page.waitForRequest(overviewRead), page.clock.runFor(pollInterval)]),

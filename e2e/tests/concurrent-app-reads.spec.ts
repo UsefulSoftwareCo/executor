@@ -1,8 +1,3 @@
-/**
- * Requests that arrive together for one app share its evaluation and its runner, yet each one
- * finishes with its own I/O. On Workers, a request resumed inside another request's handler fails
- * with "Cannot perform I/O on behalf of a different request".
- */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Schema } from "effect";
 import { Actors } from "../support/actors.ts";
@@ -13,7 +8,6 @@ import { scenarios } from "../test-plan.ts";
 
 const App = Schema.Struct({ id: Schema.String });
 const Index = Schema.Struct({ items: Schema.Array(Schema.Struct({ name: Schema.String })) });
-/** Readers that arrive while the first one's evaluation runs, and so join it. */
 const readers = 6;
 
 layer(HostedLive, { excludeTestServices: true })("Concurrent app reads", (it) => {
@@ -24,7 +18,6 @@ layer(HostedLive, { excludeTestServices: true })("Concurrent app reads", (it) =>
         const actors = yield* Actors;
         const api = yield* Api;
         const prefix = `/api/organizations/${actors.organization.id}`;
-        // The factory takes long enough that every reader arrives while it runs.
         const deployed = yield* api.request(actors.owner, "POST", `${prefix}/apps/deploy`, {
           name: "Slow catalog",
           files: [

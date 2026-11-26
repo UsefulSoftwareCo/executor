@@ -12,6 +12,8 @@ import {
   ToolApprovalIssuer,
   ToolApprovalNotFound,
   ToolNotFound,
+  type App,
+  type AppAccounts,
   type AppId,
   type ApprovalRequestId,
   type Executor,
@@ -27,19 +29,27 @@ import {
 import { Effect, Schema } from "effect";
 import { HttpApiBuilder } from "effect/http-api";
 import { HostedApi } from "../contracts/api.ts";
+import { CallFailures, RunFailures } from "../contracts/tools.ts";
+import { CurrentToolCallCaller } from "../contracts/tool-call-log.ts";
+import {
+  dashboardRunReference,
+  loggedToolCall,
+  loggedToolResume,
+  recordCallDetails,
+} from "./tool-call-log.ts";
 import { HostedExecutor } from "../contracts/executor.ts";
 import { CurrentUserId, Forbidden } from "../contracts/auth.ts";
-import { CurrentAuthorization } from "../contracts/authorization.ts";
+import { CurrentPolicy } from "../contracts/authorization.ts";
 import {
   browserOnly,
   checkedToolCall,
   checkInvocationAccounts,
   currentOwner,
+  pinnedActiveVersion,
   selectedActiveVersion,
   usableApp,
 } from "./access.ts";
 
-/** Discover the current account-dependent catalog with the caller's resolved accounts. */
 export const listTools = (
   input: Parameters<Executor["tools"]["list"]>[0],
   options?: ToolListOptions,
@@ -58,18 +68,20 @@ export const listTools = (
       ),
     };
   });
-/** Keep the target's current catalog as search rows after the same checks as discovery. */
-export const searchableTools = (
+export const searchableTools = <E = never>(
   input: Parameters<Executor["tools"]["searchable"]>[0],
   options?: ToolListOptions,
+  selected?: Effect.Effect<{ readonly app: App; readonly accounts: AppAccounts }, E>,
 ) =>
   Effect.gen(function* () {
     const policy = yield* authorizeApp(input.app);
     const owner = yield* currentOwner;
     const executor = yield* Effect.flatten(HostedExecutor);
-    const { version, accounts } = yield* selectedActiveVersion(executor, owner, input);
+    const { version, accounts } =
+      selected === undefined
+        ? yield* selectedActiveVersion(executor, owner, input)
+        : yield* Effect.flatMap(selected, (found) => pinnedActiveVersion(found, input.version));
     const searchable = yield* executor.tools.searchable({ ...input, version, accounts }, options);
-    // Failed routers list no tools, so the policy decides them without the catalog.
     return {
       ...searchable,
       routers: searchable.routers.filter((router) =>
@@ -77,13 +89,9 @@ export const searchableTools = (
       ),
     };
   });
-/**
- * Rank the tools of listings `searchableTools` kept for this request's caller, with each target
- * narrowed to the tools discovery would list. A target the policy no longer permits has none.
- */
 export const searchTools = (input: Parameters<Executor["tools"]["search"]>[0]) =>
   Effect.gen(function* () {
-    const policy = yield* CurrentAuthorization;
+    const policy = yield* CurrentPolicy;
     const executor = yield* Effect.flatten(HostedExecutor);
     const page = yield* executor.tools.search({
       ...input,
@@ -106,7 +114,6 @@ export const searchTools = (input: Parameters<Executor["tools"]["search"]>[0]) =
       }),
     };
   });
-/** Names and descriptions for browsing; schemas are read per tool. */
 export const indexTools = (input: Parameters<Executor["tools"]["index"]>[0]) =>
   Effect.gen(function* () {
     const policy = yield* authorizeApp(input.app);
@@ -122,15 +129,12 @@ export const indexTools = (input: Parameters<Executor["tools"]["index"]>[0]) =>
       ),
     };
   });
-/** One tool's schemas, hidden exactly like the tools discovery omits. */
 export const getTool = (input: Parameters<Executor["tools"]["get"]>[0]) =>
   Effect.gen(function* () {
     const policy = yield* authorizeApp(input.app);
     const owner = yield* currentOwner;
     const executor = yield* Effect.flatten(HostedExecutor);
     const { version, accounts } = yield* selectedActiveVersion(executor, owner, input);
-    // When names decide, check before evaluating, so a hidden tool's source failure is not
-    // reported either. A read-only rule needs the catalog's flag, so it is checked after.
     if (
       !requiresToolMetadata(policy.tools, input.app) &&
       !discoversTool(policy, { app: input.app, tool: { name: input.tool } })
@@ -145,7 +149,6 @@ export const getTool = (input: Parameters<Executor["tools"]["get"]>[0]) =>
       });
     return tool;
   });
-/** Execute with the caller's resolved accounts after the same checks as discovery. */
 const startTool = (
   input: Parameters<Executor["tools"]["call"]>[0],
   options?: ToolInvocationOptions,
@@ -159,67 +162,83 @@ const startTool = (
         input,
         (selected, described) => authorizeTool({ ...input, ...selected }, described),
       );
+      yield* recordCallDetails({ version, accounts, ...(kind === undefined ? {} : { kind }) });
       return yield* executor.tools.call({ ...input, version, accounts, kind }, options);
     }),
   );
-/** API credentials cannot present an approval, so a call that needs one fails without running. */
 export const callTool = (input: Parameters<Executor["tools"]["call"]>[0]) =>
-  Effect.flatMap(startTool(input), (result) =>
-    result.status === "approval-required"
-      ? Effect.fail(approvalRequired(result))
-      : Effect.succeed(result.value),
-  );
-/**
- * The signed-in person's own run from the dashboard. Its approval is saved with this issuer, so only
- * that person's dashboard can read or answer it. MCP, schedules and API calls save no issuer.
- */
+  Effect.gen(function* () {
+    const { exit, reference } = yield* loggedToolCall(
+      yield* CurrentToolCallCaller,
+      input,
+      false,
+      startTool(input),
+    );
+    return yield* exit.pipe(
+      Effect.flatMap((result) =>
+        result.status === "approval-required"
+          ? Effect.fail(approvalRequired(result))
+          : Effect.succeed(result.value),
+      ),
+      Effect.mapError((error) => CallFailures.withReference(error, reference)),
+    );
+  });
 const dashboardRun = Effect.gen(function* () {
   yield* browserOnly;
   const user = yield* CurrentUserId;
   if (user === undefined) return yield* new Forbidden();
   return ToolApprovalIssuer.make(`dashboard:${user}`);
 });
-/** The signed-in person is the runner, so a call that needs approval waits for their review. */
 const runTool = (input: Parameters<Executor["tools"]["call"]>[0]) =>
-  Effect.flatMap(dashboardRun, (issuer) => startTool(input, { issuer })).pipe(
-    Effect.map((result): BrowserToolRun =>
-      result.status === "approval-required"
-        ? { status: result.status, requestId: result.requestId }
-        : { status: result.status, value: result.value },
-    ),
-  );
-/**
- * Read the saved call, check this person's dashboard run issued it, and check they may still run
- * it with the same checks as a new call. The arguments shown and resumed are the saved invocation's.
- */
+  Effect.gen(function* () {
+    const { exit, reference } = yield* loggedToolCall(
+      { source: "dashboard" },
+      input,
+      true,
+      Effect.flatMap(dashboardRun, (issuer) => startTool(input, { issuer })),
+    );
+    return yield* exit.pipe(
+      Effect.map((result): BrowserToolRun =>
+        result.status === "approval-required"
+          ? { status: result.status, requestId: result.requestId }
+          : {
+              status: result.status,
+              value: result.value,
+              ...(result.toolError === true && reference !== undefined ? { reference } : {}),
+            },
+      ),
+      Effect.mapError((error) => RunFailures.withReference(error, reference)),
+    );
+  });
 const reviewedTool = (app: AppId, requestId: ApprovalRequestId) =>
   Effect.gen(function* () {
     const issuer = yield* dashboardRun;
     const owner = yield* currentOwner;
     const executor = yield* Effect.flatten(HostedExecutor);
     const pending = yield* executor.tools.approval({ requestId, owner });
-    // MCP, scheduled and API approvals, and other people's runs, are answered only in their own flow.
     if (pending.issuer !== issuer)
       return yield* new ToolRunApprovalRefused({
         reason: pending.issuer === undefined ? "unrecorded" : "another-person",
       });
     const { invocation } = pending;
     if (invocation.app !== app) return yield* new ToolApprovalNotFound({ requestId });
-    // The saved call keeps its accounts; the caller must still be able to use the app and each.
     const found = yield* usableApp(executor, owner, app);
     yield* authorizeSavedTool(invocation);
     yield* checkInvocationAccounts(executor, owner, invocation);
     return { ...pending, issuer, appName: found.name };
   });
 
-/** Current app and account grants authorize both discovery and execution. */
 export const hostedToolHandlers = HttpApiBuilder.group(HostedApi, "tools", (handlers) =>
   handlers
     .handle("list", ({ params, query }) => listTools({ app: params.app, ...query }))
     .handle("index", ({ params, query }) => indexTools({ app: params.app, ...query }))
     .handle("get", ({ params, query }) => getTool({ app: params.app, tool: params.tool, ...query }))
-    .handle("call", ({ params, payload }) => callTool({ app: params.app, ...payload }))
-    .handle("run", ({ params, payload }) => runTool({ app: params.app, ...payload }))
+    .handle("call", ({ params, payload }) =>
+      CallFailures.referenced(callTool({ app: params.app, ...payload })),
+    )
+    .handle("run", ({ params, payload }) =>
+      RunFailures.referenced(runTool({ app: params.app, ...payload })),
+    )
     .handle("approval", ({ params }) =>
       reviewedTool(params.app, params.requestId).pipe(
         Effect.map(({ invocation, expiresAt, appName }): BrowserApprovalView => ({
@@ -229,8 +248,6 @@ export const hostedToolHandlers = HttpApiBuilder.group(HostedApi, "tools", (hand
             status: "approval-required",
             requestId: params.requestId,
             invocation,
-            // Built from the saved call, so it describes what approval resumes; the review card
-            // shows the exact arguments from the invocation.
             elicitation: approvalElicitation(invocation.tool, invocation.input),
             expiresAt,
           },
@@ -247,18 +264,34 @@ export const hostedToolHandlers = HttpApiBuilder.group(HostedApi, "tools", (hand
           Effect.mapError(() => new RequestInvalid()),
         );
         const executor = yield* Effect.flatten(HostedExecutor);
-        // The SDK checks the issuer again before it consumes the request.
-        const result = yield* executor.tools.resume(
-          { requestId: params.requestId, owner: yield* currentOwner, response },
-          { issuer },
+        const logged = yield* loggedToolResume(
+          params.requestId,
+          executor.tools.resume(
+            { requestId: params.requestId, owner: yield* currentOwner, response },
+            { issuer },
+          ),
         );
-        return result.status === "already-consumed" ||
-          (result.status === "failed" && result.reason === "expired")
-          ? { status: "unavailable" as const }
-          : { status: "answered" as const, result };
+        const result = yield* logged.exit;
+        const succeeded = result.status === "completed" && result.toolError !== true;
+        if (result.status === "already-consumed") return { status: "unavailable" as const };
+        return result.status === "failed" && result.reason === "expired"
+          ? {
+              status: "unavailable" as const,
+              ...(logged.reference === undefined ? {} : { reference: logged.reference }),
+            }
+          : {
+              status: "answered" as const,
+              result,
+              ...(succeeded || logged.reference === undefined
+                ? {}
+                : { reference: logged.reference }),
+            };
       }).pipe(
         Effect.catchTag("ToolApprovalNotFound", () =>
-          Effect.succeed({ status: "unavailable" as const }),
+          Effect.map(dashboardRunReference(params.requestId), (reference) => ({
+            status: "unavailable" as const,
+            ...(reference === undefined ? {} : { reference }),
+          })),
         ),
       ),
     ),

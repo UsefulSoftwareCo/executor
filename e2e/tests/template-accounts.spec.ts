@@ -1,4 +1,3 @@
-/** Multi-account routing is verified through skill-authored source and public link/tool APIs. */
 import { expect, layer } from "@effect/vitest";
 import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
 import { Effect, Layer, Schema } from "effect";
@@ -27,7 +26,6 @@ const Tools = Schema.Struct({
     }),
   ),
 });
-/** What one MCP execution described and returned for the app's MCP tool. */
 const Searched = Schema.Struct({
   structuredContent: Schema.Struct({
     execution: Schema.Struct({
@@ -40,7 +38,6 @@ const Searched = Schema.Struct({
   }),
 });
 
-/** A tool call whose result did not match the tool's output schema. */
 const OutputRejected = Schema.Struct({
   _tag: Schema.Literal("ToolCallFailed"),
   failure: Schema.Struct({ errorName: Schema.Literal("SchemaError"), message: Schema.String }),
@@ -55,10 +52,6 @@ const TreeMessage = Schema.Struct({
   ),
 });
 
-/**
- * An MCP server whose `tree` tool declares a recursive output schema. A complete tree names every
- * node; otherwise the child's own child is the only node with a name.
- */
 const treeUpstream = Effect.gen(function* () {
   const tool = {
     name: "tree",
@@ -119,13 +112,6 @@ const treeUpstream = Effect.gen(function* () {
   return `http://127.0.0.1:${server.address.port}`;
 });
 
-/**
- * One app with both `accountRouter` callback forms integrations.md shows: a synchronous callback
- * returning `liveOpenapiRouter`, and a router of hand-written queries and mutations whose handlers
- * take `(_ctx, input)`. `own.identity` is the custom tool beside the generated ones: it calls the
- * same API with the account's credential. No casts, so it type-checks only if the framework's
- * types accept them.
- */
 const routedAppFiles = (origin: string) => [
   {
     path: "index.ts",
@@ -188,7 +174,6 @@ export default defineApp({ user: { accounts: { service: service.many() } } }, as
   },
 ];
 
-/** An account router whose handler needs a GitHub account the app does not declare. */
 const undeclaredAccountFiles = [
   {
     path: "index.ts",
@@ -233,7 +218,6 @@ layer(HostedLive, { excludeTestServices: true })("Template accounts", (it) => {
                 yield* api.request(actors.owner, "DELETE", `${prefix}/accounts/${id}`);
             }).pipe(Effect.orDie),
           );
-          // An account array with no linked account resolves to none: the catalog is empty.
           const catalog = () => api.request(actors.owner, "GET", `${path}/tools`);
           const empty = yield* catalog();
           expect(empty.status, JSON.stringify(empty.body)).toBe(200);
@@ -260,7 +244,6 @@ layer(HostedLive, { excludeTestServices: true })("Template accounts", (it) => {
             expect(saved.status, JSON.stringify(saved.body)).toBe(200);
             accounts.push((yield* body(Resource, saved)).id);
           }
-          // Connecting from the app links each account; the array uses every linked account.
           expect(yield* linkedAccountIds(actors.owner, path)).toEqual(accounts);
           const tools = yield* catalog();
           expect(tools.status, JSON.stringify(tools.body)).toBe(200);
@@ -275,18 +258,12 @@ layer(HostedLive, { excludeTestServices: true })("Template accounts", (it) => {
             const descriptions = JSON.stringify((yield* body(Tools, tools)).items);
             expect(descriptions).toContain('"value"');
             expect(descriptions).toContain('"work"');
-            // Definitions stay in the root `$defs`, where a listing shares them among its tools.
-            // The second account's `Value` differs, so its branch keeps its own definitions.
             expect(descriptions).toContain('"value":{"$ref":"#/$defs/Value"}');
             expect(descriptions).not.toContain('"#/anyOf/0/properties/input/$defs/Value"');
             expect(descriptions).toContain('"#/anyOf/1/properties/input/$defs/Value"');
-            // Calls return the whole MCP result; the server's schema describes its structuredContent.
-            // Both accounts return the same output schema, so it is described once.
             expect(descriptions).toContain('"account":{"$ref":"#/$defs/Account"}');
             expect(descriptions).not.toContain('"#/anyOf/0/$defs/Account"');
           } else {
-            // Accounts of one upstream describe the same input, so they share one branch: a
-            // tool's schema does not grow with the accounts linked to it.
             const [described] = (yield* body(Tools, tools)).items;
             expect(
               Schema.decodeUnknownSync(Schema.Struct({ anyOf: Schema.Array(Schema.Json) }))(
@@ -303,7 +280,6 @@ layer(HostedLive, { excludeTestServices: true })("Template accounts", (it) => {
           const call = (accountId: string, label: string) =>
             api.request(actors.owner, "POST", `${path}/tools/call`, {
               tool,
-              // Every template's identity operation is a read.
               kind: "query",
               input: { accountId, input: kind === "mcp" ? { value: label } : {} },
             });
@@ -322,8 +298,6 @@ layer(HostedLive, { excludeTestServices: true })("Template accounts", (it) => {
             }
           }
           if (kind === "mcp") {
-            // The output type an agent reads from tools.search.describe must accept what the
-            // same calls return.
             const key = yield* body(
               Schema.Struct({ id: Schema.String, key: Schema.RedactedFromValue(Schema.String) }),
               yield* api.request(actors.owner, "POST", "/api/auth/api-key/create", {
@@ -366,7 +340,6 @@ return { items: found.items, results };`,
                 outputContractProblems(
                   signature,
                   result,
-                  // Each account's schema is nested, so the account's type renders as unknown.
                   "const account: unknown = value.isError ? undefined : value.structuredContent.account;",
                 ),
                 signature,
@@ -376,7 +349,6 @@ return { items: found.items, results };`,
             retained = accounts[1];
           if (removed === undefined || retained === undefined)
             return yield* Effect.die("Account fixtures missing");
-          // Unlinking one account removes it from the array but keeps the account itself.
           yield* unlinkAccount(actors.owner, path, "service", removed);
           expect(yield* linkedAccountIds(actors.owner, path)).toEqual([retained]);
           expect(
@@ -407,7 +379,6 @@ return { items: found.items, results };`,
         expect(response.status, JSON.stringify(response.body)).toBe(200);
         const app = yield* body(App, response),
           path = `${prefix}/apps/${app.id}`;
-        // Connecting from the app links the account to it.
         const connection = yield* body(
           Resource,
           yield* api.request(actors.owner, "POST", connectionsPath(path, "user", "service"), {}),
@@ -442,9 +413,6 @@ return { items: found.items, results };`,
         expect(complete.body).toMatchObject({
           structuredContent: { name: "root", child: { name: "leaf" } },
         });
-        // The result schema nests the server's schema, so its recursive reference becomes a
-        // pointer to the nested root. A child without a name must still be rejected. The combined
-        // account operation checks each account's result itself, so the mismatch is its failure.
         const incomplete = yield* call(false);
         expect(incomplete.status, JSON.stringify(incomplete.body)).toBe(502);
         const rejected = yield* body(OutputRejected, incomplete);
@@ -462,9 +430,7 @@ return { items: found.items, results };`,
           actors = yield* Actors,
           origin = yield* templateUpstream;
         const files = routedAppFiles(origin);
-        // deploy.md's local check, with the package this run deploys against.
         expect(yield* strictTypeProblems(files)).toEqual([]);
-        // The routed handlers keep their context, so defineApp sees the missing account.
         expect(yield* strictTypeProblems(undeclaredAccountFiles)).toEqual([
           {
             file: "index.ts",
@@ -490,7 +456,6 @@ return { items: found.items, results };`,
               yield* api.request(actors.owner, "DELETE", `${prefix}/accounts/${id}`);
           }).pipe(Effect.orDie),
         );
-        // Connecting from the app links each account; the array uses every linked account.
         for (const label of ["work", "personal"]) {
           const connection = yield* body(
             Resource,
@@ -523,7 +488,6 @@ return { items: found.items, results };`,
             kind,
             input: { accountId, input },
           });
-        // Each call reaches the selected account's own router.
         for (const [index, label] of ["work", "personal"].entries()) {
           const id = accounts[index];
           if (id === undefined) return yield* Effect.die("Account fixture missing");
@@ -536,7 +500,6 @@ return { items: found.items, results };`,
           const identity = yield* call("api.identity.getIdentity", "query", id, {});
           expect(identity.status, JSON.stringify(identity.body)).toBe(200);
           expect(identity.body).toEqual({ account: label });
-          // The custom tool sends the same account's credential as the generated one.
           const custom = yield* call("own.identity", "query", id, {});
           expect(custom.status, JSON.stringify(custom.body)).toBe(200);
           expect(custom.body).toEqual({ account: label });

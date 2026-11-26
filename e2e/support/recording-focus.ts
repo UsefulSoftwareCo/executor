@@ -1,4 +1,3 @@
-/** Driver operations select a recorded window on one shared wall clock. */
 import { Clock, Context, Effect, Layer, Schema } from "effect";
 import { Target } from "./platform.ts";
 
@@ -16,12 +15,10 @@ const Activity = Schema.Struct({
   startedAtMs: Milliseconds,
   endedAtMs: Milliseconds,
 });
-/** Persisted capture origins and ordered calls; completion never creates another focus event. */
 export const RecordingTimeline = Schema.Struct({
   windows: Schema.Array(Window),
   activities: Schema.Array(Activity),
 });
-/** A driver's handle records intent without exposing command arguments or environment values. */
 export interface RecordingWindow {
   readonly use: <A, E, R>(
     label: string,
@@ -47,7 +44,6 @@ const make = Effect.gen(function* () {
           throw new Error("Each recorded window needs its own media file");
         const id = `window-${windows.length}`;
         windows.push({ ...source, id });
-        // Opening was called before the native driver finished creating the window.
         activities.push({
           window: id,
           label: `Open ${source.title}`,
@@ -61,8 +57,6 @@ const make = Effect.gen(function* () {
               const activity: PendingActivity = { window: id, label, startedAtMs, endedAtMs: null };
               activities.push(activity);
               return yield* operation.pipe(
-                // Keep the result visible before the next browser or terminal operation.
-                // Failures and cancellation do not wait; the scope still saves evidence.
                 Effect.tap(() =>
                   recordingPaceMs === 0 ? Effect.void : Effect.sleep(recordingPaceMs * 2),
                 ),
@@ -87,7 +81,6 @@ const make = Effect.gen(function* () {
     })).pipe(Effect.flatMap(Schema.decodeUnknownEffect(RecordingTimeline)), Effect.orDie),
   };
 });
-/** Case-scoped recording coordinator, shared by browser and terminal adapters. */
 export class RecordingFocus extends Context.Service<RecordingFocus, Effect.Success<typeof make>>()(
   "e2e/RecordingFocus",
 ) {

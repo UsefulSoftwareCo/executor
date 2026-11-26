@@ -1,10 +1,3 @@
-/**
- * SQL span statistics for a perf stage window, from executor-next-test-traces.
- *
- * Foreground means spans in the traces the load runner sent (its sampled traceparents); everything
- * else in the window on that stage is background (schedules, queues, workflows). Only span names,
- * durations and numeric wire attributes are read.
- */
 import { Config, Effect, Option, Redacted, Schema } from "effect";
 import { HttpClient, HttpClientRequest } from "effect/http";
 import { dataset } from "./flamechart.ts";
@@ -22,7 +15,6 @@ const Tabular = Schema.Struct({
   ),
 });
 
-/** Run one APL query and return its first table as records. */
 export const apl = (query: string, from: Date, to: Date) =>
   Effect.gen(function* () {
     const token = yield* Config.Redacted("AXIOM_TOKEN");
@@ -58,7 +50,6 @@ export const apl = (query: string, from: Date, to: Date) =>
 
 const number = (value: unknown) => (typeof value === "number" ? Math.round(value * 10) / 10 : 0);
 
-/** Aggregate SQL spans for the given traces (foreground) and the rest of the stage (background). */
 export const sqlStats = (input: {
   readonly slug: string;
   readonly from: Date;
@@ -78,7 +69,6 @@ export const sqlStats = (input: {
       firstOver1s = countif(toreal(['attributes.custom']['db.wire.first_message_ms']) > 1000),
       authP95 = percentile(toreal(['attributes.custom']['db.query.duration_ms']), 95),
       traces = dcount(trace_id)`;
-    // Axiom limits the query body; chunk the foreground trace set.
     const chunks: string[][] = [];
     for (let index = 0; index < traces.length; index += 400)
       chunks.push(traces.slice(index, index + 400));
@@ -99,7 +89,6 @@ export const sqlStats = (input: {
           );
           continue;
         }
-        // Percentiles across chunks are weighted approximations; counts are exact.
         const total = existing.n! + n;
         for (const key of ["p50", "p95", "p99", "authP95"])
           existing[key] =

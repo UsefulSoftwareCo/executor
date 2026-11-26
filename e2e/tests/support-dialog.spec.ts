@@ -1,24 +1,13 @@
-/** Cloud offers a support dialog from every sidebar layout; self-host has none. */
 import { expect, layer } from "@effect/vitest";
-import { Effect, FileSystem, Schedule, Schema } from "effect";
+import { Effect, Schedule, Schema } from "effect";
 import type { Page } from "playwright";
 import { Actors } from "../support/actors.ts";
 import { Api, body } from "../support/api.ts";
 import { Browser } from "../support/browser.ts";
 import { HostedLive, withHostedCase } from "../support/case.ts";
+import { analyticsEvents } from "../support/collector-events.ts";
 import { Target } from "../support/platform.ts";
 import { scenarios } from "../test-plan.ts";
-
-const Analytics = Schema.fromJsonString(
-  Schema.Struct({
-    batch: Schema.Array(
-      Schema.Struct({
-        event: Schema.String,
-        properties: Schema.Record(Schema.String, Schema.Json),
-      }),
-    ),
-  }),
-);
 
 const channels = {
   Discord: "https://discord.gg/eF29HBHwM6",
@@ -37,8 +26,7 @@ layer(HostedLive, { excludeTestServices: true })("Support dialog", (it) => {
         const browser = yield* Browser,
           actors = yield* Actors,
           api = yield* Api,
-          target = yield* Target,
-          fs = yield* FileSystem.FileSystem;
+          target = yield* Target;
         const cloud = target.metadata.target === "cloud";
         yield* browser.login(actors.owner);
         yield* browser.use("Open the dashboard", (page) =>
@@ -47,7 +35,6 @@ layer(HostedLive, { excludeTestServices: true })("Support dialog", (it) => {
         yield* browser.use("Wait for apps", (page) =>
           page.getByRole("heading", { level: 1, name: /^Apps/ }).waitFor(),
         );
-        // The Feedback resource link is unchanged on every hosted product.
         expect(
           yield* browser.use("Read the Feedback link", (page) =>
             rail(page).getByRole("link", { name: "Feedback" }).getAttribute("href"),
@@ -74,26 +61,14 @@ layer(HostedLive, { excludeTestServices: true })("Support dialog", (it) => {
           return;
         }
 
-        const readEvents = fs.readFileString(`${target.directory}/analytics.ndjson`).pipe(
-          Effect.map((text) =>
-            text
-              .trim()
-              .split("\n")
-              .filter(Boolean)
-              .flatMap((line) => Schema.decodeUnknownSync(Analytics)(line).batch),
-          ),
-        );
-        // Other cases share the Worker and its collector; browser events carry this actor's identity.
         const owner = yield* body(
           Schema.Struct({ user: Schema.Struct({ id: Schema.String }) }),
           yield* api.request(actors.owner, "GET", "/api/auth/get-session"),
         );
-        const supportEvents = readEvents.pipe(
+        const supportEvents = analyticsEvents({ person: owner.user.id }).pipe(
           Effect.map((events) =>
             events.filter(
-              (event) =>
-                event.properties.distinct_id === owner.user.id &&
-                (event.event === "support_opened" || event.event === "support_link_clicked"),
+              (event) => event.event === "support_opened" || event.event === "support_link_clicked",
             ),
           ),
         );
@@ -126,18 +101,18 @@ layer(HostedLive, { excludeTestServices: true })("Support dialog", (it) => {
               ),
             ).toBe(href);
         });
-        // Dialogs animate in; the checkpoint waits for the open dialog's own animations.
         const settle = (name: string, dialog = "Get support") =>
           browser
             .use(`Let ${name} finish animating`, (page) =>
-              page.getByRole("dialog", { name: dialog }).evaluate((element) =>
-                Promise.all(
-                  // A cancelled transition, such as a hover change, is no longer running.
-                  element
-                    .getAnimations({ subtree: true })
-                    .map((animation) => animation.finished.catch(() => undefined)),
-                ).then(() => undefined),
-              ),
+              page
+                .getByRole("dialog", { name: dialog })
+                .evaluate((element) =>
+                  Promise.all(
+                    element
+                      .getAnimations({ subtree: true })
+                      .map((animation) => animation.finished.catch(() => undefined)),
+                  ).then(() => undefined),
+                ),
             )
             .pipe(Effect.andThen(browser.checkpoint(name)));
         const closeDialog = browser.use("Close the support dialog", (page) =>
@@ -146,7 +121,6 @@ layer(HostedLive, { excludeTestServices: true })("Support dialog", (it) => {
             .then(() => supportDialog(page).waitFor({ state: "hidden" })),
         );
 
-        // Wide rail.
         yield* browser.checkpoint("Wide rail with Get support");
         yield* browser.use("Open support from the wide rail", (page) =>
           rail(page).getByRole("button", { name: "Get support" }).click(),
@@ -183,7 +157,6 @@ layer(HostedLive, { excludeTestServices: true })("Support dialog", (it) => {
             .click()
             .then(() => slackInstructions(page).waitFor({ state: "hidden" })),
         );
-        // External channels open in a new tab; the browser serves them without leaving the test machine.
         yield* browser.use("Serve external channels locally", (page) =>
           Promise.all(
             ["https://discord.gg/**", "https://github.com/**"].map((pattern) =>
@@ -227,7 +200,6 @@ layer(HostedLive, { excludeTestServices: true })("Support dialog", (it) => {
         yield* settle("Wide rail support dialog, dark");
         yield* closeDialog;
 
-        // Collapsed rail: an icon-only entry with the same accessible name.
         yield* browser.use("Use a medium viewport", (page) =>
           page
             .setViewportSize({ width: 900, height: 900 })
@@ -261,7 +233,6 @@ layer(HostedLive, { excludeTestServices: true })("Support dialog", (it) => {
         yield* settle("Collapsed rail support dialog");
         yield* closeDialog;
 
-        // Phone: the entry lives in the Menu sheet.
         yield* browser.use("Use a phone viewport", (page) =>
           page.setViewportSize({ width: 390, height: 844 }),
         );
@@ -292,7 +263,6 @@ layer(HostedLive, { excludeTestServices: true })("Support dialog", (it) => {
               .then(() => page.getByRole("dialog", { name: "Menu" }).waitFor({ state: "hidden" })),
           );
         }
-        // Every open was recorded, without a link click for the dialogs that were only read.
         const all = yield* waitForEvents(8);
         expect(all.filter((event) => event.event === "support_opened")).toHaveLength(6);
         expect(all.filter((event) => event.event === "support_link_clicked")).toHaveLength(2);

@@ -13,7 +13,6 @@ layer(HostedLive, { excludeTestServices: true })("App caching", (it) => {
         expect(yield* call("expired")).not.toBe(yield* call("expired"));
         expect(yield* call("source.lazy")).toBe("resolved-without-list");
         const warm = yield* call("cached", { key: "shared" });
-        // The version's cache is shared by every caller of the app.
         expect(yield* call("cached", { key: "shared" }, { actor: actors.admin })).toBe(warm);
         const refreshedValue = yield* call("refresh", { key: "refresh-check" });
         expect(yield* call("cached", { key: "refresh-check" })).toBe(refreshedValue);

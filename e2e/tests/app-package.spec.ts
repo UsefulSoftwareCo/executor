@@ -1,4 +1,3 @@
-/** Published framework selection is exercised through the real hosted deploy and UI APIs. */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Schema } from "effect";
 import { randomUUID } from "node:crypto";
@@ -11,7 +10,6 @@ import { App } from "../support/contracts.ts";
 import { saveAndDeploy } from "../support/app-authoring.ts";
 import { appPackageFixture } from "../support/app-package.ts";
 
-// app-user-accounts: keep, as source of an earlier `apps` release.
 const files = (dependency: string, direct: string, unused: string) => [
   {
     path: "package.json",
@@ -79,7 +77,6 @@ layer(HostedLive, { excludeTestServices: true })("Packaged apps", (it) => {
         yield* Effect.addFinalizer(() =>
           api.request(actors.owner, "DELETE", `${prefix}/apps/${app.id}`).pipe(Effect.orDie),
         );
-        // Callers may name the kind or leave it to the catalog. Protocol-1 tools keep their names.
         const call = (
           tool: string,
           input: Record<string, string> = {},
@@ -147,7 +144,7 @@ layer(HostedLive, { excludeTestServices: true })("Packaged apps", (it) => {
         expect(rejected.body).toMatchObject({
           _tag: "VersionBuildFailed",
           reason:
-            "This app's apps framework uses host protocol 99. This host supports protocol 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14. Declare a supported apps version.",
+            "This app's apps framework uses host protocol 99. This host supports protocol 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15. Declare a supported apps version.",
         });
         expect((yield* call("queries.version")).body).toEqual(Published);
         expect(

@@ -1,22 +1,11 @@
-/**
- * Safe diagnostic evidence for OAuth protocol failures. Every recorded value comes from a fixed
- * vocabulary: library messages become labels, and provider codes, challenge schemes, claim and
- * attribute names and media types are recorded only when they are known. Anything else becomes
- * `unrecognized`. Provider free text such as `error_description` is recorded only as a length.
- * The shape of a value is never taken as proof that it is safe to record. The service's own words,
- * returned to the person connecting as `OAuthServiceError`, never enter these diagnostics.
- */
 import { Schema } from "effect";
 import * as oauth from "oauth4webapi";
 
-/** Stable labels for the checks that failed. Library message text itself is never recorded. */
 export const OAuthFailureDetail = Schema.Literals([
-  // The service answered with an OAuth error.
   "response_body_error",
   "www_authenticate_challenge",
   "authorization_response_error",
   "unsupported_operation",
-  // Response shape.
   "unexpected_status",
   "content_type_unexpected",
   "body_not_json",
@@ -27,7 +16,6 @@ export const OAuthFailureDetail = Schema.Literals([
   "server_metadata_invalid",
   "https_required",
   "protocol_forbidden",
-  // ID tokens and other JWTs.
   "jwt_claim_mismatch",
   "jwt_claim_missing",
   "jwt_claim_invalid",
@@ -38,7 +26,6 @@ export const OAuthFailureDetail = Schema.Literals([
   "jwt_malformed",
   "jwks_key_not_found",
   "jwks_key_ambiguous",
-  // The authorization response that returned to the callback.
   "callback_unparseable",
   "callback_fragment",
   "callback_credentials",
@@ -58,7 +45,6 @@ export const OAuthFailureDetail = Schema.Literals([
 ]);
 export type OAuthFailureDetail = typeof OAuthFailureDetail.Type;
 
-/** Parts of the returned authorization response that callback validation checks. */
 export const OAuthCallbackField = Schema.Literals([
   "callback_url",
   "redirect_uri",
@@ -69,7 +55,6 @@ export const OAuthCallbackField = Schema.Literals([
 ]);
 export type OAuthCallbackField = typeof OAuthCallbackField.Type;
 
-/** Marks a value that was present but is not in the vocabulary. The value itself is dropped. */
 const unrecognized = "unrecognized";
 
 /**
@@ -106,7 +91,6 @@ export const OAuthKnownErrorCode = Schema.Literals([
   "invalid_target",
   "invalid_dpop_proof",
   "use_dpop_nonce",
-  // OpenID Connect Core §3.1.2.6.
   "interaction_required",
   "login_required",
   "account_selection_required",
@@ -116,14 +100,11 @@ export const OAuthKnownErrorCode = Schema.Literals([
   "request_not_supported",
   "request_uri_not_supported",
   "registration_not_supported",
-  // Aliases: GitHub, Google and others.
   "incorrect_client_credentials",
   "invalid_client_id",
   "invalid_client_secret",
   "redirect_uri_mismatch",
   "bad_verification_code",
-  // Services' codes for a refresh token that can never be used again: Supabase Auth's, GitHub's,
-  // Slack's and AWS Sign-In's, matched lowercase.
   "refresh_token_already_used",
   "refresh_token_not_found",
   "session_expired",
@@ -137,7 +118,6 @@ export const OAuthKnownErrorCode = Schema.Literals([
 ]);
 export type OAuthKnownErrorCode = typeof OAuthKnownErrorCode.Type;
 
-/** WWW-Authenticate schemes, lowercase. */
 export const OAuthChallengeScheme = Schema.Literals([
   "bearer",
   "dpop",
@@ -147,7 +127,6 @@ export const OAuthChallengeScheme = Schema.Literals([
   unrecognized,
 ]);
 
-/** JWT claims that ID token and JWT validation checks. */
 export const OAuthClaimName = Schema.Literals([
   "iss",
   "sub",
@@ -171,7 +150,6 @@ export const OAuthClaimName = Schema.Literals([
   unrecognized,
 ]);
 
-/** Response body and authorization server metadata attributes that validation checks. */
 export const OAuthAttributeName = Schema.Literals([
   "access_token",
   "token_type",
@@ -199,7 +177,6 @@ export const OAuthAttributeName = Schema.Literals([
   unrecognized,
 ]);
 
-/** Response media types, without parameters. */
 export const OAuthMediaType = Schema.Literals([
   "application/json",
   "application/jwt",
@@ -215,33 +192,24 @@ export const OAuthMediaType = Schema.Literals([
 ]);
 export type OAuthMediaType = typeof OAuthMediaType.Type;
 
-/** Character classes of an unrecognized code; its characters are never recorded. */
 export const OAuthCodeCharset = Schema.Literals(["lowercase_code", "code", "printable", "other"]);
 
-/** Private diagnostic evidence. Every value is a fixed label or a size. */
 export const OAuthDiagnostics = Schema.Struct({
   detail: Schema.optional(OAuthFailureDetail),
-  /** The JWT claim that failed, such as `iss`, `aud` or `nonce`. */
   claim: Schema.optional(OAuthClaimName),
-  /** The JSON body or metadata attribute that failed, such as `issuer` or `token_endpoint`. */
   attribute: Schema.optional(OAuthAttributeName),
   callbackField: Schema.optional(OAuthCallbackField),
   challengeScheme: Schema.optional(OAuthChallengeScheme),
-  /** The challenge's `error` parameter. */
   challengeError: Schema.optional(OAuthKnownErrorCode),
   contentType: Schema.optional(OAuthMediaType),
-  /** The provider's `error` code. */
   providerCode: Schema.optional(OAuthKnownErrorCode),
-  /** The length and character class of an unrecognized provider `error` code. */
   unrecognizedCode: Schema.optional(
     Schema.Struct({ length: Schema.Int, charset: OAuthCodeCharset }),
   ),
-  /** The length of the provider's `error_description`. Its text is never recorded. */
   descriptionLength: Schema.optional(Schema.Int),
 });
 export type OAuthDiagnostics = typeof OAuthDiagnostics.Type;
 
-/** Match a present value against a vocabulary, ignoring case; anything else is `unrecognized`. */
 const vocabulary =
   <A extends string>(is: (value: unknown) => value is A) =>
   (value: unknown): A | typeof unrecognized | undefined => {
@@ -264,7 +232,6 @@ const charset = (value: string) =>
         ? "printable"
         : "other";
 
-/** A provider `error`: the known code, or `unrecognized` with its length and character class. */
 export const providerCodeDiagnostics = (value: unknown): OAuthDiagnostics => {
   const code = knownCode(value);
   if (code === undefined) return {};
@@ -273,14 +240,11 @@ export const providerCodeDiagnostics = (value: unknown): OAuthDiagnostics => {
     : { providerCode: code };
 };
 
-/** The length of a provider `error_description`. */
 export const descriptionLength = (value: unknown) =>
   typeof value === "string" && value !== "" ? value.length : undefined;
 
-/** The response media type, without parameters such as charset or boundary. */
 export const mediaType = (value: string | null | undefined) => knownMediaType(value?.split(";")[0]);
 
-/** The first WWW-Authenticate challenge's scheme and `error` parameter. */
 export const challengeDiagnostics = (header: string | null | undefined): OAuthDiagnostics => {
   if (header === null || header === undefined) return {};
   const scheme = /^[\s,]*([^\s,]+)/.exec(header)?.[1];
@@ -293,7 +257,6 @@ const withDefined = (values: {
 }): OAuthDiagnostics =>
   Object.fromEntries(Object.entries(values).filter(([, value]) => value !== undefined));
 
-/** Map an oauth4webapi message, a fixed library string, to its stable label and named part. */
 const libraryMessage = (
   message: string,
   code: unknown,
@@ -368,7 +331,6 @@ const callbackFields: Partial<Record<OAuthFailureDetail, OAuthCallbackField>> = 
   callback_state_unexpected: "state",
 };
 
-/** Response evidence shared by every failure that saw one. */
 const responseDiagnostics = (response: unknown): OAuthDiagnostics =>
   response instanceof Response
     ? withDefined({
@@ -377,7 +339,6 @@ const responseDiagnostics = (response: unknown): OAuthDiagnostics =>
       })
     : {};
 
-/** Safe evidence from an oauth4webapi error. Its message, cause values and body are not kept. */
 export const libraryDiagnostics = (error: unknown): OAuthDiagnostics => {
   if (error instanceof oauth.ResponseBodyError)
     return withDefined({
@@ -430,7 +391,6 @@ export const libraryDiagnostics = (error: unknown): OAuthDiagnostics => {
   });
 };
 
-/** Span attributes for diagnostic evidence. */
 export const diagnosticAttributes = (diagnostics: OAuthDiagnostics | undefined) => {
   const attributes: Record<string, string | number> = {};
   if (diagnostics === undefined) return attributes;
