@@ -22,7 +22,7 @@ import { hostedEventAuthority } from "@executor-js/hosted-server/events";
 import { SqlClient } from "effect/sql";
 import { makeExecutionMemo } from "alchemy/Runtime/ExecutionMemo";
 import * as Cloudflare from "alchemy/Cloudflare";
-import { Context, Effect, FiberSet, Option } from "effect";
+import { Config, Context, Effect, FiberSet, Option } from "effect";
 import { FetchHttpClient, HttpClient } from "effect/http";
 import { cachedVersionSources } from "../implementation/version-source-cache.ts";
 import { organizationPublishers } from "../implementation/publishers.ts";
@@ -54,6 +54,10 @@ export const cloudEgress = Effect.gen(function* () {
   const client = yield* HttpClient.HttpClient.pipe(Effect.provide(FetchHttpClient.layer));
   return { policy, client } satisfies HostEgress;
 });
+
+const appPublishing = Config.Literals(["on", "off"], "EXECUTOR_APP_PUBLISHING").pipe(
+  Config.withDefault("on"),
+);
 
 const cloudFirstPartyOAuthClients = Effect.gen(function* () {
   const emulated = Option.isSome(yield* cloudEmulators);
@@ -97,6 +101,7 @@ export const cloudExecutor = Effect.fn(function* (
   const makeRuntime = yield* cloudRuntime(origin, databases);
   const workflows = yield* cloudWorkflows;
   const blobs = yield* cloudBlobs;
+  const publishing = (yield* appPublishing.pipe(Effect.orDie)) === "on";
   const database = (yield* InvocationDatabase).pipe(Effect.mapError(() => new StorageError()));
   const backgroundWork = yield* makeExecutionMemo(
     Effect.gen(function* () {
@@ -162,6 +167,7 @@ export const cloudExecutor = Effect.fn(function* (
           storage: yield* Effect.flatMap(organizationPublishers, makeRegistryStorage).pipe(
             Effect.provideContext(services),
           ),
+          publishing,
         },
         hooks: lifecycle.hooks,
         hostApi: hostedApi(resourceOrigins.api, apiRevision),

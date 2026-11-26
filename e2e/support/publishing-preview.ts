@@ -33,6 +33,11 @@ export const publishingPreview = (
           };
         });
       });
+    yield* extend(
+      "/app-publications/status",
+      "The real publishing status must be readable",
+      () => ({ publishing: true }),
+    );
     yield* extend(`/apps/${app}/authoring`, "Real authoring access must succeed", () => ({
       canPublish: true,
     }));

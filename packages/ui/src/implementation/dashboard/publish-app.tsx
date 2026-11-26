@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, type ReactNode } from "react";
 import { useAtomSet, useAtomValue } from "@effect/atom-react";
 import { Exit, Schema, type Cause } from "effect";
 import { AsyncResult } from "effect/reactivity";
@@ -277,29 +277,38 @@ function RenameAndContinue<E>({
   );
 }
 
+const publishingPending = (
+  <Skeleton className="h-9 w-26 max-[740px]:h-11" aria-label="Loading publishing access" />
+);
+
+export function WhenPublishing<E>({
+  atoms,
+  children,
+}: Pick<AppManagementProps<E>, "atoms"> & { readonly children: ReactNode }) {
+  const { result } = useQuery(atoms.publishing);
+  if (AsyncResult.isSuccess(result)) return result.value.publishing ? children : null;
+  return AsyncResult.isFailure(result) ? children : publishingPending;
+}
+
 export function PublishApp<E>({
   app,
   atoms,
   Failure,
 }: AppManagementProps<E> & { readonly app: App }) {
   return (
-    <QueryView
-      query={atoms.authoring(app.id)}
-      Failure={Failure}
-      pending={
-        <Skeleton className="h-9 w-26 max-[740px]:h-11" aria-label="Loading publishing access" />
-      }
-    >
-      {(metadata) =>
-        metadata.canPublish ? (
-          <PublishAction app={app} atoms={atoms} Failure={Failure} />
-        ) : (
-          <Button variant="outline" disabledReason="Publishing is not available on this server.">
-            Publish
-          </Button>
-        )
-      }
-    </QueryView>
+    <WhenPublishing atoms={atoms}>
+      <QueryView query={atoms.authoring(app.id)} Failure={Failure} pending={publishingPending}>
+        {(metadata) =>
+          metadata.canPublish ? (
+            <PublishAction app={app} atoms={atoms} Failure={Failure} />
+          ) : (
+            <Button variant="outline" disabledReason="Publishing is not available on this server.">
+              Publish
+            </Button>
+          )
+        }
+      </QueryView>
+    </WhenPublishing>
   );
 }
 
