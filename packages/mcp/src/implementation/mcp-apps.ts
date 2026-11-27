@@ -6,7 +6,7 @@ import { resolveLinkedAccounts, ToolName } from "@executor-js/sdk/core";
 import type { McpBackend } from "../contracts/backend.ts";
 import { CallOutcome, type McpExecutionResult } from "../contracts/execute.ts";
 import { McpToolkit } from "../contracts/tools.ts";
-import { discoveryAccounts } from "./accounts.ts";
+import { accountSummary, discoveryAccounts } from "./accounts.ts";
 import { callTools, listedTools, type Entry } from "./execute.ts";
 import type { makeExecutions } from "./executions.ts";
 import { executeNative } from "./native-elicitation.ts";
@@ -52,30 +52,68 @@ const binding = (entry: Entry) => {
     ];
     return ids.filter((id) => held.has(id)).map((id) => ({ id, input: properties?.input }));
   });
-  if (accounts.length === 0) return { inputSchema: schema };
-  const [only] = accounts;
-  if (accounts.length > 1 || branches.length > 1 || only === undefined || !isRecord(only.input))
-    return undefined;
+  if (accounts.length === 0) return { accountIds: [], inputSchema: schema };
+  const [first] = accounts;
+  if (branches.length > 1 || first === undefined || !isRecord(first.input)) return undefined;
   const input = Schema.decodeUnknownOption(Schema.fromJsonString(JsonRecord))(
-    JSON.stringify(only.input).replaceAll('"#/anyOf/0/properties/input', '"#'),
+    JSON.stringify(first.input).replaceAll('"#/anyOf/0/properties/input', '"#'),
   );
   if (Option.isNone(input)) return undefined;
   const shared = schema.$defs;
   const own = input.value.$defs;
+  const accountIds = accounts.map(({ id }) => id);
+  const properties = isRecord(input.value.properties) ? input.value.properties : {};
+  if (accountIds.length > 1 && Object.hasOwn(properties, accountChoice)) return undefined;
   return {
-    accountId: only.id,
+    accountIds,
     inputSchema: {
       type: "object",
       ...input.value,
+      ...(accountIds.length > 1
+        ? {
+            properties: {
+              ...properties,
+              [accountChoice]: {
+                type: "string",
+                enum: accountIds,
+                description: `The linked account to use. Without it, the account last used with this app. Accounts: ${accountSummary(entry.target.linked)}`,
+              },
+            },
+          }
+        : {}),
       ...(isRecord(shared) ? { $defs: { ...shared, ...(isRecord(own) ? own : {}) } } : {}),
     },
   };
 };
 
+const accountChoice = "executorAccount";
+const lastAccounts = new Map<string, string>();
+const lastAccountsLimit = 10_000;
+
+const chooseAccount = (caller: string, tool: UiTool, requested: unknown) => {
+  const key = JSON.stringify([caller, tool.entry.target.id]);
+  const remembered = lastAccounts.get(key);
+  const chosen =
+    typeof requested === "string" && tool.accountIds.includes(requested)
+      ? requested
+      : remembered !== undefined && tool.accountIds.includes(remembered)
+        ? remembered
+        : tool.accountIds[0];
+  if (chosen !== undefined && tool.accountIds.length > 1) {
+    lastAccounts.delete(key);
+    if (lastAccounts.size >= lastAccountsLimit) {
+      const [oldest] = lastAccounts.keys();
+      if (oldest !== undefined) lastAccounts.delete(oldest);
+    }
+    lastAccounts.set(key, chosen);
+  }
+  return chosen;
+};
+
 interface UiTool {
   readonly entry: Entry;
   readonly name: string;
-  readonly accountId?: string;
+  readonly accountIds: ReadonlyArray<string>;
   readonly resourceUri?: string;
   readonly listed: boolean;
   readonly descriptor: McpSchema.Tool;
@@ -136,7 +174,7 @@ const project = (entry: Entry) =>
     return {
       entry,
       name,
-      ...(bound.accountId === undefined ? {} : { accountId: bound.accountId }),
+      accountIds: bound.accountIds,
       ...(meta.resourceUri === undefined ? {} : { resourceUri: meta.resourceUri }),
       listed: meta.ui !== undefined,
       descriptor: descriptor.value,
@@ -249,18 +287,19 @@ export const uiToolCatalog = (
       if (!(yield* negotiated)) return undefined;
       const tool = (yield* uiTools(backend)).get(name);
       if (tool === undefined) return undefined;
-      const input = Schema.decodeUnknownOption(Schema.Json)(args);
+      const { [accountChoice]: requested, ...upstream } = args;
+      const input = Schema.decodeUnknownOption(Schema.Json)(
+        tool.accountIds.length > 1 ? upstream : args,
+      );
       if (Option.isNone(input)) return failed("Tool arguments must be JSON.");
+      const id = yield* caller;
+      const accountId = chooseAccount(id, tool, requested);
       const program = callTools({
         calls: {
           path: tool.entry.path,
-          input:
-            tool.accountId === undefined
-              ? input.value
-              : { accountId: tool.accountId, input: input.value },
+          input: accountId === undefined ? input.value : { accountId, input: input.value },
         },
       });
-      const id = yield* caller;
       const { clientCapabilities } = yield* McpSchema.McpRequestContext;
       const forms =
         clientCapabilities.elicitation !== undefined &&
@@ -285,6 +324,7 @@ export const uiToolCatalog = (
 
 export const uiResourceCatalog = (
   backend: McpBackend<Error>,
+  caller: Effect.Effect<string>,
 ): McpServer.ResourceCatalog<McpSchema.McpRequestContext> => ({
   read: (uri) =>
     Effect.gen(function* () {
@@ -298,6 +338,7 @@ export const uiResourceCatalog = (
       );
       const owner = owners.find((tool) => tool?.resourceUri === upstream);
       if (owner === undefined) return undefined;
+      const accountId = chooseAccount(yield* caller, owner, undefined);
       const { entry } = owner;
       const accounts = yield* resolveLinkedAccounts({
         app: entry.target.id,
@@ -314,7 +355,7 @@ export const uiResourceCatalog = (
           router === undefined ? mcpUiResourceTool : `${router}.${mcpUiResourceTool}`,
         ),
         kind: "query",
-        input: owner.accountId === undefined ? input : { accountId: owner.accountId, input },
+        input: accountId === undefined ? input : { accountId, input },
       });
       if (result.status !== "completed")
         return yield* new McpSchema.InternalError({

@@ -330,7 +330,7 @@ export const makeMcp = (options: McpOptions) =>
           McpServer.events(eventsHandler(options.backend)),
           McpServer.skillCatalog(skillCatalog(options.backend)),
           McpServer.toolCatalog(uiToolCatalog(options.backend, executions, catalogCaller)),
-          McpServer.resourceCatalog(uiResourceCatalog(options.backend)),
+          McpServer.resourceCatalog(uiResourceCatalog(options.backend, catalogCaller)),
         ).pipe(
           Layer.provide(
             McpServer.layerHttp({

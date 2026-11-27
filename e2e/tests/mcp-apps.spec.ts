@@ -378,6 +378,61 @@ layer(HostedLive, { excludeTestServices: true })("MCP Apps", (it) => {
           { cardId: "c1" },
           {},
         ]);
+
+        const secondToken = randomUUID();
+        const secondConnection = yield* body(
+          Resource,
+          yield* api.request(actors.owner, "POST", connectionsPath(path, "user", "service"), {}),
+        );
+        const second = yield* body(
+          Resource,
+          yield* api.request(
+            actors.owner,
+            "POST",
+            `${prefix}/connections/${secondConnection.id}/submit`,
+            { method: "key", label: "Second board token", fields: { token: secondToken } },
+          ),
+        );
+        yield* Effect.addFinalizer(() =>
+          api.request(actors.owner, "DELETE", `${prefix}/accounts/${second.id}`).pipe(Effect.orDie),
+        );
+        const both = yield* mcp.connect(key.key, "mcp-apps-two-accounts", {
+          organization,
+          mode: "native",
+          extensions: { [ui]: { mimeTypes: [html] } },
+        });
+        const bothTools = yield* both.use("List tools with two accounts", (client) =>
+          client.listTools(),
+        );
+        expect(
+          bothTools.tools.find((tool) => tool.name === "show_board")?.inputSchema.properties
+            ?.executorAccount,
+        ).toMatchObject({ enum: expect.arrayContaining([account.id, second.id]) });
+        const calls = fixture.seen.calls.length;
+        const reads = fixture.seen.reads.length;
+        yield* both.use("Call with the second account", (client) =>
+          client.callTool({
+            name: "show_board",
+            arguments: { boardId: "b2", executorAccount: second.id },
+          }),
+        );
+        yield* both.use("Call again without an account", (client) =>
+          client.callTool({ name: "plain_tool", arguments: {} }),
+        );
+        yield* both.use("Read the widget after the call", (client) =>
+          client.readResource({ uri: widget }),
+        );
+        expect(fixture.seen.calls.slice(calls)).toEqual([
+          {
+            name: "show_board",
+            arguments: { boardId: "b2" },
+            authorization: `Bearer ${secondToken}`,
+          },
+          { name: "plain_tool", arguments: {}, authorization: `Bearer ${secondToken}` },
+        ]);
+        expect(fixture.seen.reads.slice(reads)).toEqual([
+          { uri: board, authorization: `Bearer ${secondToken}` },
+        ]);
       }).pipe(Effect.provide(McpClient.layer)),
     ),
   );
