@@ -11000,7 +11000,7 @@ export const scenarios = plan({
     file: "app-ui-launch.spec.ts",
     appOrigin: true,
     title:
-      "a launch link is refused after a minute, and its page's session ends when the API key that made it is revoked",
+      "a launch link is refused after a minute, and its page's session ends after an hour or when the API key that made it is revoked",
     targets: {
       "self-host": scheduled,
       cloud: na("Moves the product's clock, which a shared Cloud Worker cannot."),

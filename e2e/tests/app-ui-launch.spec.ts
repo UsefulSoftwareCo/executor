@@ -171,7 +171,8 @@ layer(HostedLive, { excludeTestServices: true })("App launch links", (it) => {
             sameSite: "Lax",
           },
         ]);
-        expect(cookies[0]?.expires).toBeGreaterThan(Date.now() / 1000 + 6 * 24 * 60 * 60);
+        expect(cookies[0]?.expires).toBeGreaterThan(Date.now() / 1000 + 50 * 60);
+        expect(cookies[0]?.expires).toBeLessThanOrEqual(Date.now() / 1000 + 60 * 60);
         const session = cookies.map(({ name, value }) => `${name}=${value}`).join("; ");
         const opened = yield* get(`${notes.origin}/`, { cookie: session });
         expect(opened.status).toBe(200);
@@ -223,6 +224,12 @@ layer(HostedLive, { excludeTestServices: true })("App launch links", (it) => {
         const stale = yield* body(Ready, yield* api.request(actors.owner, "POST", notes.launch));
         yield* serverControl("clock/advance", 200, { milliseconds: 61_000 });
         expect(yield* get(stale.url)).toMatchObject({ status: 401, cookie: undefined });
+
+        const hourly = yield* body(Ready, yield* api.request(actors.owner, "POST", notes.launch));
+        const launched = (yield* get(hourly.url)).cookie?.split(";")[0] ?? "";
+        expect((yield* get(`${notes.origin}/`, { cookie: launched })).status).toBe(200);
+        yield* serverControl("clock/advance", 200, { milliseconds: 61 * 60_000 });
+        expect((yield* get(`${notes.origin}/`, { cookie: launched })).status).toBe(401);
 
         const key = yield* ownerKey("Launch link key");
         const made = yield* http
