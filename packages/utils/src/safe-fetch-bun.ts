@@ -1,15 +1,11 @@
-/** Bun fetch adapter that connects only to an address checked by the shared host policy. */
 import { Effect } from "effect";
 import { FetchHttpClient, HttpClient } from "effect/http";
 import { DestinationRefused, safeLookup, type AddressLookup } from "./safe-dns.ts";
 import { parseDestination, type UrlPolicy } from "./url-policy.ts";
 
-/** Pin each request to an approved IP, preserving HTTP Host and TLS identity. Callers own redirects. */
 export const safeHttpClient = (policy: UrlPolicy, resolve?: AddressLookup) =>
   Effect.gen(function* () {
     const lookup = safeLookup(policy, resolve);
-    // This callback implements Effect's native fetch boundary. Body conversion,
-    // interruption and HTTP error translation remain owned by FetchHttpClient.
     const checkedFetch: typeof globalThis.fetch = async (input, init) => {
       const original = parseDestination(
         input instanceof Request ? input.url : String(input),
@@ -37,7 +33,6 @@ export const safeHttpClient = (policy: UrlPolicy, resolve?: AddressLookup) =>
         body: request.body,
         signal: request.signal,
         headers,
-        // Do not let a proxy or automatic redirect perform another DNS lookup.
         proxy: false,
         redirect: "manual" as const,
         tls: { serverName: hostname },

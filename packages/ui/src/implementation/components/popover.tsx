@@ -4,17 +4,14 @@ import type * as React from "react";
 import { Popover as PopoverPrimitive } from "radix-ui";
 import { cn } from "../lib/utils.ts";
 
-/** A non-modal anchored surface with outside-click and Escape dismissal. */
 export function Popover(props: React.ComponentProps<typeof PopoverPrimitive.Root>) {
   return <PopoverPrimitive.Root {...props} />;
 }
 
-/** The caller supplies the accessible trigger, commonly a Button through asChild. */
 export function PopoverTrigger(props: React.ComponentProps<typeof PopoverPrimitive.Trigger>) {
   return <PopoverPrimitive.Trigger data-slot="popover-trigger" {...props} />;
 }
 
-/** Portal content stays within the viewport and returns focus to its trigger on close. */
 export function PopoverContent({
   className,
   align = "end",

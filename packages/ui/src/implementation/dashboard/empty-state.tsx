@@ -13,7 +13,6 @@ type EmptyStateProps = {
   readonly role?: "alert" | "status";
 };
 
-/** A shared empty view; card states fill and center within a flex column body. */
 export function EmptyState({
   title,
   children,
@@ -69,7 +68,6 @@ export function EmptyState({
   );
 }
 
-/** Keep a full empty state near the top of its tab, with space at narrow widths. */
 export function EmptyStatePanel(props: EmptyStateProps) {
   return (
     <div className="flex w-full flex-1 items-start justify-center p-7 max-[740px]:p-4">

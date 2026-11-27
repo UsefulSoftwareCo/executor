@@ -1,4 +1,3 @@
-/** Headless entry retained for local process supervisors; serves like `executor serve`. */
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { Effect } from "effect";

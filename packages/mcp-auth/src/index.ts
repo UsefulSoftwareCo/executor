@@ -1,4 +1,3 @@
-/** Shared grant contracts and enforcement for product hosts. */
 export {
   GrantId,
   ApprovalMode,
@@ -6,6 +5,7 @@ export {
   McpAddress,
   GrantTarget,
   requestedMcpAddress,
+  namedApprovalMode,
   mcpResource,
   mcpOAuthResources,
   type OriginList,
@@ -14,16 +14,34 @@ export {
   requestResourceOrigin,
   grantTarget,
   mcpResourceMetadataUrl,
+  type LegacyMcpPath,
+  legacyMcpPath,
+  legacyMcpPathname,
+  legacyMcpResource,
+  legacyMcpResourceMetadataUrl,
+  legacyMcpTarget,
   GrantPolicy,
+  Grant,
+  AppPermission,
+  GrantAccessChoice,
+  GrantSettings,
+  grantSettingsHeader,
+  WhoamiAccess,
+  McpWhoami,
+  mcpWhoamiPath,
+  recordedTarget,
+  grantScope,
+  desktopResource,
+} from "./contracts/grant.ts";
+export {
   grantAuthorization,
   targetedLinks,
   untargetedLinkRefusal,
   grantEventAccess,
-  Grant,
-  AppPermission,
   GrantForbidden,
   GrantRefusal,
-  deliveryRefusal,
+  grantRefusal,
+  unrecordedRefusal,
   permitsBrowserApproval,
-} from "./contracts/grant.ts";
+} from "./contracts/grant-enforcement.ts";
 export { restrictMcpBackend } from "./implementation/backend.ts";

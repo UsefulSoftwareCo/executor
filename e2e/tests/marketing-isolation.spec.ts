@@ -1,4 +1,3 @@
-/** The deployed public site must not run in the API Worker's remote placement. */
 import { expect, layer } from "@effect/vitest";
 import { Effect } from "effect";
 import { Browser } from "../support/browser.ts";
@@ -36,7 +35,6 @@ layer(TestLive, { excludeTestServices: true })("Marketing isolation", (it) => {
           home.placement === null || home.placement.startsWith("local-"),
           `Homepage placement: ${home.placement}`,
         ).toBe(true);
-        // The homepage is a plain static page: no cookies, cached like the site's other pages.
         expect(home.cookies).toEqual([]);
         const pricing = yield* read(`${edge}/pricing`);
         expect(pricing.status).toBe(200);
@@ -53,7 +51,6 @@ layer(TestLive, { excludeTestServices: true })("Marketing isolation", (it) => {
             `${path} placement: ${response.placement}`,
           ).toBe(true);
         }
-        // Dynamic public endpoints still reach their owning API handler through the gateway.
         const skills = yield* rawRequest(`${edge}/.well-known/agent-skills/index.json`);
         expect(skills.status).toBe(200);
         expect(skills.contentType).toContain("application/json");

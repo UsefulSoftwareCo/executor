@@ -2,7 +2,6 @@ import { Schema } from "effect";
 import { column, idColumn, table } from "fumadb-effect/schema";
 import { AccountId, OwnerId, ProviderId } from "../contracts/shared.ts";
 
-/** Credential references stay in the account's encrypted envelope, independent of app source. */
 export const accountAcquisitions = table("executor_account_acquisitions", {
   account: idColumn("account", AccountId, { type: "varchar(255)" }),
   owner: column("owner", OwnerId, { type: "varchar(255)" }),

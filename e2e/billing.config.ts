@@ -1,7 +1,8 @@
 import { defineConfig } from "vitest/config";
-/** Requires a separately running isolated Cloudflare host and Autumn sandbox credentials. */
+import { snapshotUpdate } from "./snapshot-updates.ts";
 export default defineConfig({
   test: {
+    update: snapshotUpdate(),
     include: ["e2e/tests/billing.spec.ts"],
     fileParallelism: false,
     maxWorkers: 1,

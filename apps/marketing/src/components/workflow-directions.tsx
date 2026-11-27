@@ -523,7 +523,6 @@ function Pagination({ clock }: DemoProps) {
   );
 }
 
-/** Nine distinct workflow illustrations share a continuous clock for local visual comparison. */
 export function WorkflowDirections() {
   const ref = useRef<HTMLDivElement>(null);
   const visible = useInView(ref);

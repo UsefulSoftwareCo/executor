@@ -1,7 +1,3 @@
-/**
- * Executor sets no limit on the size of an `execute` or `call` result. A result far over the
- * 100,000 bytes Executor once cut values at comes back whole, as a success the agent can parse.
- */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Redacted, Schema } from "effect";
 import { randomUUID } from "node:crypto";
@@ -29,7 +25,6 @@ export default defineApp({}, async () => ({ tools: router({
 
 const App = Schema.Struct({ id: Schema.String, slug: Schema.String });
 
-/** The rows `rows({ count })` returns. */
 const rows = (count: number) =>
   Array.from({ length: count }, (_, id) => ({ id, note: `row ${id} ${"n".repeat(80)}` }));
 
@@ -42,14 +37,12 @@ const Completed = Schema.Struct({
     truncated: Schema.optional(Schema.Boolean),
   }),
 });
-/** The text an MCP client reads when it ignores structured content. */
 const Text = Schema.Struct({
   content: Schema.Tuple([Schema.Struct({ type: Schema.Literal("text"), text: Schema.String })]),
 });
 
 type Connected = Effect.Success<ReturnType<Effect.Success<typeof McpClient>["connect"]>>;
 
-/** Large program values, logs and direct calls reach the agent whole and parse. */
 const checkLargeResults = (client: Connected, slug: string) =>
   Effect.gen(function* () {
     const evidence = yield* Evidence;
@@ -65,7 +58,6 @@ const checkLargeResults = (client: Connected, slug: string) =>
               const { execution } = yield* Schema.decodeUnknownEffect(Completed)(
                 result.structuredContent,
               );
-              // The text block is the same result as JSON, whole, so it parses.
               const { content } = yield* Schema.decodeUnknownEffect(Text)(result);
               expect(JSON.parse(content[0].text)).toEqual(result.structuredContent);
               const bytes = Buffer.byteLength(content[0].text);
@@ -79,9 +71,6 @@ const checkLargeResults = (client: Connected, slug: string) =>
           ),
         );
 
-    // A tool's large result beside a value of the program's own, as the reports returned: about
-    // 1.6 MB of JSON, sixteen times the old 100,000-byte limit. It arrives whole, not as a cut
-    // string, and nothing says it was truncated.
     const listed = rows(15_000);
     const expected = { listed, count: listed.length };
     expect(Buffer.byteLength(JSON.stringify(expected))).toBeGreaterThan(1_500_000);
@@ -93,7 +82,6 @@ return { listed, count: listed.length };`,
     expect(big.truncated).toBeUndefined();
     expect(big.value).toEqual(expected);
 
-    // Multi-byte text and long logs come back whole too.
     const wide = yield* run("Return wide characters", "execute", {
       code: `return "é".repeat(60000);`,
     });
@@ -107,7 +95,6 @@ return { done: true };`,
     expect(noisy.logs).toHaveLength(3000);
     expect(noisy.logs?.at(-1)).toBe(`line 2999 ${"l".repeat(90)}`);
 
-    // A direct call returns its large result whole as well.
     const direct = yield* run("Call a large tool directly", "call", {
       calls: { path: tool, input: { count: 15000 } },
     });
@@ -151,11 +138,6 @@ layer(TestLive, { excludeTestServices: true })("MCP large result", (it) => {
   );
 });
 
-/**
- * An app that imitates the runtime's 32 MiB Workers RPC error once, without any large value: its
- * bridge's reply decoding throws that text when the tool's error carries a marker. `huge` returns a
- * real value over the limit, and `forgedWrite` imitates it from a mutation.
- */
 const forgingFiles = [
   {
     path: "index.ts",
@@ -182,7 +164,6 @@ export default defineApp({}, async () => ({ tools: router({
   appsManifest,
 ];
 
-/** A program that failed on a tool's error, with the agent-facing explanation and retry policy. */
 const ToolFailed = Schema.Struct({
   status: Schema.Literal("completed"),
   execution: Schema.Struct({
@@ -247,15 +228,12 @@ layer(TestLive, { excludeTestServices: true })("MCP forged size limit", (it) => 
             Effect.map(({ execution }) => execution.error),
           );
 
-        // The size error reaches Executor through the app's Worker, which can produce the same
-        // text, so the host presents it as a likely cause and keeps a read's retry policy.
         const forgedRead = `return await ${tools}.forged({});`;
         const forged = yield* failure("Call a query that imitates the size error", forgedRead);
         expect(forged.response).toMatchObject({ code: "ToolCallFailed", retryable: true });
         expect(forged.message).toContain("looks like");
         expect(forged.message).toContain("32 MiB");
         expect(forged.response.recovery.instructions).not.toContain("expected to fail");
-        // Repeating the unchanged call succeeds: nothing about its size made it fail.
         expect(
           yield* execute("Repeat the same call unchanged", forgedRead).pipe(
             Effect.flatMap(Schema.decodeUnknownEffect(Completed)),
@@ -263,14 +241,12 @@ layer(TestLive, { excludeTestServices: true })("MCP forged size limit", (it) => 
           ),
         ).toMatchObject({ ok: true, value: 123 });
 
-        // A real value over the limit fails with the same text, so it reads the same way.
         const real = yield* failure(
           "Return a value over the Workers RPC limit",
           `return await ${tools}.huge({ n: ${35 * 1024 * 1024} });`,
         );
         expect(real.response).toEqual(forged.response);
 
-        // A mutation's lost result is never offered as an unchanged repeat.
         const write = yield* failure(
           "Call a mutation that imitates the size error",
           `return await ${tools}.forgedWrite({});`,
@@ -282,7 +258,6 @@ layer(TestLive, { excludeTestServices: true })("MCP forged size limit", (it) => 
   );
 });
 
-/** Deploy the rows app in the case's organization and connect an MCP client with an API key. */
 const hostedClient = (name: string) =>
   Effect.gen(function* () {
     const api = yield* Api,
@@ -327,9 +302,6 @@ layer(HostedLive, { excludeTestServices: true })("Hosted MCP large result", (it)
       Effect.gen(function* () {
         const evidence = yield* Evidence;
         const { client } = yield* hostedClient("Memory limit");
-        // A 40 MiB value, held several times over while the session object sends it, passes the
-        // object's 128 MB memory limit; 30 MiB comes back whole. The client is told so at once
-        // instead of waiting for an answer that will not come.
         const outcome = yield* client.use("Return 40 MiB from a program", (client, signal) =>
           client
             .callTool(
@@ -351,7 +323,6 @@ layer(HostedLive, { excludeTestServices: true })("Hosted MCP large result", (it)
           message: expect.stringContaining("exceeded Cloudflare's 128 MB memory limit"),
         });
         expect(outcome.answered === false && outcome.message).toContain("Return less");
-        // The session keeps working once the object restarts.
         const after = yield* client.use("Run a small program afterwards", (client, signal) =>
           client.callTool({ name: "execute", arguments: { code: "return 1;" } }, undefined, {
             signal,

@@ -1,4 +1,4 @@
-import { Clock, Effect, Schema, type Crypto } from "effect";
+import { Clock, Effect, Schema } from "effect";
 import type { ResourceLifecycle } from "../contracts/executor.ts";
 import {
   AccountAcquisitionRemoval,
@@ -18,14 +18,14 @@ import {
 import { invokeAcquisitionDriver } from "./account-acquisition-runtime.ts";
 import type { AcquisitionRegistry } from "./account-acquisition-registry.ts";
 import { validateRemovalChange } from "./removal-validation.ts";
+import type { HostCrypto } from "./host-crypto.ts";
 
 const encode = Schema.encodeSync(AccountAcquisitionRemoval);
 
-/** A retained operation ID makes a retry after an uncertain backend response the same removal. */
 export const makeAcquisitionRetirement = (
   db: Query,
   credentials: import("../contracts/storage.ts").Credentials,
-  crypto: Crypto.Crypto,
+  crypto: HostCrypto,
   registry: AcquisitionRegistry,
   lifecycle?: ResourceLifecycle,
 ) => {
@@ -46,7 +46,9 @@ export const makeAcquisitionRetirement = (
             return yield* new InteractiveRetirementBusy({ account: input.account });
           yield* lifecycle?.accountRetiring?.(yield* publicAccount(saved.account)) ?? Effect.void;
           const registration = yield* registry.retained(binding);
-          const token = yield* crypto.randomUUIDv4.pipe(Effect.mapError(() => new StorageError()));
+          const token = yield* crypto.random
+            .uuidV4()
+            .pipe(Effect.mapError(() => new StorageError()));
           const removal = {
             operation: binding.removal?.operation ?? token,
             removed: binding.removal?.removed ?? false,
@@ -120,7 +122,8 @@ export const makeAcquisitionRetirement = (
               const saved = yield* resolve(input).pipe(
                 Effect.catchTag("AccountNotFound", () => Effect.succeed(undefined)),
               );
-              if (saved?.binding.removal?.lease !== claim.removal.lease) return;
+              if (saved === undefined || saved.binding.removal?.lease !== claim.removal.lease)
+                return;
               const current = yield* requireAcquisitionBinding(db, saved.binding, true);
               const removal = current.removal;
               if (removal === null) return;

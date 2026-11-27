@@ -20,9 +20,6 @@ const formattedDate = date.toLocaleDateString("en-US", {
   year: "numeric",
   month: "long",
   day: "numeric",
-  // Frontmatter dates are bare YYYY-MM-DD (parsed as UTC midnight); format in
-  // UTC so the displayed day matches the date the author wrote, regardless of
-  // the build/runtime timezone.
   timeZone: "UTC",
 });
 const isoDate = date.toISOString();

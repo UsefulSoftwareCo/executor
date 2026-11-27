@@ -1,14 +1,3 @@
-/**
- * Cloud closes a request's SQL client when the request ends, but Better Auth can leave a query
- * running past the response: listing API keys starts a delete of expired keys without awaiting
- * it. The request keeps its connection until such a query finishes, and once its wait runs out it
- * cancels the query, reports it, and closes the client only after the statement has stopped.
- *
- * Each scenario creates an expired key and holds a row lock on it, so the plugin's delete waits
- * on that lock for exactly as long as the scenario chooses. The lock pauses every such delete in
- * the Cloud database, so these scenarios get their own Cloud. One also stops the delete's database
- * backend, so its connection answers nothing, not even the cancellation.
- */
 import { randomBytes, randomUUID } from "node:crypto";
 import { expect, layer } from "@effect/vitest";
 import { Effect, Option, Schedule, Schema } from "effect";
@@ -24,7 +13,6 @@ const SessionBody = Schema.Struct({ user: Schema.Struct({ id: Schema.String }) }
 const Holder = Schema.Tuple([Schema.Struct({ pid: Schema.Number })]);
 const Activity = Schema.Struct({ pid: Schema.Number, state: Schema.NullOr(Schema.String) });
 
-/** A request under a new trace, so its error reports can be found afterwards. */
 const traced = (actor: Session, path: string) =>
   Effect.gen(function* () {
     const traceId = randomBytes(16).toString("hex");
@@ -35,12 +23,6 @@ const traced = (actor: Session, path: string) =>
     return { traceId, response };
   });
 
-/**
- * An expired API key of the owner, locked by the fixture's open transaction, and a way to list
- * keys until the plugin's delete waits on that lock. The plugin deletes at most once every 10
- * seconds in an isolate, and any request may be the one that does, so a listing that finds no
- * waiting delete tries again after that interval.
- */
 const heldCleanup = Effect.gen(function* () {
   const actors = yield* Actors,
     locks = yield* cloudLocks,
@@ -57,7 +39,6 @@ const heldCleanup = Effect.gen(function* () {
         now() - interval '2 days', now() - interval '2 days', now() - interval '1 day')`,
     params: [key, randomBytes(32).toString("base64url"), owner.user.id],
   });
-  // Release first: the delete would otherwise wait on the scenario's own lock.
   yield* Effect.addFinalizer(() =>
     locks.release.pipe(
       Effect.andThen(locks.run({ sql: "delete from apikey where id = $1", params: [key] })),
@@ -111,13 +92,11 @@ layer(HostedLive, { excludeTestServices: true })("Auth cleanup", (it) => {
       context,
       Effect.gen(function* () {
         const held = yield* heldCleanup;
-        // The listing answered while its delete still waited on the lock.
         expect(held.responded, "the listing answered before its cleanup").toBeLessThan(5_000);
         yield* Effect.sleep("1 second");
         expect((yield* held.waiting).map(({ pid }) => pid)).toContain(held.backend.pid);
         yield* held.locks.release;
 
-        // The delete finishes on the request's connection: the expired key is gone.
         yield* held.keyExists.pipe(
           Effect.filterOrFail(
             (exists) => !exists,
@@ -135,8 +114,6 @@ layer(HostedLive, { excludeTestServices: true })("Auth cleanup", (it) => {
       context,
       Effect.gen(function* () {
         const held = yield* heldCleanup;
-        // Still holding the lock: the request stops waiting after its 10 second bound and
-        // cancels the delete, which leaves the lock queue instead of running later.
         yield* held.waiting.pipe(
           Effect.filterOrFail(
             (rows) => !rows.some(({ pid }) => pid === held.backend.pid),
@@ -152,10 +129,7 @@ layer(HostedLive, { excludeTestServices: true })("Auth cleanup", (it) => {
         yield* Effect.sleep("1 second");
         expect(yield* held.keyExists, "the cancelled delete did not run").toBe(true);
 
-        // The cut-off query is an interruption, never a database failure, and the request
-        // reports the work it had to cancel. Each report is sent on its own, so wait until both
-        // have arrived.
-        const events = yield* awaitSentryEvents((events) => {
+        const events = yield* awaitSentryEvents([held.traceId], (events) => {
           const types = traceExceptionTypes(events, held.traceId);
           return types.includes("AuthWorkUnsettled") && types.includes("AuthQueryInterrupted");
         });
@@ -174,15 +148,8 @@ layer(HostedLive, { excludeTestServices: true })("Auth cleanup", (it) => {
       Effect.gen(function* () {
         const held = yield* heldCleanup;
         const pid = held.backend.pid;
-        // The delete's backend stops: neither the delete nor its cancellation gets an answer.
-        // The scenario's scope resumes it if the scenario ends first.
         yield* held.locks.stop(pid);
 
-        // After its 10 second wait the request cancels the delete and gives the silent
-        // connection up after the SQL client's drain bound, 25 seconds after its response at
-        // the latest. Once that bound has passed, the client has closed the connection instead
-        // of returning it to its pool: once resumed, the backend finds its socket closed and
-        // exits, and the delete never ran.
         yield* Effect.sleep(Math.max(0, held.started + held.responded + 25_000 - Date.now()));
         yield* held.locks.resume(pid);
         yield* held.locks
@@ -199,7 +166,7 @@ layer(HostedLive, { excludeTestServices: true })("Auth cleanup", (it) => {
         yield* Effect.sleep("1 second");
         expect(yield* held.keyExists, "the abandoned delete did not run").toBe(true);
 
-        const events = yield* awaitSentryEvents((events) => {
+        const events = yield* awaitSentryEvents([held.traceId], (events) => {
           const types = traceExceptionTypes(events, held.traceId);
           return types.includes("AuthWorkUnsettled") && types.includes("AuthQueryInterrupted");
         });

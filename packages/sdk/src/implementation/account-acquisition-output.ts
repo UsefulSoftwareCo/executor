@@ -14,7 +14,6 @@ import {
 import { privateAccountCheck } from "./account-status-output.ts";
 import type { AccountId } from "../contracts/shared.ts";
 
-/** The session stays private; only the instructions may cross the caller boundary. */
 export const acquisitionStartOutput = (value: InteractiveStart, reference?: string) =>
   Effect.gen(function* () {
     const { session, ...instructions } = value;
@@ -22,7 +21,6 @@ export const acquisitionStartOutput = (value: InteractiveStart, reference?: stri
     return { session, ...instructions };
   });
 
-/** Unsafe identity text falls back to the host's account name without losing the acquired credential. */
 export const acquisitionStatusOutput = (value: unknown, reference?: string) =>
   Effect.gen(function* () {
     const result = yield* Schema.decodeUnknownEffect(InteractiveStatus)(value).pipe(
@@ -38,7 +36,6 @@ export const acquisitionStatusOutput = (value: unknown, reference?: string) =>
     return shown === undefined ? connected : { ...connected, accountInfo: shown.accountInfo };
   });
 
-/** Validate the check before any public result or saved receipt can contain the reference. */
 export const acquisitionCheckOutput = (value: unknown, reference: string) =>
   Effect.gen(function* () {
     if (value === undefined) return undefined;
@@ -48,7 +45,6 @@ export const acquisitionCheckOutput = (value: unknown, reference: string) =>
     return yield* privateAccountCheck(health, {}, reference);
   });
 
-/** Only bounded public errors cross this boundary; causes and the opaque reference stay private. */
 export const acquisitionCallbackError = (error: unknown, account: AccountId, reference: string) => {
   if (Schema.is(HostOutputInvalid)(error)) return new HostOutputInvalid();
   if (Schema.is(ProviderError)(error)) {

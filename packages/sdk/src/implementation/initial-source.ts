@@ -1,4 +1,3 @@
-/** Initial files seed one editable Git repository independently of version inputs. */
 import { Context, Effect, Option, Schema } from "effect";
 import { BlobKey, type BlobStorage } from "../contracts/blobs.ts";
 import { type AppCodeId, StorageError } from "../contracts/shared.ts";
@@ -11,13 +10,11 @@ import { storeBytes, uploadsFrom } from "./public-files.ts";
 
 const initialKey = (code: AppCodeId) => BlobKey.make(`app-source/${code}/initial.json`);
 
-/** Save the seed for a newly allocated code identity before inserting its app; never call for updates. */
 export const writeInitialSource = (blobs: BlobStorage, code: AppCodeId, files: SourceFiles) =>
   blobs
     .put(initialKey(code), new TextEncoder().encode(JSON.stringify(files)))
     .pipe(Effect.mapError(() => new SourceError({ reason: "storage" })));
 
-/** Decode the original files without requiring an existing Git repository. */
 export const readInitialSource = (blobs: BlobStorage, code: AppCodeId) =>
   Effect.gen(function* () {
     const value = yield* blobs
@@ -29,7 +26,6 @@ export const readInitialSource = (blobs: BlobStorage, code: AppCodeId) =>
     ).pipe(Effect.mapError(() => new SourceError({ reason: "invalid-source" })));
   }).pipe(Effect.withSpan("source.initial.read"));
 
-/** Initialize main once and return its confirmed snapshot; concurrent winners supply their own files. */
 export const initializeAppRepository = (
   db: Query,
   sources: AppSourceStorage,
@@ -38,7 +34,6 @@ export const initializeAppRepository = (
 ) =>
   Effect.gen(function* () {
     if (app.repository !== null) return Option.none();
-    // Stored initial files name the lineage's own public store, which a deploy or copy filled.
     const files = uploadsFrom(
       yield* readInitialSource(blobs, app.code),
       storeBytes(blobs, app.code),
@@ -62,7 +57,6 @@ export const initializeAppRepository = (
     return Option.some(source);
   }).pipe(Effect.withSpan("apps.repository.initialize"));
 
-/** Retry pending repository creation with bounded parallel work; one unavailable repository does not stop the rest. */
 export const recoverAppRepositories = (options: {
   readonly database: ExecutorDatabase;
   readonly sources: AppSourceStorage;
@@ -97,7 +91,6 @@ export const recoverAppRepositories = (options: {
     );
   }).pipe(Effect.withSpan("apps.repository.recover"));
 
-/** Host-owned recovery effect; Cloud resolves request-scoped SQL inside the cron event. */
 export class AppRepositoryRecovery extends Context.Service<
   AppRepositoryRecovery,
   Effect.Effect<void, StorageError>

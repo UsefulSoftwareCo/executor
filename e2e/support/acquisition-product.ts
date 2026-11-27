@@ -3,7 +3,6 @@ import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import { Target } from "./platform.ts";
 import { serverControl } from "./server-control.ts";
 
-/** Launch the complete product with the same public typed registration an operator supplies. */
 export const acquisitionProduct = (input: {
   readonly provider: string;
   readonly origin: string;
@@ -101,7 +100,6 @@ Runtime.runMain(
     yield* serverControl("start");
   });
 
-/** The management app and every consumer declare the same canonical provider. */
 export const acquisitionAppSource = (origin: string) => `
 import { defineApp, defineProvider, interactive, secrets, object, string, query, router } from "apps";
 const account = defineProvider({ name: "Reusable synthetic account", hosts: [${JSON.stringify(new URL(origin).host)}], auth: {

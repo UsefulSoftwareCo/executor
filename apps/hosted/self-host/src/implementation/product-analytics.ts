@@ -1,4 +1,3 @@
-/** Self-host analytics: pseudonymous users, the instance's root domain, and operator opt-out. */
 import { ProductAnalytics } from "@executor-js/hosted-server";
 import type { ScheduleObservation } from "@executor-js/sdk/scheduling";
 import {
@@ -14,7 +13,6 @@ import { Hex } from "effect/encoding";
 import { SqlClient, type SqlError } from "effect/sql";
 import { parse } from "tldts";
 
-/** Wildcard-DNS, tunnel and dynamic-DNS services whose names identify a person, not a company. */
 const sharedHostDomains = new Set([
   "nip.io",
   "sslip.io",
@@ -47,11 +45,6 @@ const sharedHostDomains = new Set([
   "afraid.org",
 ]);
 
-/**
- * The registrable domain of the public origin, from the public suffix list. Loopback, IP
- * addresses, non-public suffixes (`.local`, `.internal`, `.lan`, `.home.arpa`), suffixes in the
- * list's private section (tunnels and shared platforms) and known tunnel services are `private`.
- */
 export const rootDomain = (origin: string) => {
   const hostname = URL.parse(origin)?.hostname.toLowerCase().replace(/\.$/, "");
   if (hostname === undefined || hostname.startsWith("[")) return "private";
@@ -77,10 +70,6 @@ const count = (rows: Effect.Effect<ReadonlyArray<unknown>, SqlError.SqlError>) =
     Effect.map(Option.getOrUndefined),
   );
 
-/**
- * The instance's analytics, or none when the operator opted out or the build has no destination.
- * User events use an HMAC of the Better Auth user ID under a per-instance secret that is never sent.
- */
 export const selfHostAnalytics = Effect.gen(function* () {
   const destination = yield* analyticsDestination;
   if (destination === undefined) return undefined;
@@ -111,7 +100,6 @@ export const selfHostAnalytics = Effect.gen(function* () {
   });
   yield* Console.log(analyticsNotice);
   const sql = yield* SqlClient.SqlClient;
-  // Counting must not delay startup; a failed count is omitted.
   yield* Effect.gen(function* () {
     const [apps, accounts, users, organizations] = yield* Effect.all([
       count(sql`select count(*) as count from executor_apps`),
@@ -166,7 +154,4 @@ export const selfHostAnalytics = Effect.gen(function* () {
       ),
   };
   return { product, schedules };
-}).pipe(
-  // Analytics never prevents the product from starting.
-  Effect.catch(() => Effect.succeed(undefined)),
-);
+}).pipe(Effect.catch(() => Effect.succeed(undefined)));

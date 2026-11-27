@@ -1,8 +1,3 @@
-/**
- * The Accounts tab's Connect dialog runs an app-owned sign-in: it shows the app's code and link
- * while it waits, takes a pasted address, saves the account the app returns, and confirms before
- * unlinking an app-bound account, which deletes it where the app signed it in.
- */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Schema } from "effect";
 import { randomUUID } from "node:crypto";
@@ -25,13 +20,11 @@ import { scenarios } from "../test-plan.ts";
 const Links = Schema.Array(
   Schema.Struct({ requirement: Schema.String, account: Schema.Struct({ label: Schema.String }) }),
 );
-/** The app's own many() requirement for accounts it signs in itself. */
 const acquiredSection = (page: Page) =>
   page
     .getByRole("region", { name: "App accounts", exact: true })
     .getByRole("region", { name: "Interactive account (sharedIdentity)", exact: true });
 const dialog = (page: Page) => page.getByRole("dialog");
-/** Polling finishes the device sign-in on its second status read, a few seconds in. */
 const signedIn = { timeout: 30_000 };
 
 layer(HostedLive, { excludeTestServices: true })("Interactive account dialog", (it) => {
@@ -56,7 +49,6 @@ layer(HostedLive, { excludeTestServices: true })("Interactive account dialog", (
         const app = yield* body(App, deployed),
           path = `${prefix}/apps/${app.id}`;
         const accounts: string[] = [];
-        // The app goes first: deleting it releases the accounts linked for everyone.
         yield* Effect.addFinalizer(() =>
           Effect.gen(function* () {
             yield* api.request(actors.owner, "DELETE", path);
@@ -74,7 +66,6 @@ layer(HostedLive, { excludeTestServices: true })("Interactive account dialog", (
             audience: { kind: "everyone" },
           })).status,
         ).toBe(200);
-        // The app reaches its backend with its own key account, linked for everyone.
         const connection = yield* api.request(
           actors.owner,
           "POST",
@@ -114,7 +105,6 @@ layer(HostedLive, { excludeTestServices: true })("Interactive account dialog", (
                 .click(),
             );
           });
-        /** New accounts are named after they connect; closing the prompt keeps the default. */
         const keepName = Effect.gen(function* () {
           yield* browser.use("The account connected and asks for a name", (page) =>
             page.getByRole("dialog", { name: "Name this account" }).waitFor(signedIn),
@@ -122,7 +112,6 @@ layer(HostedLive, { excludeTestServices: true })("Interactive account dialog", (
           yield* browser.use("Keep the default name", (page) => page.keyboard.press("Escape"));
         });
 
-        // A device sign-in shows the app's code and link, then finishes by itself.
         yield* connect("Device code");
         yield* browser.use("The dialog waits for the device sign-in", (page) =>
           dialog(page)
@@ -152,7 +141,6 @@ layer(HostedLive, { excludeTestServices: true })("Interactive account dialog", (
             .waitFor(signedIn),
         );
 
-        // A paste sign-in takes the address the browser ended on.
         yield* connect("Paste address");
         yield* browser.use("Paste the final address", (page) =>
           dialog(page)
@@ -181,7 +169,6 @@ layer(HostedLive, { excludeTestServices: true })("Interactive account dialog", (
           ),
         );
 
-        // Clearing an app-bound account asks first, since it deletes the account.
         yield* browser.use("Clear the device account", (page) =>
           acquiredSection(page)
             .getByRole("checkbox", { name: "Synthetic device account", exact: true })
@@ -210,7 +197,6 @@ layer(HostedLive, { excludeTestServices: true })("Interactive account dialog", (
             .getByRole("checkbox", { name: "Synthetic device account", exact: true })
             .waitFor({ state: "detached" }),
         );
-        // Unlinking deleted it: the account no longer exists for its owner.
         const links = yield* body(
           Links,
           yield* api.request(actors.owner, "GET", `${path}/accounts/app`),
@@ -220,7 +206,6 @@ layer(HostedLive, { excludeTestServices: true })("Interactive account dialog", (
             .filter((link) => link.requirement === "sharedIdentity")
             .map((link) => link.account.label),
         ).toEqual(["Synthetic pasted account"]);
-        // An app-bound account takes no new credentials; its menu removes it behind the same question.
         yield* browser.use("Open the pasted account's menu", (page) =>
           acquiredSection(page)
             .getByRole("button", { name: "Manage Synthetic pasted account", exact: true })
@@ -254,7 +239,6 @@ layer(HostedLive, { excludeTestServices: true })("Interactive account dialog", (
             .waitFor({ state: "detached" }),
         );
 
-        // A refused sign-in says why, and starting again asks the app for a fresh attempt.
         yield* connect("Failure");
         yield* browser.use("The app's refusal shows", (page) =>
           dialog(page).getByText("Synthetic refusal", { exact: true }).waitFor(signedIn),
@@ -265,7 +249,6 @@ layer(HostedLive, { excludeTestServices: true })("Interactive account dialog", (
         yield* browser.use("The new attempt is refused too", (page) =>
           dialog(page).getByText("Synthetic refusal", { exact: true }).waitFor(signedIn),
         );
-        // Switching methods after a refusal cancels it, so the next method starts cleanly.
         yield* browser.use("Open the sign-in methods again", (page) =>
           dialog(page).getByRole("combobox").click(),
         );

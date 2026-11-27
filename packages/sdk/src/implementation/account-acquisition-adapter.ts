@@ -6,7 +6,6 @@ import type {
   AccountAcquisitionDriver,
 } from "../contracts/account-acquisition-driver.ts";
 
-/** Promise callbacks for hosts whose credential backend is authored outside Effect. */
 export interface PromiseAccountAcquisitionDriver<
   Context extends AccountAcquisitionAccountContext = AccountAcquisitionAccountContext,
 > {
@@ -35,7 +34,6 @@ export interface PromiseAccountAcquisitionDriver<
 const callback = <A>(run: () => Promise<A>) =>
   Effect.tryPromise({ try: run, catch: (error) => error });
 
-/** The host owns callback lifetime and aborts the supplied context signal when it ends. */
 export const accountAcquisitionDriver = <Context extends AccountAcquisitionAccountContext>(
   driver: PromiseAccountAcquisitionDriver<Context>,
 ): AccountAcquisitionDriver<Context> => {

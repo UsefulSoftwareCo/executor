@@ -8,7 +8,6 @@ const tones = {
   bad: "bg-destructive/10 text-destructive",
 };
 
-/** Display only. Text never becomes HTML, links, credentials or an authorization decision. */
 export function AccountDisplayStatus({
   status,
   current,

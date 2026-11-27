@@ -1,6 +1,5 @@
 import { AccountProvisioned } from "../contracts/provider.ts";
-/** Persisted interactive acquisition. Short claims serialize calls without holding SQL over HTTP. */
-import { Clock, type Crypto, Effect, Schema } from "effect";
+import { Clock, Effect, Schema } from "effect";
 import { InteractiveStart, InteractiveStatus, type ConnectCommand } from "apps/contracts";
 import {
   InteractiveConnectionFailed,
@@ -41,6 +40,7 @@ import {
 } from "./interactive-runner.ts";
 import type { makeAcquisitionConnect } from "./account-acquisition-connect.ts";
 import { AccountAcquisitionUnavailable } from "../contracts/account-acquisition-driver.ts";
+import type { HostCrypto } from "./host-crypto.ts";
 
 import {
   InteractiveRetirementBusy,
@@ -63,7 +63,7 @@ const safe = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
 export const makeInteractiveAccounts = (
   db: Query,
   credentials: Credentials,
-  crypto: Crypto.Crypto,
+  crypto: HostCrypto,
   runtime: Runtime,
   resolveAccount: ReturnType<typeof makeOAuth>["resolveSelected"],
   lifecycle?: ResourceLifecycle,
@@ -168,7 +168,6 @@ export const makeInteractiveAccounts = (
               step,
               input: { method: claimed.session.method, session },
             };
-      // Retain the actual invocation context before the handler can race with app deletion.
       const invoke = yield* prepareContext(input, claimed.row, claimed.session, command);
       const result = yield* invoke(command).pipe(
         Effect.flatMap(Schema.decodeUnknownEffect(InteractiveStatus)),

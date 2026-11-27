@@ -1,4 +1,3 @@
-/** Successful checks cannot publish credentials in display strings or plaintext storage. */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Schema } from "effect";
 import { body } from "../support/api.ts";
@@ -60,7 +59,6 @@ layer(HostedLive, { excludeTestServices: true })("Status confidentiality", (it) 
             expect(JSON.stringify((yield* fixture.read()).body)).not.toContain(secret);
           }
         }
-        // A short secret may be chance, so only the item that contains it is hidden.
         const hiddenTone = { ...displayedStatus, badges: [{ label: "Plan", tone: "warning" }] };
         for (const status of [...leaks("xy"), hiddenTone]) {
           yield* fixture.statusBackend.answer({ status: 200, body: { status } });
@@ -70,7 +68,6 @@ layer(HostedLive, { excludeTestServices: true })("Status confidentiality", (it) 
           expect(JSON.stringify(response.body)).not.toContain(hidden);
           expect(JSON.stringify((yield* fixture.read()).body)).not.toContain(hidden);
         }
-        // Inside a longer word or as its hex, the item is hidden too; the rest and plain() fields show.
         yield* fixture.statusBackend.answer({
           status: 200,
           body: {

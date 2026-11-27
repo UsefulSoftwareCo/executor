@@ -1,4 +1,3 @@
-/** Completion cannot replace a provisioned plain-slot link through a mixed provider. */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Schema } from "effect";
 import { FetchHttpClient, HttpClient } from "effect/http";

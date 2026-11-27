@@ -1,4 +1,3 @@
-/** Performance harness CLI: perf stages, emulator upstreams, seeding, scenarios and flamecharts. */
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { Console, Effect, FileSystem, Layer, Schema } from "effect";
@@ -318,7 +317,6 @@ const flamechart = Command.make(
         return;
       }
       const at = input.at === "" ? new Date() : new Date(input.at);
-      // Without a sample time, search the preceding six hours.
       const minutes = input.at === "" ? 360 : 15;
       const left = yield* spansFor(input.slug, input.trace, at, minutes);
       if (input.traceB === "") {
@@ -452,7 +450,6 @@ const sqlstats = Command.make(
         yield* Console.log(
           `${window.label.padEnd(22)} ${window.startedAt} fg sql.execute n=${execute?.n ?? 0} >1s=${execute?.over1s ?? 0} (${((stats.foregroundExecuteOver1sRate ?? 0) * 100).toFixed(2)}%) >300=${execute?.over300 ?? 0} p99=${execute?.p99 ?? "-"} max=${execute?.max ?? "-"} | connects/trace=${stats.connectsPerForegroundTrace?.toFixed(2) ?? "-"} | wire first>1s=${(execute?.firstOver1s ?? 0) + (stats.foreground["sql.wire"]?.firstOver1s ?? 0)}`,
         );
-        // Dashboard reads and tool calls are judged separately from discovery-heavy executes.
         const byKind: Record<string, unknown> = {};
         for (const kind of ["read", "toolcall", "execute"] as const) {
           const traceIds = window.samples.flatMap((sample) =>

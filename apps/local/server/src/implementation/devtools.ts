@@ -1,4 +1,3 @@
-/** Browser-pairing shortcuts mounted only by the local development entry point. */
 import { LoopbackOrigin } from "@executor-js/utils/url-policy";
 import { Effect, Layer, Redacted, Schema } from "effect";
 import { HttpRouter, HttpServerResponse } from "effect/http";
@@ -6,7 +5,6 @@ import type { ServerConfig } from "../contracts/config.ts";
 import { localRequest, sessionCookie, type LocalAuth } from "./auth.ts";
 import { AuthForbidden } from "../contracts/auth.ts";
 
-/** Create a real local session through the ordinary one-use pairing lifecycle. */
 export const localDevtools = (auth: LocalAuth, settings: ServerConfig) => {
   const request = Effect.gen(function* () {
     const current = yield* localRequest(settings.port, settings.browserOrigin);

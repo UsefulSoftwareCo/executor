@@ -4,7 +4,6 @@ import { AccountCheckStatus } from "../contracts/account.ts";
 import { AccountId, OwnerId } from "../contracts/shared.ts";
 import { ProviderError } from "apps/contracts";
 
-/** One bound driver per saved account. App checks keep their existing independent rows. */
 export const accountDriverChecks = table("executor_account_driver_checks", {
   account: idColumn("account", AccountId, { type: "varchar(255)" }),
   owner: column("owner", OwnerId, { type: "varchar(255)" }),

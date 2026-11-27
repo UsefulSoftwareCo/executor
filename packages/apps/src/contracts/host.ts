@@ -57,6 +57,7 @@ export { McpClientLimits, defaultMcpClientLimits } from "./mcp.ts";
 export * from "./webhook-protocol.ts";
 export * from "./events.ts";
 export { AppIcon, AppIcons, appIconLimits } from "./icons.ts";
+export { fieldDescriptions, helpTextLimits, withoutHelp } from "./help-text.ts";
 export * from "./placement.ts";
 
 export { AccountId, HttpUrl } from "./schema.ts";
@@ -92,7 +93,7 @@ export { protocol14 } from "./protocols/14.ts";
 export { protocol15 } from "./protocols/15.ts";
 export * from "./connect.ts";
 export {
-  current as protocol22,
+  current as protocol16,
   AccountCheckCommand,
   CredentialHost,
   MigrateCommand,
@@ -327,6 +328,15 @@ export const ToolResultObservation = Context.Reference<{ readonly failed: () => 
   "apps/ToolResultObservation",
   { defaultValue: () => ({ failed: () => {} }) },
 );
+
+/**
+ * Runs work the invocation's reply does not wait for, such as ending an MCP session whose call
+ * was answered. The host's runner keeps the invocation alive until that work has settled, and
+ * cancels it with the invocation. Undefined where the host has no such runner: run it inline.
+ */
+export const AfterReply = Context.Reference<
+  ((work: Effect.Effect<void>) => Effect.Effect<void>) | undefined
+>("apps/AfterReply", { defaultValue: () => undefined });
 
 /**
  * One tool invocation's own timing, on the isolate's clock: how long it ran, and how much of that

@@ -41,7 +41,6 @@ export const bindingMatchesAccount = (
   binding.generation === account.credentialGeneration &&
   (allowRemoval || binding.removal === null);
 
-/** This read does not create or adopt a binding. Missing and stale bindings stay distinguishable. */
 export const resolveAcquisitionBinding =
   (db: Query, credentials: Credentials, allowRemoval = false) =>
   (input: { readonly account: AccountId; readonly owner?: OwnerId }) =>
@@ -60,7 +59,6 @@ export const resolveAcquisitionBinding =
       return { account, binding, reference: Redacted.make(value.ref) };
     });
 
-/** Recheck inside the transaction that saves a hook result or credential replacement. */
 export const requireAcquisitionBinding = (
   db: Query,
   expected: AccountAcquisitionBinding,

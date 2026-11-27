@@ -109,7 +109,6 @@ export const makeDriverAccountHealth = (
       if (source === undefined) return;
       const hook = source.check;
       const startedAt = yield* Clock.currentTimeMillis;
-      // Missing capability is not a successful credential check.
       if (hook === undefined) {
         yield* transaction(db, () =>
           Effect.gen(function* () {

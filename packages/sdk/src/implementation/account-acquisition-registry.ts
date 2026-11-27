@@ -8,7 +8,6 @@ import type { ProviderId } from "../contracts/shared.ts";
 
 const key = (...values: readonly string[]) => JSON.stringify(values);
 
-/** Exact retained revisions resolve saved work; only one revision may accept new work per method. */
 export const makeAcquisitionRegistry = (
   registrations: readonly AccountAcquisitionRegistration[],
 ) => {

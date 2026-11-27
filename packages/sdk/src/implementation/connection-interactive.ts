@@ -7,7 +7,6 @@ import { readConnection } from "./connection-state.ts";
 import { pendingInteractive } from "./interactive-state.ts";
 import type { Query } from "./database.ts";
 
-/** Resolve links through the product lifecycle; an HTTP client never supplies bound credentials. */
 export const makeConnectionInteractive = (
   db: Query,
   interactive: Pick<InteractiveHost, "start" | "status" | "submit" | "cancel">,

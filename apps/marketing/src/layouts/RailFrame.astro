@@ -1,17 +1,11 @@
 ---
-// The rail frame: sticky rail on the left, one centred frame, footer at the
-// bottom of the body column. Everything inside <body>, and nothing of the
-// document shell.
-// Prerendered pages resolve the star count once at build time.
 import RailB from "../components/variants/rail-b.astro";
 import SiteFooter from "../components/SiteFooter.astro";
 import { getStars, formatStars } from "../lib/github";
 
 interface Props {
   current?: "home" | "pricing" | "blog" | "docs" | "apps";
-  /** Content layouts keep the frame in the viewport; the page owns its scroll region. */
   scroll?: "page" | "content";
-  /** Full-height tools, such as the Apps directory, end at their content. */
   footer?: boolean;
 }
 const { current = "home", scroll = "page", footer = true } = Astro.props;

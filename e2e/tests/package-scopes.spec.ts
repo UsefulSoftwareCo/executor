@@ -1,4 +1,3 @@
-/** Public package names follow the publishing organization's current slug on executor.community. */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Schema } from "effect";
 import { randomUUID } from "node:crypto";
@@ -11,7 +10,6 @@ import { withApps } from "../support/apps-release.ts";
 
 const Workspace = Schema.Struct({ revision: Schema.Struct({ commit: Schema.String }) });
 const Publication = Schema.Struct({ name: Schema.String, commit: Schema.String });
-/** Compared whole, so a changed readiness shape fails here. */
 const Readiness = Schema.Struct({ publication: Schema.Unknown });
 const Failure = Schema.Struct({ _tag: Schema.String, reason: Schema.String });
 const Copy = Schema.Struct({
@@ -54,7 +52,6 @@ layer(HostedLive, { excludeTestServices: true })("Package scopes", (it) => {
             );
             return created;
           });
-        /** Deploy an app whose package.json carries `name`, and return it with its commit. */
         const deploy = (organizationId: string, name: string, marker: string) =>
           Effect.gen(function* () {
             const prefix = `/api/organizations/${organizationId}`;
@@ -118,7 +115,6 @@ layer(HostedLive, { excludeTestServices: true })("Package scopes", (it) => {
             )
             .pipe(Effect.flatMap((response) => body(Schema.Array(Publication), response)));
 
-        // An organization publishes under its own slug on executor.community.
         const first = yield* organization(firstSlug);
         const original = yield* deploy(first.id, firstName, `first ${suffix}`);
         expect((yield* readiness(first.id, original.app.id)).publication).toEqual({
@@ -135,7 +131,6 @@ layer(HostedLive, { excludeTestServices: true })("Package scopes", (it) => {
           { name: firstName, commit: original.commit },
         ]);
 
-        // Another organization's scope is refused, and the repair keeps the label.
         const foreign = yield* deploy(
           actors.organization.id,
           `@${scope(firstSlug)}/foreign-${suffix}`,
@@ -157,7 +152,6 @@ layer(HostedLive, { excludeTestServices: true })("Package scopes", (it) => {
           reason: "forbidden",
         });
 
-        // A rename moves every listing to the new slug at once. The old name stops resolving.
         const renamed = yield* api.request(actors.owner, "POST", "/api/auth/organization/update", {
           organizationId: first.id,
           data: { slug: renamedSlug },
@@ -169,8 +163,6 @@ layer(HostedLive, { excludeTestServices: true })("Package scopes", (it) => {
         expect(yield* listed(first.id, firstName)).toEqual([]);
         expect(yield* owned(first.id)).toMatchObject([{ name: renamedName }]);
 
-        // A commit published before the rename still installs under the new name, although its
-        // package.json keeps the old one.
         const copied = yield* api.request(
           actors.owner,
           "POST",
@@ -190,7 +182,6 @@ layer(HostedLive, { excludeTestServices: true })("Package scopes", (it) => {
         );
         expect(copy.copiedFrom).toEqual({ name: renamedName, commit: original.commit });
 
-        // Republishing needs the new scope; the repair offers it with the same label.
         expect((yield* readiness(first.id, original.app.id)).publication).toEqual({
           status: "blocked",
           issue: { _tag: "PublicationIssue", reason: "forbidden-scope", name: firstName },
@@ -198,8 +189,6 @@ layer(HostedLive, { excludeTestServices: true })("Package scopes", (it) => {
         });
         expect((yield* publish(first.id, original.app.id, original.commit)).status).toBe(400);
 
-        // The released slug is free. Its next holder publishes the same label as its own
-        // listing, and the renamed organization's listing is unchanged.
         const second = yield* organization(firstSlug);
         const successor = yield* deploy(second.id, firstName, `second ${suffix}`);
         const claimed = yield* publish(second.id, successor.app.id, successor.commit);

@@ -18,7 +18,6 @@ const alertVariants = cva(
   },
 );
 
-/** Alert primitive; accepts native props and composes caller styles. */
 function Alert({
   className,
   variant,
@@ -34,7 +33,6 @@ function Alert({
   );
 }
 
-/** Alert Title primitive; accepts native props and composes caller styles. */
 function AlertTitle({ className, ...props }: React.ComponentProps<"div">) {
   return (
     <div
@@ -45,7 +43,6 @@ function AlertTitle({ className, ...props }: React.ComponentProps<"div">) {
   );
 }
 
-/** Alert Description primitive; accepts native props and composes caller styles. */
 function AlertDescription({ className, ...props }: React.ComponentProps<"div">) {
   return (
     <div

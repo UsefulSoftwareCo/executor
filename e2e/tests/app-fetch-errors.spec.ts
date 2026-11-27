@@ -1,9 +1,3 @@
-/**
- * App code's `ctx.fetch` fails with a typed error that names the cause when Executor, not the
- * service, stopped the request: the instance's network refused its destination, or the app
- * runtime does not implement one of its RequestInit options. Neither looks like a service's
- * response.
- */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Schema } from "effect";
 import { randomUUID } from "node:crypto";
@@ -37,7 +31,6 @@ const Refused = Schema.Struct({
   host: Schema.String,
   refusal: Schema.Struct({ reason: Schema.String }),
 });
-/** The refusal header carries the encoded error, URI-encoded; the body adds its message. */
 const RefusalHeader = Schema.StringFromUriComponent.pipe(
   Schema.decodeTo(Schema.fromJsonString(Refused)),
 );
@@ -45,7 +38,6 @@ const RefusalBody = Schema.fromJsonString(
   Schema.Struct({ ...Refused.fields, message: Schema.String }),
 );
 
-/** `ctx.fetch` with the given options, and the platform's global `fetch` for comparison. */
 const fetchApp = `import { defineApp, json, object, string, query, router } from "apps";
 export default defineApp({}, {
   tools: router({
@@ -108,7 +100,6 @@ layer(HostedLive, { excludeTestServices: true })("App fetch errors", (it) => {
             Effect.flatMap((response) => body(ToolFailed, response)),
           );
 
-        // ctx.fetch rejects with Executor's refusal, naming the host and the policy.
         const failure = yield* refusedCall("fetched", {
           url: `${upstream.origin}/private`,
           init: {},
@@ -121,12 +112,10 @@ layer(HostedLive, { excludeTestServices: true })("App fetch errors", (it) => {
         });
         expect(failure.reason).toBe(`The app threw NetworkRefused (private_address): ${message}`);
 
-        // A refused HEAD request, whose response has no body, rejects the same way.
         expect((yield* refusedCall("head", { url: `${upstream.origin}/head` })).failure).toEqual(
           failure.failure,
         );
 
-        // The global fetch receives Executor's marked refusal, not a status a service could send.
         const answered = yield* body(
           Answered,
           yield* call("global", { url: `${upstream.origin}/global` }),
@@ -139,7 +128,6 @@ layer(HostedLive, { excludeTestServices: true })("App fetch errors", (it) => {
           message,
         });
 
-        // The instance's own origin stays reachable, as the bundled Executor app needs.
         const own = yield* call("fetched", { url: `${origin}/health`, init: {} });
         expect(own.status, JSON.stringify(own.body)).toBe(200);
         expect((yield* body(Reached, own)).status).toBe(200);
@@ -183,7 +171,6 @@ layer(HostedLive, { excludeTestServices: true })("App fetch errors", (it) => {
           message: `fetch option integrity: "sha256-synthetic" is not supported by Executor's app runtime. Use "", or omit integrity. To check a digest, read the body and hash it with crypto.subtle.digest.`,
         });
 
-        // Supported values are sent.
         const manual = yield* call("fetched", {
           url: `${origin}/health`,
           init: { redirect: "manual", cache: "no-store", integrity: "" },

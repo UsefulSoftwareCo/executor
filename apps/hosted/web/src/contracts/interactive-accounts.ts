@@ -1,4 +1,3 @@
-/** Transport contracts for the shared account dialog. The UI owns presentation and polling. */
 import type { Account, AccountConnection, AccountConnectionId } from "@executor-js/sdk";
 import type { OrganizationReference } from "@executor-js/hosted-server/organization";
 import { Data, Effect } from "effect";
@@ -13,7 +12,6 @@ class ConnectionKey extends Data.Class<{
 }> {}
 type Key = ConstructorParameters<typeof ConnectionKey>[0];
 
-/** Build the same actions for a dialog that creates its pending request lazily. */
 export function interactiveConnectionActions(
   organization: OrganizationReference,
   connection: (get: Atom.FnContext) => Effect.Effect<AccountConnection, HostedError, HostedClient>,
@@ -66,11 +64,7 @@ const actions = Atom.family((key: ConnectionKey) =>
     (get, _connection, account) => acknowledgeInteractiveConnection(get, key, account),
   ),
 );
-/** { method } -> { url?, code?, paste?, expiresAt?, message? }. */
 export const startInteractiveConnectionAtom = (key: Key) => actions(new ConnectionKey(key)).start;
-/** void -> waiting | connected with Account | failed with message. Invoke when polling is due. */
 export const interactiveConnectionStatusAtom = (key: Key) => actions(new ConnectionKey(key)).status;
-/** { value } -> the same progress union as status. */
 export const submitInteractiveConnectionAtom = (key: Key) => actions(new ConnectionKey(key)).submit;
-/** void -> void. Closing the dialog cancels its server-held session. */
 export const cancelInteractiveConnectionAtom = (key: Key) => actions(new ConnectionKey(key)).cancel;

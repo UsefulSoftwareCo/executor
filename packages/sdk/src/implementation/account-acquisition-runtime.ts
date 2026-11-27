@@ -1,4 +1,4 @@
-import { Clock, Effect, Redacted, Schema, type Crypto } from "effect";
+import { Clock, Effect, Redacted, Schema } from "effect";
 import { HostOperationFailed, HostOperationNotFound } from "apps/contracts";
 import type {
   AccountAcquisitionAccountContext,
@@ -14,10 +14,10 @@ import {
 } from "./account-acquisition-bindings.ts";
 import type { AcquisitionRegistry } from "./account-acquisition-registry.ts";
 import { acquisitionCallbackError, acquisitionCheckOutput } from "./account-acquisition-output.ts";
+import type { HostCrypto } from "./host-crypto.ts";
 
 type ContextInput = Omit<AccountAcquisitionContext, "signal" | "fetch">;
 
-/** The enclosing effect owns cancellation, including host-supplied fetches inside Promise adapters. */
 export const invokeAcquisitionDriver = <A, E>(
   registration: AccountAcquisitionRegistration,
   input: ContextInput,
@@ -41,7 +41,7 @@ export const invokeAcquisitionDriver = <A, E>(
 export const makeAcquisitionRuntime = (
   db: Query,
   credentials: Credentials,
-  crypto: Crypto.Crypto,
+  crypto: HostCrypto,
   registry: AcquisitionRegistry,
 ) => {
   const resolve = resolveAcquisitionBinding(db, credentials);
@@ -62,9 +62,9 @@ export const makeAcquisitionRuntime = (
         ) =>
           Effect.gen(function* () {
             yield* transaction(db, (tx) => requireAcquisitionBinding(tx, resolved.binding));
-            const operation = yield* crypto.randomUUIDv4.pipe(
-              Effect.mapError(() => new StorageError()),
-            );
+            const operation = yield* crypto.random
+              .uuidV4()
+              .pipe(Effect.mapError(() => new StorageError()));
             return yield* invokeAcquisitionDriver(
               registration,
               { ...context, operation, deadline: (yield* Clock.currentTimeMillis) + 15_000 },

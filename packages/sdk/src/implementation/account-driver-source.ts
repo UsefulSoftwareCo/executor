@@ -36,7 +36,6 @@ export const retainedDriverBinding = (
           ),
         );
 
-/** Run only within the transaction that claims or writes the result, using its Query context. */
 export const driverSourceCurrent = (source: AccountAcquisitionSource, account: DriverAccount) =>
   source.current.pipe(
     Effect.map(

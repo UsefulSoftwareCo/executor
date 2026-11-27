@@ -26,28 +26,19 @@ import { ArrowDown01Icon } from "@hugeicons/core-free-icons";
 import { AppIcon } from "./common.tsx";
 import type { ConnectionToolPickerProps } from "./scoped-connections.tsx";
 
-/** One way an app can run: as one account the user can use with it. */
 export interface Choice {
   readonly target: ConnectionTarget;
   readonly description: string;
-  /** Underlying accounts, used to apply one account across many apps at once. */
   readonly accounts: readonly AccountId[];
   readonly provider: ProviderId;
 }
 
-/** Everything an app offers a connection, computed once per inventory rather than per render. */
 export interface AppChoices {
   readonly app: App;
-  /** Linked accounts first, then other usable accounts of a required provider. */
   readonly options: readonly Choice[];
   readonly needsAccount: boolean;
 }
 
-/**
- * Saving a connection links any chosen account that is not linked to the app yet. Only user
- * requirements are chosen for: the app's own requirements use the accounts linked for everyone, which app
- * access authorizes, so an app with only those runs as the app.
- */
 export function appChoices(
   app: App,
   links: readonly AppAccountLink[],
@@ -71,14 +62,11 @@ export function appChoices(
   return { app, options, needsAccount: requirements.length > 0 };
 }
 
-/** The events an app's active version declares, by name. */
 export const declaredEventNames = (app: App | undefined): readonly string[] =>
   Object.keys(app?.requirements.events ?? {}).toSorted();
 
-/** Whether an app declares any event a connection could include. */
 export const declaresEvents = (app: App | undefined) => declaredEventNames(app).length > 0;
 
-/** A newly included app is ready immediately when there is exactly one way to run it. */
 export function initialSelection(choices: AppChoices): ConnectionApp {
   const only = choices.options.length === 1 ? choices.options[0] : undefined;
   return {
@@ -89,11 +77,9 @@ export function initialSelection(choices: AppChoices): ConnectionApp {
   };
 }
 
-/** The way to run an app as one account alone. */
 export const accountOption = (choices: AppChoices, account: AccountId): Choice | undefined =>
   choices.options.find((choice) => choice.accounts.length === 1 && choice.accounts[0] === account);
 
-/** The first unresolved problem, if any, that blocks saving this app. */
 export function selectionIssue(choices: AppChoices, selection: ConnectionApp): string | undefined {
   const available = new Set(choices.options.map((choice) => connectionTargetKey(choice.target)));
   if (!choices.needsAccount) {
@@ -110,7 +96,6 @@ export function selectionIssue(choices: AppChoices, selection: ConnectionApp): s
   return undefined;
 }
 
-/** One dense row per app. Controls appear only once the app is included. */
 export function ConnectionAppRow({
   choices,
   selection,
@@ -126,7 +111,6 @@ export function ConnectionAppRow({
   readonly onExpandedChange: (expanded: boolean) => void;
   readonly onChange: (selection: ConnectionApp | undefined) => void;
   readonly renderTools: (props: ConnectionToolPickerProps) => ReactNode;
-  /** A host link to connect an account, shown when the app has none yet. */
   readonly renderConnectAccount?: (app: App) => ReactNode;
 }) {
   const id = useId();
@@ -182,7 +166,6 @@ export function ConnectionAppRow({
         {renderConnectAccount !== undefined &&
           choices.needsAccount &&
           choices.options.length === 0 && (
-            // Outside the label so following the link never toggles the app.
             <span className="shrink-0">{renderConnectAccount(app)}</span>
           )}
         {selection !== undefined && (
@@ -274,7 +257,6 @@ export function ConnectionAppRow({
   );
 }
 
-/** All of an app's events, including later ones, or exact names; none selected means none. */
 function EventsPicker({
   appName,
   names,
@@ -355,7 +337,6 @@ function AccountsPicker({
 }) {
   const selected = new Set(selection.targets.map(connectionTargetKey));
   const only = choices.options.length === 1 ? choices.options[0] : undefined;
-  // The row's subtitle already names the only way to run it.
   if (only !== undefined && selected.has(connectionTargetKey(only.target))) return null;
   const label =
     selection.targets.length === 0

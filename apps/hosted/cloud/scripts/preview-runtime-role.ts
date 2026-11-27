@@ -1,4 +1,3 @@
-/** Give preview Workers data access without branch administration or schema ownership. */
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import { Config, Effect, Redacted, Schema } from "effect";
 import { Client } from "pg";

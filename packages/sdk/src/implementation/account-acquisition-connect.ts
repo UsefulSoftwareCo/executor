@@ -11,7 +11,6 @@ import { invokeAcquisitionDriver } from "./account-acquisition-runtime.ts";
 import { acquisitionStartOutput, acquisitionStatusOutput } from "./account-acquisition-output.ts";
 import { storedApp, storedVersion } from "./apps.ts";
 
-/** App intent selects a provider/method; only the host registry selects its implementation. */
 export const makeAcquisitionConnect = (
   db: Query,
   credentials: Credentials,
@@ -135,7 +134,6 @@ export const makeAcquisitionConnect = (
                 case "cancel":
                   return driver.cancel(context, { session: command.input.session });
                 case "remove":
-                  // A failed save may release only this attempt, never a saved account by its ref.
                   return session.session === undefined
                     ? Effect.void
                     : driver.cancel(context, { session: session.session });

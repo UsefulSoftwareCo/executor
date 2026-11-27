@@ -1,7 +1,6 @@
 import { Effect, Path } from "effect";
 import { probeRecording, runFFmpeg } from "./recording.ts";
 
-/** Export an eight-frame overview of the final edit, outside test execution. */
 export const renderRecordingFilmstrip = (directory: string, video: string) =>
   Effect.gen(function* () {
     const path = yield* Path.Path;

@@ -1,4 +1,3 @@
-/** Called by the shared link boundary while its app lock is held. */
 import {
   AccountProvisioned,
   StorageError,

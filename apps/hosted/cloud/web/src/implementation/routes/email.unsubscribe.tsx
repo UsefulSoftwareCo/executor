@@ -1,7 +1,6 @@
 import { createFileRoute, useLocation } from "@tanstack/react-router";
 import { Button } from "@executor-js/ui/components/button";
 
-/** Public confirmation: opening a link never saves a preference or requires a session. */
 export const Route = createFileRoute("/email/unsubscribe")({
   validateSearch: (search: Record<string, unknown>) => ({
     result:

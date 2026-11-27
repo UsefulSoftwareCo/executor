@@ -1,10 +1,8 @@
-/** HTTP adapters call the same native operations as the in-process SDK. */
 import { Layer } from "effect";
 import { HttpApiBuilder } from "effect/http-api";
 import { ExecutorApi } from "../contracts/http.ts";
 import type { Executor } from "../contracts/executor.ts";
 
-/** Mount the SDK contract with one supplied executor; the host provides transport and access control. */
 export const executorHandlers = (executor: Executor) =>
   Layer.mergeAll(
     HttpApiBuilder.group(ExecutorApi, "skills", (handlers) =>

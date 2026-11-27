@@ -12,7 +12,6 @@ import { parseAppSearch } from "../contracts/navigation.ts";
 
 const OverviewContext = createContext<DashboardOverview | undefined>(undefined);
 
-/** Mount inventory consumers only after authenticated overview data is available. */
 export function InventoryLayout() {
   const location = useLocation();
   const result = useAtomValue(overviewAtom);
@@ -39,7 +38,6 @@ export function InventoryLayout() {
   return <InventoryPageSkeleton kind={section === "accounts" ? "accounts" : "apps"} />;
 }
 
-/** Read the live inventory guaranteed by the enclosing inventory route. */
 export function useOverview(): DashboardOverview {
   const overview = useContext(OverviewContext);
   if (overview === undefined) throw new Error("Inventory route must enclose this page");

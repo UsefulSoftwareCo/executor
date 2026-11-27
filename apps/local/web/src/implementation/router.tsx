@@ -9,12 +9,6 @@ import { readOAuthCallback } from "./oauth.ts";
 import { routeTree } from "./routeTree.gen.ts";
 import { serverDocument } from "./document.ts";
 
-/**
- * Browser entry credentials live in the URL fragment or query. Consume and erase them before the
- * router reads the location. They are applied after hydration, because the server rendered the
- * page without them; see `BrowserEntry`. A connection link's OAuth return also arrives at the
- * dashboard callback path, so the connection reader claims its own attempt first.
- */
 const readBrowserEntry = () => ({
   pairingToken: Effect.runSync(readPairingToken),
   connection: Effect.runSync(readAccountConnection),
@@ -22,7 +16,6 @@ const readBrowserEntry = () => ({
 });
 export type BrowserEntryValues = ReturnType<typeof readBrowserEntry>;
 
-/** One router and atom registry per document request on the server, and one per page in the browser. */
 export function getRouter() {
   const { connect, Wrap } = dashboardRegistry(
     import.meta.env.SSR ? documentValues(serverDocument()) : [],
@@ -33,7 +26,6 @@ export function getRouter() {
       routeTree,
       context: { entry },
       defaultPreload: "intent",
-      // Existing links use ordinary strings, including tool names such as "123".
       parseSearch: parseSearchParams,
       stringifySearch: stringifySearchWith(JSON.stringify),
       scrollRestoration: true,
@@ -43,7 +35,6 @@ export function getRouter() {
   );
 }
 
-/** The router registered for typed links, route params and navigation. */
 export type AppRouter = ReturnType<typeof getRouter>;
 
 declare module "@tanstack/react-router" {

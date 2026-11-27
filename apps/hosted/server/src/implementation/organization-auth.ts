@@ -1,5 +1,7 @@
+import type { AuthContext } from "@better-auth/core";
 import type { BetterAuthPlugin } from "better-auth";
 import { APIError, createAuthMiddleware, getSessionFromCtx } from "better-auth/api";
+import { runAuth, sessionGrantResource } from "@executor-js/mcp-auth/oauth";
 import { Option, Schema } from "effect";
 import {
   OrganizationDetailsUpdate,
@@ -34,21 +36,91 @@ const StoredInvitation = Schema.Struct({
   role: InviteMember.fields.role,
   status: Schema.String,
   organizationId: Schema.NonEmptyString,
+  inviterId: Schema.NonEmptyString,
 });
+const ChangedMember = Schema.Struct({
+  userId: Schema.NonEmptyString,
+  organizationId: Schema.NonEmptyString,
+  role: OrganizationRole,
+});
+const RemovedMember = Schema.Struct({ member: ChangedMember });
+
+export const invitingRoles = ["owner", "admin"] as const;
+const mayInvite = (role: typeof OrganizationRole.Type) =>
+  (invitingRoles as ReadonlyArray<string>).includes(role);
+
+export const inviterMayInvite = async (
+  adapter: Pick<AuthContext["adapter"], "findOne">,
+  invitation: { readonly organizationId: string; readonly inviterId: string },
+) => {
+  const inviter = Schema.decodeUnknownOption(Membership)(
+    await adapter.findOne({
+      model: "member",
+      where: [
+        { field: "userId", value: invitation.inviterId },
+        { field: "organizationId", value: invitation.organizationId },
+      ],
+      select: ["role"],
+    }),
+  );
+  return Option.isSome(inviter) && mayInvite(inviter.value.role);
+};
 const JoinedMember = Schema.Struct({ organizationId: Schema.NonEmptyString });
 const JoinedOrganization = Schema.Struct({ name: Schema.String });
 const SentInvitation = Schema.Struct({
   id: Schema.NonEmptyString,
   email: Schema.NonEmptyString,
   organizationId: Schema.NonEmptyString,
+  inviterId: Schema.NonEmptyString,
 });
 
-/**
- * Constrain the native organization's HTTP surface to Executor's explicit operations.
- * Better Auth 1.7 otherwise falls back to a shared session preference. New library
- * endpoints remain blocked until their target semantics have been reviewed.
- * Server-only library calls are private adapter operations, not HTTP authority.
- */
+type HookContext = Parameters<Parameters<typeof createAuthMiddleware>[0]>[0];
+
+const pinnedOrganization = async (context: HookContext) => {
+  const session = await getSessionFromCtx(context);
+  if (session === null) return undefined;
+  return Option.getOrUndefined(
+    await runAuth(sessionGrantResource(context.context.adapter, session.session.id)),
+  );
+};
+
+const PinTarget = Schema.Struct({ organizationId: Schema.String });
+const ListedOrganization = Schema.Struct({ id: Schema.String });
+const outsidePin = () =>
+  new APIError("FORBIDDEN", {
+    message:
+      "This window is signed in to one organization from the Executor desktop app, so it can't open or change another.",
+  });
+
+const refuseOutsidePin = async (context: HookContext, pinned: string) => {
+  switch (context.path) {
+    case "/organization/list":
+      return;
+    case "/organization/create":
+    case "/organization/accept-invitation":
+      throw outsidePin();
+    case "/organization/cancel-invitation": {
+      const invitation = Schema.decodeUnknownOption(Invitation)(context.body);
+      const row = Option.isNone(invitation)
+        ? null
+        : await context.context.adapter.findOne({
+            model: "invitation",
+            where: [{ field: "id", value: invitation.value.invitationId }],
+            select: ["organizationId"],
+          });
+      const target = Schema.decodeUnknownOption(JoinedMember)(row);
+      if (Option.isNone(target) || target.value.organizationId !== pinned) throw outsidePin();
+      return;
+    }
+    default: {
+      const target = Option.orElse(Schema.decodeUnknownOption(PinTarget)(context.query), () =>
+        Schema.decodeUnknownOption(PinTarget)(context.body),
+      );
+      if (Option.isNone(target) || target.value.organizationId !== pinned) throw outsidePin();
+    }
+  }
+};
+
 export const explicitOrganizationAuth = {
   id: "executor-explicit-organization",
   hooks: {
@@ -57,6 +129,8 @@ export const explicitOrganizationAuth = {
         matcher: (context) =>
           context.request !== undefined && context.path?.startsWith("/organization/") === true,
         handler: createAuthMiddleware(async (context) => {
+          const pinned = await pinnedOrganization(context);
+          if (pinned !== undefined) await refuseOutsidePin(context, pinned);
           const require = <A>(schema: Schema.Decoder<A>, input: unknown, strict = false) => {
             if (
               Option.isNone(
@@ -86,8 +160,6 @@ export const explicitOrganizationAuth = {
                 });
               const session = await getSessionFromCtx(context);
               if (session === null) throw new APIError("UNAUTHORIZED");
-              // Invitation IDs are bearer credentials for self-host signup. Native
-              // Better Auth reads check membership only, including the composite read.
               const member = Schema.decodeUnknownOption(Membership)(
                 await context.context.adapter.findOne({
                   model: "member",
@@ -125,8 +197,6 @@ export const explicitOrganizationAuth = {
                 throw new APIError("BAD_REQUEST", { message: "An invitation is required." });
               const session = await getSessionFromCtx(context);
               if (session === null) throw new APIError("UNAUTHORIZED");
-              // Old pending invitations can predate the request role guard. Native
-              // acceptance copies their stored role directly into a new membership.
               const row = await context.context.adapter.findOne<Record<string, unknown>>({
                 model: "invitation",
                 where: [
@@ -139,9 +209,6 @@ export const explicitOrganizationAuth = {
                 throw new APIError("BAD_REQUEST", {
                   message: "This invitation is invalid. Ask an administrator for a new invitation.",
                 });
-              // Reopening the link after joining repeats an acceptance that already
-              // happened. Native acceptance only takes pending invitations, so answer
-              // with the recipient's current membership, marked so the page can say so.
               if (stored.value.status === "accepted") {
                 const member = await context.context.adapter.findOne<Record<string, unknown>>({
                   model: "member",
@@ -167,9 +234,13 @@ export const explicitOrganizationAuth = {
                     alreadyMember: { name: organization.value.name },
                   });
               }
+              if (!(await inviterMayInvite(context.context.adapter, stored.value)))
+                throw new APIError("BAD_REQUEST", {
+                  message:
+                    "The person who sent this invitation can no longer invite members. Ask an administrator for a new invitation.",
+                });
               return { context: { body: invitation.value } };
             }
-            // The invitation identifies the organization; Better Auth checks its current membership and cancel permission.
             case "/organization/cancel-invitation":
               return require(Invitation, context.body, true);
             default:
@@ -182,9 +253,26 @@ export const explicitOrganizationAuth = {
     ],
     after: [
       {
+        matcher: (context) => context.path === "/organization/list",
+        handler: createAuthMiddleware(async (context) => {
+          const pinned = await pinnedOrganization(context);
+          if (pinned === undefined) return;
+          const listed = Schema.decodeUnknownOption(Schema.Array(Schema.Unknown))(
+            context.context.returned,
+          );
+          if (Option.isNone(listed)) return;
+          return context.json(
+            listed.value.filter((entry) =>
+              Option.exists(
+                Schema.decodeUnknownOption(ListedOrganization)(entry),
+                (organization) => organization.id === pinned,
+              ),
+            ),
+          );
+        }),
+      },
+      {
         matcher: (context) => context.path === "/organization/invite-member",
-        // Native resend only reuses an unexpired invitation, so resending an expired one
-        // creates a new row. The sent invitation supersedes every other pending one.
         handler: createAuthMiddleware(async (context) => {
           const sent = Schema.decodeUnknownOption(SentInvitation)(context.context.returned);
           if (Option.isNone(sent)) return;
@@ -195,6 +283,39 @@ export const explicitOrganizationAuth = {
               { field: "email", value: sent.value.email.toLowerCase() },
               { field: "status", value: "pending" },
               { field: "id", operator: "ne", value: sent.value.id },
+            ],
+            update: { status: "canceled" },
+          });
+          const session = await getSessionFromCtx(context);
+          if (session === null || sent.value.inviterId === session.user.id) return;
+          const resent = await context.context.adapter.update<Record<string, unknown>>({
+            model: "invitation",
+            where: [
+              { field: "id", value: sent.value.id },
+              { field: "status", value: "pending" },
+            ],
+            update: { inviterId: session.user.id },
+          });
+          if (resent !== null) return context.json(resent);
+        }),
+      },
+      {
+        matcher: (context) =>
+          context.path === "/organization/remove-member" ||
+          context.path === "/organization/update-member-role",
+        handler: createAuthMiddleware(async (context) => {
+          const returned = context.context.returned;
+          const removed = context.path === "/organization/remove-member";
+          const member = removed
+            ? Option.map(Schema.decodeUnknownOption(RemovedMember)(returned), (r) => r.member)
+            : Schema.decodeUnknownOption(ChangedMember)(returned);
+          if (Option.isNone(member) || (!removed && mayInvite(member.value.role))) return;
+          await context.context.adapter.updateMany({
+            model: "invitation",
+            where: [
+              { field: "organizationId", value: member.value.organizationId },
+              { field: "inviterId", value: member.value.userId },
+              { field: "status", value: "pending" },
             ],
             update: { status: "canceled" },
           });

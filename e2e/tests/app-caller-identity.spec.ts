@@ -1,4 +1,3 @@
-/** A shared app's handlers and cached dynamic declarations stay bound to the calling user. */
 import { expect, layer } from "@effect/vitest";
 import { Clock, Effect, Schema } from "effect";
 import { appLinksFixture } from "../support/app-links.ts";
@@ -121,7 +120,6 @@ layer(HostedLive, { excludeTestServices: true })("App caller identity", (it) => 
         const call = (actor: Session, tool: string, kind: "query" | "mutation", input: object) =>
           api.request(actor, "POST", `${path}/tools/call`, { tool, kind, input });
 
-        // Both users have the same empty account set when these routes read the declaration cache.
         const ownerIndex = yield* index(actors.owner);
         expect(ownerIndex.items.map((tool) => tool.name)).toContain(generatedName(ownerId));
         const memberIndex = yield* index(actors.member);
@@ -159,7 +157,6 @@ layer(HostedLive, { excludeTestServices: true })("App caller identity", (it) => 
         expect(yield* query(actors.member)).toBe(memberId);
         expect(yield* query(actors.owner)).toBe(ownerId);
 
-        // Portable hosts can supply a caller without any user-account requirements.
         const direct = yield* call(actors.member, "direct", "query", {});
         expect(direct.status).toBe(200);
         expect(direct.body).toEqual({
@@ -168,7 +165,6 @@ layer(HostedLive, { excludeTestServices: true })("App caller identity", (it) => 
           subjectless: { status: 200, body: { ok: true, value: { hasUser: true, id: null } } },
         });
 
-        // Subscription queries execute lazily, after the HTTP handler's auth scope has ended.
         const subscribe = (actor: Session) =>
           Effect.gen(function* () {
             yield* browser.login(actor);
@@ -235,7 +231,6 @@ layer(HostedLive, { excludeTestServices: true })("App caller identity", (it) => 
         expect(memberFactoryCall.status).toBe(200);
         expect(yield* body(Schema.String, memberFactoryCall)).toBe(memberId);
 
-        // Steps refresh accounts while keeping the member that started the run.
         const workflowCaller = (actor: Session) =>
           Effect.gen(function* () {
             const launched = yield* call(actor, "launch", "mutation", {});

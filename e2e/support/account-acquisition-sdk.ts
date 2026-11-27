@@ -23,9 +23,10 @@ import {
 } from "@executor-js/sdk/core";
 import { accountAcquisitionDriver } from "@executor-js/sdk";
 import { filesystemBlobStore, workerdApps } from "@executor-js/sdk/node";
+import { markdownRefusals } from "@executor-js/sdk/markdown";
 import { memoryRegistry } from "@executor-js/sdk/testing";
 import { InteractiveStart, InteractiveStatus, HostOperationFailed } from "apps/contracts";
-import { Console, Deferred, Effect, Layer, Path, Redacted, Ref, Schema } from "effect";
+import { Console, Deferred, Effect, Layer, Path, Redacted, Ref, Result, Schema } from "effect";
 import { HttpRouter, HttpServer } from "effect/http";
 import { HttpApiBuilder } from "effect/http-api";
 import { pgliteLayer } from "fumadb-effect/pglite";
@@ -56,6 +57,7 @@ Runtime.runMain(Effect.scoped(Effect.gen(function* () {
     userLinks: () => Effect.succeed([]), appLinks: () => Effect.succeed([]),
     sourceActorLost: () => Effect.void,
     appResolving: (_app, accounts) => Effect.succeed(new Set(accounts.map((a) => a.id))),
+    appsResolving: (_owner, apps) => Effect.succeed(apps.map(({ accounts }) => Result.succeed(new Set(accounts.map((a) => a.id))))),
     removalResolving: (_app, accounts) => Effect.succeed(new Set(accounts.map((a) => a.id))),
     accountsResolving: (accounts) => Effect.succeed(new Set(accounts.map((a) => a.id))),
     connectionCompleting: () => Effect.void, appCreated: () => Effect.void,
@@ -65,7 +67,7 @@ Runtime.runMain(Effect.scoped(Effect.gen(function* () {
   };
   const options: ExecutorOptions = {
     database: storage, secret, blobs, git: nativeRepositories(path.join(directory, "repositories"), systemGit),
-    runtime: host.runtime, workflows: host.workflows, registry: memoryRegistry(), hooks,
+    runtime: host.runtime, workflows: host.workflows, registry: memoryRegistry(), markdown: markdownRefusals, hooks,
   };
   const initial = yield* createExecutor(options).pipe(Effect.provide(NodeCrypto.layer));
   yield* Deferred.succeed(ready, initial);
@@ -113,7 +115,6 @@ Runtime.runMain(Effect.scoped(Effect.gen(function* () {
 })).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))));
 `;
 
-/** Run the complete public SDK HTTP host in its own process with real PostgreSQL, Git and workerd adapters. */
 export const acquisitionSdk = (backendOrigin: string) =>
   Effect.gen(function* () {
     const target = yield* Target;
@@ -129,7 +130,6 @@ export const acquisitionSdk = (backendOrigin: string) =>
     const entry = path.join(target.directory, "owner-purge-sdk.ts");
     const parentScope = yield* Scope.Scope;
     yield* serverControl("stop");
-    // The runner owns this database and its declared storage-fault writes between generations.
     yield* Effect.addFinalizer(() => serverControl("start").pipe(Effect.orDie));
     let ready: typeof Ready.Type | undefined;
     let current: { readonly scope: Scope.Closeable; readonly origin: string } | undefined;

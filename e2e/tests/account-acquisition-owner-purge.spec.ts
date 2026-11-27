@@ -98,7 +98,6 @@ layer(TestLive, { excludeTestServices: true })("SDK owner purge", (it) => {
         expect(deployed.status, JSON.stringify(deployed.body)).toBe(200);
         const app = (yield* body(Schema.Struct({ app: Resource }), deployed)).app.id;
         const account = yield* connect(owner, app);
-        // The preflight rolls back without a receipt; only the final purge sees removed=true.
         yield* fault("after");
         expect((yield* sdk.request("DELETE", `/v1/owners/${owner}`)).status).toBe(500);
         expect((yield* sdk.request("GET", `/v1/accounts/${account}?owner=${owner}`)).status).toBe(

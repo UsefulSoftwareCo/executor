@@ -17,7 +17,6 @@ const Deployed = Schema.Struct({
 const Revision = Schema.Struct({ revision: Schema.String });
 const Connected = Schema.Struct({ state: Schema.Literal("connected"), account: Resource });
 
-/** Hosted callers use the normal account routes against a complete registered product. */
 export const acquisitionFixture = (hooks: { check?: boolean | "void" } = {}) =>
   Effect.gen(function* () {
     const api = yield* Api,

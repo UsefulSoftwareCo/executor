@@ -1,12 +1,11 @@
-/** OAuth discovery for ordinary API clients, independent of browser sessions. */
 import { Effect } from "effect";
 import { HttpServerRequest, HttpServerResponse } from "effect/http";
-import { requestResourceOrigin } from "@executor-js/mcp-auth";
-import { ApiAuthentication } from "../contracts/auth.ts";
+import { desktopResource, requestResourceOrigin } from "@executor-js/mcp-auth";
+import { BearerAuthentication } from "../contracts/auth.ts";
 
 /** RFC 9728 metadata for the organization management API. */
 export const apiProtectedResource = Effect.gen(function* () {
-  const { issuer, resourceOrigins } = yield* ApiAuthentication;
+  const { issuer, resourceOrigins } = yield* BearerAuthentication;
   const request = yield* HttpServerRequest.HttpServerRequest;
   const resourceOrigin = requestResourceOrigin(resourceOrigins.api, request.headers.host);
   return HttpServerResponse.jsonUnsafe({
@@ -18,9 +17,21 @@ export const apiProtectedResource = Effect.gen(function* () {
   });
 });
 
-/** API discovery starts with a standard bearer challenge; this is not an API operation. */
+export const desktopProtectedResource = Effect.gen(function* () {
+  const { issuer, resourceOrigins } = yield* BearerAuthentication;
+  const request = yield* HttpServerRequest.HttpServerRequest;
+  const resourceOrigin = requestResourceOrigin(resourceOrigins.api, request.headers.host);
+  return HttpServerResponse.jsonUnsafe({
+    resource: desktopResource(resourceOrigin),
+    authorization_servers: [issuer],
+    scopes_supported: ["desktop", "offline_access"],
+    bearer_methods_supported: ["header"],
+    resource_name: "Executor desktop",
+  });
+});
+
 export const apiChallenge = Effect.gen(function* () {
-  const { resourceOrigins } = yield* ApiAuthentication;
+  const { resourceOrigins } = yield* BearerAuthentication;
   const request = yield* HttpServerRequest.HttpServerRequest;
   const resourceOrigin = requestResourceOrigin(resourceOrigins.api, request.headers.host);
   return HttpServerResponse.empty({

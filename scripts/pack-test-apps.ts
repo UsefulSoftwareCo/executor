@@ -1,7 +1,3 @@
-/**
- * Pack the `apps` package staged by `apps:build` for the e2e registry, which serves it as the
- * version the hosts ship. Nothing is published.
- */
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { Effect, FileSystem } from "effect";

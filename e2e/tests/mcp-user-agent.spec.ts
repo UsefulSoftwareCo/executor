@@ -1,4 +1,3 @@
-/** Remote MCP requests identify Executor unless the app sets its own User-Agent. */
 import { expect, layer } from "@effect/vitest";
 import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
 import { Effect, Layer, Ref, Schema } from "effect";
@@ -20,10 +19,6 @@ const JsonRpcRequest = Schema.Struct({
   params: Schema.optional(Schema.Struct({ protocolVersion: Schema.optional(Schema.String) })),
 });
 
-/**
- * An MCP server that, like some Cloudflare-hosted servers, refuses requests without a User-Agent.
- * Its `agent` tool answers with the User-Agent of the request that called it.
- */
 const userAgentMcpServer = Effect.gen(function* () {
   const seen = yield* Ref.make<ReadonlyArray<string | undefined>>([]);
   const answer = (id: string | number, result: object) =>
@@ -80,10 +75,6 @@ const userAgentMcpServer = Effect.gen(function* () {
   return { url: `http://127.0.0.1:${server.address.port}/mcp`, seen: Ref.get(seen) };
 });
 
-/**
- * One router with Executor's default User-Agent, and one whose account headers set their own. An
- * app sends headers only with an account, so the custom router runs as one.
- */
 const appFiles = (url: string) => [
   {
     path: "package.json",
@@ -133,7 +124,6 @@ layer(HostedLive, { excludeTestServices: true })("MCP User-Agent", (it) => {
               yield* api.request(actors.owner, "DELETE", `${prefix}/accounts/${account}`);
           }).pipe(Effect.orDie),
         );
-        // Connecting from the app links the account to it; `.many()` calls use every linked one.
         const connection = yield* body(
           Resource,
           yield* api.request(actors.owner, "POST", connectionsPath(path, "user", "service"), {}),
@@ -164,7 +154,6 @@ layer(HostedLive, { excludeTestServices: true })("MCP User-Agent", (it) => {
           expect(called.status, JSON.stringify(called.body)).toBe(200);
           expect(called.body).toMatchObject({ structuredContent: { userAgent } });
         }
-        // Every request reached the server with an identity, including session setup.
         const seen = yield* server.seen;
         expect(seen.length).toBeGreaterThan(0);
         expect(new Set(seen)).toEqual(new Set(["Executor", "Custom MCP client"]));

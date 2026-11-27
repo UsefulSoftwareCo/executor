@@ -1,4 +1,3 @@
-/** Dynamic factories retain provider health when their optional connect check is absent. */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Schema } from "effect";
 import { body } from "../support/api.ts";
@@ -56,7 +55,6 @@ layer(HostedLive, { excludeTestServices: true })("Dynamic account checks", (it) 
         expect(noHandler.status, JSON.stringify(noHandler.body)).toBe(200);
         const absent = yield* fixture.check();
         expect(absent.status, JSON.stringify(absent.body)).toBe(200);
-        // The old successful check may remain as stale history, but absence never writes a failure.
         expect((yield* body(Health, absent)).apps[0]?.check?.status).toBe("healthy");
         expect(yield* fixture.statusBackend.calls).toBe(1);
       }),

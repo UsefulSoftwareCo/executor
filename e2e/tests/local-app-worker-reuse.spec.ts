@@ -1,9 +1,3 @@
-/**
- * Local runs apps in the same workerd runtime as self-host. An app's Worker is named by its code
- * and account selection, so replacing a saved key or starting a workflow run reuses it. The
- * runtime's build loads and cold start recovery are the same code on both hosts; the self-host
- * scenarios in app-worker-reuse.spec.ts cover them.
- */
 import { expect, layer } from "@effect/vitest";
 import { Clock, Effect, Redacted, Schema } from "effect";
 import { randomUUID } from "node:crypto";
@@ -18,7 +12,6 @@ import { Observation, observerApp, RunObservation } from "../support/worker-obse
 import { scenarios } from "../test-plan.ts";
 import { appsManifest } from "../support/apps-release.ts";
 
-/** Key replacements, each followed by one tool call and one workflow run. */
 const rotations = 12;
 const Version = Schema.Struct({
   app: Schema.Struct({
@@ -35,13 +28,11 @@ const Run = Schema.Struct({
   output: Schema.optionalKey(Schema.Json),
 });
 
-/** Deploy an observer app through the agent API and return its per-account operations. */
 const localApp = (resource: string) =>
   Effect.gen(function* () {
     const api = yield* Api,
       target = yield* Target,
       session = yield* api.session();
-    // The agent API takes the host-issued bearer credential, not a browser origin.
     const agent: Session = {
       ...session,
       send: (method, path, data, headers = {}) => {
@@ -53,7 +44,6 @@ const localApp = (resource: string) =>
       },
     };
     const resources: { app?: string; accounts: string[] } = { accounts: [] };
-    // Remove the app before the accounts linked to it.
     yield* Effect.addFinalizer(() =>
       Effect.gen(function* () {
         if (resources.app !== undefined)
@@ -87,7 +77,6 @@ const localApp = (resource: string) =>
         resources.accounts.push(account);
         return account;
       });
-    /** Save an account for the app's requirement, or replace the given account's key. */
     const connectAccount = (input: { token: string; account?: string }) =>
       connectLocalAccount(agent, {
         app: app.id,
@@ -97,13 +86,9 @@ const localApp = (resource: string) =>
         fields: { token: input.token },
         ...(input.account === undefined ? {} : { account: input.account }),
       });
-    // Calls cannot choose accounts: each one uses the account linked to the app, so the account a
-    // call or run should use is linked first. Linking it again changes nothing.
     const observe = (account: string) =>
       Effect.gen(function* () {
         yield* linkLocal(agent, app.id, "service", account);
-        // The call names its kind, as agents do. Without one the host first describes the tool,
-        // which cold-starts the app Worker beside the data facet that runs the query.
         const response = yield* api.request(agent, "POST", "/v1/tools/call", {
           app: app.id,
           tool: "probe",
@@ -163,18 +148,15 @@ layer(TestLive, { excludeTestServices: true })("Local app worker reuse", (it) =>
           const call = yield* observe(first);
           const workflow = yield* run(first);
           expect(workflow.run).toBe(workflow.id);
-          // Each call and run presents the current key, also through its outbound fetch.
           for (const entry of [call, workflow])
             expect(entry).toMatchObject({ token, fetched: `Bearer ${token}` });
           observed.push(call, workflow);
         }
-        // Key replacements, calls and workflow runs of one account reuse one loaded Worker.
         expect(new Set(observed.map((entry) => entry.isolate)).size).toBe(1);
         expect(observed.map((entry) => entry.calls)).toEqual(
           observed.map((_, index) => observed[0]!.calls + index),
         );
 
-        // Another account's calls and runs use another Worker, with no module state from the first.
         const second = yield* connect("synthetic-local-other");
         const other = yield* run(second);
         expect(other).toMatchObject({ previous: null, token: "synthetic-local-other" });
@@ -186,8 +168,6 @@ layer(TestLive, { excludeTestServices: true })("Local app worker reuse", (it) =>
           previous: `synthetic-local-${rotations}`,
           token: `synthetic-local-${rotations}`,
         });
-        // Each account's Worker loaded the build once, whether a workflow run or a call started it.
-        // A workflow cold start records its load under the Worker's name.
         const loads = yield* appBuildLoads(app);
         expect(Object.values(loads), JSON.stringify(loads)).toEqual([1, 1]);
         expect(Object.keys(loads).every((runtime) => runtime.startsWith("worker "))).toBe(true);

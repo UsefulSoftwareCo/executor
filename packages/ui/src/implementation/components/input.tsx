@@ -3,7 +3,6 @@ import * as React from "react";
 import { DisabledTooltip } from "./disabled-tooltip.tsx";
 import { cn } from "../lib/utils.ts";
 
-/** Input primitive; accepts native props and composes caller styles. */
 function Input({
   className,
   type,
