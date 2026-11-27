@@ -15,7 +15,7 @@ import { UiFailed, UiForbidden, UiUnauthorized } from "apps/ui/contracts";
 import { Context, type Effect, Schema } from "effect";
 import { HttpApi, HttpApiEndpoint, HttpApiGroup, HttpApiSchema, OpenApi } from "effect/http-api";
 import { Principal } from "./auth.ts";
-import { DesktopReadable } from "./authorization.ts";
+import { DesktopReadable, RequiredAction } from "./authorization.ts";
 import {
   OrganizationForbidden,
   OrganizationId,
@@ -95,6 +95,11 @@ export const AppUiAttempt = Schema.Struct({
   returnTo: AppReturnPath,
   proof: Schema.String,
 });
+export const AppUiParent = Schema.Union([
+  Principal.fields.sessionId,
+  Schema.Struct({ kind: Schema.Literal("apiKey"), id: Schema.String }),
+]);
+export type AppUiParent = typeof AppUiParent.Type;
 export const AppUiGrant = Schema.Struct({
   kind: Schema.Literal("grant"),
   request: AppSignInId,
@@ -102,13 +107,20 @@ export const AppUiGrant = Schema.Struct({
   parent: Principal.fields.sessionId,
   user: Principal.fields.userId,
 });
+export const AppUiLaunch = Schema.Struct({
+  kind: Schema.Literal("launch"),
+  target: AppUiTarget,
+  parent: AppUiParent,
+  user: Principal.fields.userId,
+});
 export const AppUiSession = Schema.Struct({
   kind: Schema.Literal("session"),
   target: AppUiTarget,
-  parent: Principal.fields.sessionId,
+  parent: AppUiParent,
   user: Principal.fields.userId,
 });
-export const AppUiRecord = Schema.Union([AppUiAttempt, AppUiGrant, AppUiSession]);
+export const AppUiRecord = Schema.Union([AppUiAttempt, AppUiGrant, AppUiLaunch, AppUiSession]);
+export const appLaunchPath = "/_executor/auth/launch";
 
 export class HostedAppSessions extends Context.Service<
   HostedAppSessions,
@@ -141,6 +153,18 @@ export class HostedAppSessions extends Context.Service<
       target: AppUiTarget,
       principal: Principal,
     ) => Effect.Effect<typeof AppSignInCode.Type, UiFailed>;
+    readonly launch: (
+      target: AppUiTarget,
+      user: Principal["userId"],
+      parent: AppUiParent,
+    ) => Effect.Effect<typeof AppSignInCode.Type, UiFailed>;
+    readonly redeem: (
+      target: AppUiTarget,
+      code: typeof AppSignInCode.Type,
+    ) => Effect.Effect<
+      { readonly token: typeof AppSignInCode.Type; readonly expiresAt: Date },
+      UiUnauthorized | UiForbidden | UiFailed
+    >;
     readonly complete: (
       target: AppUiTarget,
       request: AppSignInId,
@@ -168,20 +192,21 @@ export class HostedAppRuntime extends Context.Service<HostedAppRuntime, Pick<Run
   "hosted/AppRuntime",
 ) {}
 
+const locationErrors = [
+  OrganizationForbidden,
+  StorageError,
+  AppNotFound,
+  AppNotDeployed,
+  VersionNotFound,
+  AppUiAddressInvalid,
+  AppUiUnavailable,
+];
 export const HostedAppUi = HttpApiGroup.make("appUi")
   .add(
     HttpApiEndpoint.get("location", "/api/organizations/:organization/apps/:app/ui", {
       params: { organization: OrganizationReference, app: AppId },
       success: AppUiLocation,
-      error: [
-        OrganizationForbidden,
-        StorageError,
-        AppNotFound,
-        AppNotDeployed,
-        VersionNotFound,
-        AppUiAddressInvalid,
-        AppUiUnavailable,
-      ],
+      error: locationErrors,
     })
       .annotate(
         OpenApi.Description,
@@ -208,6 +233,19 @@ export const HostedAppUi = HttpApiGroup.make("appUi")
         OpenApi.Description,
         "Get the active version's ui/icon.svg for an app the caller can use, for dashboards. Answers 404 when the app has no deployed icon.",
       )
+      .middleware(RequireOrganization),
+  )
+  .add(
+    HttpApiEndpoint.post("launch", "/api/organizations/:organization/apps/:app/ui/launch", {
+      params: { organization: OrganizationReference, app: AppId },
+      success: AppUiLocation,
+      error: locationErrors,
+    })
+      .annotate(
+        OpenApi.Description,
+        "Get a one-time link that opens the private app page signed in as the caller, for a browser with no Executor session, such as an embedded web view. The link works once, within 60 seconds; the page's session then lasts at most an hour, and ends sooner when the credential that made this call is revoked. Needs a browser session or an API key; an OAuth token is refused. Answers as location does when the app has no page address. Treat the link as a password: never log or share it.",
+      )
+      .annotate(RequiredAction, "data")
       .middleware(RequireOrganization),
   );
 export const HostedAppUiApi = HttpApi.make("executor-hosted")

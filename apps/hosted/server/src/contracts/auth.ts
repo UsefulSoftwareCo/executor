@@ -195,6 +195,19 @@ export class CurrentPrincipal extends Context.Service<CurrentPrincipal, Principa
   "hosted/CurrentPrincipal",
 ) {}
 
+export const BearerCredential = Schema.Struct({
+  kind: Schema.Literals(["apiKey", "grant"]),
+  id: Schema.String,
+});
+export const RequestCredential = Schema.Union([
+  Schema.Struct({ kind: Schema.Literal("session"), id: Viewer.fields.sessionId }),
+  BearerCredential,
+]);
+export type RequestCredential = typeof RequestCredential.Type;
+export const CurrentCredential = Context.Reference<RequestCredential | undefined>(
+  "hosted/CurrentCredential",
+  { defaultValue: () => undefined },
+);
 export class RequireBrowserSession extends HttpApiMiddleware.Service<
   RequireBrowserSession,
   { provides: CurrentPrincipal }

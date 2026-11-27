@@ -26,11 +26,25 @@ const impersonationColumn = {
   schema: { session: { fields: { impersonatedBy: { type: "string", required: false } } } },
 } satisfies BetterAuthPlugin;
 
+const launchCredentialTables = {
+  id: "app-launch-credentials",
+  schema: {
+    apikey: {
+      fields: {
+        referenceId: { type: "string" },
+        enabled: { type: "boolean", required: false },
+        remaining: { type: "number", required: false },
+        expiresAt: { type: "date", required: false },
+      },
+    },
+  },
+} satisfies BetterAuthPlugin;
+
 export const cloudAppSessions = Effect.gen(function* () {
   const database = yield* AuthDatabase;
   const options = {
     database: database.options,
-    plugins: [organizationTables, impersonationColumn],
+    plugins: [organizationTables, impersonationColumn, launchCredentialTables],
     verification: { disableCleanup: true },
     advanced: { database: { validateSchema: false } },
   } satisfies BetterAuthOptions;

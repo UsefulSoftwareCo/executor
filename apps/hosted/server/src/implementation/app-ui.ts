@@ -63,10 +63,16 @@ import {
   HostedAppRuntime,
   HostedAppSessions,
   HostedAppUiApi,
+  appLaunchPath,
   type AppUiAddressInvalid,
   type AppUiTarget,
 } from "../contracts/app-ui.ts";
-import { SessionAuthentication, CurrentUserId, type Principal } from "../contracts/auth.ts";
+import {
+  CurrentCredential,
+  CurrentUserId,
+  Principal,
+  SessionAuthentication,
+} from "../contracts/auth.ts";
 import { HostedExecutor } from "../contracts/executor.ts";
 import {
   CurrentOrganization,
@@ -301,47 +307,73 @@ export const hostedAppUi = <R = never>(
         ),
       );
     });
+  const locate = (requested: App["id"]) =>
+    Effect.gen(function* () {
+      const access = yield* CurrentOrganization;
+      yield* requireAppAccess(requested, "use");
+      const executor = yield* Effect.flatten(HostedExecutor);
+      const app = yield* executor.apps.get({ owner: access.owner, app: requested });
+      if (app.activeVersion === null) return yield* new AppNotDeployed({ app: app.id });
+      const version = yield* executor.apps.version({
+        owner: app.owner,
+        app: app.id,
+        version: app.activeVersion,
+        versionOwner: app.owner,
+      });
+      const pages = yield* appUiPages((path) => assets(version, path)).pipe(
+        Effect.mapError(() => new AppUiUnavailable()),
+      );
+      const unavailablePage = (reason: "no_ui" | "no_app_domain") => ({
+        location: { status: "unavailable" as const, url: null, reason },
+        target: undefined,
+      });
+      if (!pages.main) return unavailablePage("no_ui");
+      if (!addresses.enabled) return unavailablePage("no_app_domain");
+      const sessions = yield* HostedAppSessions;
+      const organization = yield* sessions
+        .organization({ id: access.organization })
+        .pipe(Effect.mapError(() => new AppUiUnavailable()));
+      const url = yield* addresses
+        .origin(app, organization.slug)
+        .pipe(Effect.catchTag("UiFailed", () => Effect.fail(new AppUiUnavailable())));
+      const status = yield* domainStatus(organization).pipe(
+        Effect.catchTag("UiFailed", () => Effect.fail(new AppUiUnavailable())),
+      );
+      if (status !== "ready") return { location: { status, url: null }, target: undefined };
+      return {
+        location: { status, url, name: app.name, icon: pages.icon, menuBar: pages.menuBar },
+        target: {
+          app: app.id,
+          organization: organization.id,
+          slug: organization.slug,
+          origin: url,
+        },
+      };
+    });
   const dashboard = HttpApiBuilder.group(HostedAppUiApi, "appUi", (handlers) =>
     handlers
       .handle("location", ({ params }) =>
+        Effect.map(locate(params.app), ({ location }) => location),
+      )
+      .handle("launch", ({ params }) =>
         Effect.gen(function* () {
-          const access = yield* CurrentOrganization;
-          yield* requireAppAccess(params.app, "use");
-          const executor = yield* Effect.flatten(HostedExecutor);
-          const app = yield* executor.apps.get({ owner: access.owner, app: params.app });
-          if (app.activeVersion === null) return yield* new AppNotDeployed({ app: app.id });
-          const version = yield* executor.apps.version({
-            owner: app.owner,
-            app: app.id,
-            version: app.activeVersion,
-            versionOwner: app.owner,
-          });
-          const pages = yield* appUiPages((path) => assets(version, path)).pipe(
-            Effect.mapError(() => new AppUiUnavailable()),
-          );
-          if (!pages.main)
-            return { status: "unavailable" as const, url: null, reason: "no_ui" as const };
-          if (!addresses.enabled)
-            return { status: "unavailable" as const, url: null, reason: "no_app_domain" as const };
+          const { location, target } = yield* locate(params.app);
+          if (target === undefined) return location;
+          const credential = yield* CurrentCredential;
+          const user = yield* CurrentUserId;
+          if (credential === undefined || credential.kind === "grant" || user === undefined)
+            return yield* new OrganizationForbidden();
           const sessions = yield* HostedAppSessions;
-          const organization = yield* sessions
-            .organization({ id: access.organization })
+          const code = yield* sessions
+            .launch(
+              target,
+              Principal.fields.userId.make(user),
+              credential.kind === "session" ? credential.id : { kind: "apiKey", id: credential.id },
+            )
             .pipe(Effect.mapError(() => new AppUiUnavailable()));
-          const url = yield* addresses
-            .origin(app, organization.slug)
-            .pipe(Effect.catchTag("UiFailed", () => Effect.fail(new AppUiUnavailable())));
-          const status = yield* domainStatus(organization).pipe(
-            Effect.catchTag("UiFailed", () => Effect.fail(new AppUiUnavailable())),
-          );
-          return status === "ready"
-            ? {
-                status,
-                url,
-                name: app.name,
-                icon: pages.icon,
-                menuBar: pages.menuBar,
-              }
-            : { status, url: null };
+          const url = new URL(appLaunchPath, target.origin);
+          url.searchParams.set("code", Redacted.value(code));
+          return { ...location, url: url.href };
         }),
       )
       .handle("icon", ({ params }) =>
@@ -690,6 +722,47 @@ export const hostedAppUi = <R = never>(
     Effect.catchTag("UiUnauthorized", () => Effect.succeed(appSignInFailed())),
     htmlFailure,
   );
+  const launch = Effect.gen(function* () {
+    const resolved = yield* target;
+    const { request } = resolved;
+    if (
+      request.method !== "GET" ||
+      (request.headers["sec-fetch-dest"] ?? "document") !== "document" ||
+      request.headers["sec-purpose"]?.includes("prefetch") ||
+      request.headers.purpose === "prefetch"
+    )
+      return HttpServerResponse.empty({ status: 405, headers: appPrivateHeaders });
+    const code = Schema.decodeUnknownOption(AppSignInCode)(
+      new URL(request.url, resolved.target.origin).searchParams.get("code"),
+    );
+    if (Option.isNone(code)) return yield* refuse("missing", new UiUnauthorized());
+    const sessions = yield* HostedAppSessions;
+    const signedIn =
+      Object.hasOwn(request.cookies, sessionCookie(resolved.target.origin)) &&
+      (yield* authorizeTarget(resolved).pipe(
+        Effect.as(true),
+        Effect.catchTags({
+          UiUnauthorized: () => Effect.succeed(false),
+          UiForbidden: () => Effect.succeed(false),
+        }),
+      ));
+    if (signedIn) return appRedirect("/");
+    const opened = yield* sessions.redeem(resolved.target, code.value);
+    return yield* appRedirect("/").pipe(
+      HttpServerResponse.setCookie(
+        sessionCookie(resolved.target.origin),
+        Redacted.value(opened.token),
+        {
+          ...cookieOptions(resolved.target.origin),
+          maxAge: Math.max(0, opened.expiresAt.getTime() - (yield* Clock.currentTimeMillis)),
+        },
+      ),
+      Effect.orDie,
+    );
+  }).pipe(
+    Effect.catchTag("UiUnauthorized", () => Effect.succeed(appSignInFailed())),
+    htmlFailure,
+  );
   const asset = Effect.gen(function* () {
     yield* recordRoute("/_executor/assets/:version/:asset");
     const current = yield* authorize;
@@ -725,6 +798,7 @@ export const hostedAppUi = <R = never>(
   return {
     signIn,
     callback,
+    launch,
     dashboard,
     calls,
     page,
