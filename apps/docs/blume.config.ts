@@ -219,6 +219,18 @@ export default defineConfig({
           "/run/usage-analytics",
         ],
       },
+      {
+        label: "Organizations, accounts and Cloud",
+        items: [
+          "/organizations/members",
+          "/organizations/groups",
+          "/organizations/settings",
+          "/cloud/billing",
+          "/account",
+          "/activity",
+          "/security/credentials",
+        ],
+      },
     ],
   },
 });
