@@ -22,6 +22,8 @@ const make = Effect.gen(function* () {
         readonly whileApproving?: Effect.Effect<void, unknown>;
         readonly origin?: string;
         readonly path?: string;
+        readonly extensions?: Readonly<Record<string, object>>;
+        readonly headers?: Readonly<Record<string, string>>;
       } = {},
     ) =>
       Effect.gen(function* () {
@@ -37,7 +39,12 @@ const make = Effect.gen(function* () {
             () =>
               new Client(
                 { name: "executor-e2e", version: "1" },
-                options.mode === "native" ? { capabilities: { elicitation: { form: {} } } } : {},
+                {
+                  capabilities: {
+                    ...(options.mode === "native" ? { elicitation: { form: {} } } : {}),
+                    ...(options.extensions === undefined ? {} : { extensions: options.extensions }),
+                  },
+                },
               ),
           ),
           (client) => driver("close MCP client", () => client.close()).pipe(Effect.orDie),
@@ -142,6 +149,7 @@ const make = Effect.gen(function* () {
         const transport = new StreamableHTTPClientTransport(endpoint, {
           requestInit: {
             headers: {
+              ...options.headers,
               authorization: `Bearer ${reveal(typeof accessToken === "function" ? accessToken() : accessToken)}`,
             },
           },

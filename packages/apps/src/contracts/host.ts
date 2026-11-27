@@ -53,7 +53,13 @@ export {
   approvalElicitation,
   exactApprovalElicitation,
 } from "./elicitation.ts";
-export { McpClientLimits, defaultMcpClientLimits } from "./mcp.ts";
+export {
+  McpClientLimits,
+  defaultMcpClientLimits,
+  mcpUiExtension,
+  mcpUiMimeType,
+  mcpUiResourceTool,
+} from "./mcp.ts";
 export * from "./webhook-protocol.ts";
 export * from "./events.ts";
 export { AppIcon, AppIcons, appIconLimits } from "./icons.ts";

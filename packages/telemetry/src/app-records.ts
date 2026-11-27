@@ -74,6 +74,7 @@ export const appSpanNames: ReadonlySet<string> = new Set([
   "provider.mcp.close",
   "provider.mcp.request",
   "provider.mcp.call",
+  "provider.mcp.read",
   "provider.mcp.discover",
   "provider.mcp.check",
   "provider.mcp.health",

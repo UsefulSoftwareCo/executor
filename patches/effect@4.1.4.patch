@@ -521,7 +521,7 @@ index bff6370f579aee3b70b79e70ef319c149501007f..8ebdfcca6a9573c10605ca656a85932a
  //# sourceMappingURL=McpSchema.js.map
 \ No newline at end of file
 diff --git a/dist/ai/McpServer.d.ts b/dist/ai/McpServer.d.ts
-index 0d27695a965ebb5bb573fc7636e66ea9eb877177..214d612a9b7dba07fcc5cbcbf7af3c39f322d3cd 100644
+index 0d27695a965ebb5bb573fc7636e66ea9eb877177..56900561fc8107472949e86f5ff8df02c93afc64 100644
 --- a/dist/ai/McpServer.d.ts
 +++ b/dist/ai/McpServer.d.ts
 @@ -610,8 +610,8 @@ export interface CacheHints {
@@ -663,7 +663,7 @@ index 0d27695a965ebb5bb573fc7636e66ea9eb877177..214d612a9b7dba07fcc5cbcbf7af3c39
  /**
   * Utility type that validates a completion-handler record against the allowed
   * parameter keys.
-@@ -1231,6 +1331,56 @@ export declare const registerSkill: (options: SkillOptions) => Effect.Effect<voi
+@@ -1231,6 +1331,100 @@ export declare const registerSkill: (options: SkillOptions) => Effect.Effect<voi
   * @since 4.1.1
   */
  export declare const skill: (options: SkillOptions) => Layer.Layer<never, Cause.IllegalArgumentError, McpServer>;
@@ -717,11 +717,55 @@ index 0d27695a965ebb5bb573fc7636e66ea9eb877177..214d612a9b7dba07fcc5cbcbf7af3c39
 + * @since 4.1.4
 + */
 +export declare const skillCatalog: <R>(catalog: SkillCatalog<R>) => Layer.Layer<never, never, McpServer | Exclude<R, McpRequestContext>>;
++/**
++ * Tools a server reads on each request, as the caller, for {@link toolCatalog}.
++ *
++ * `list` returns the tools the caller is served beside the registered ones.
++ * `call` runs one of them by name, or returns `undefined` when the caller is
++ * served no tool of that name.
++ *
++ * @stability unstable
++ * @category models
++ * @since 4.1.4
++ */
++export interface ToolCatalog<R = never> {
++    readonly list: Effect.Effect<ReadonlyArray<McpSchema.Tool>, never, R>;
++    readonly call: (name: string, args: Readonly<Record<string, unknown>>) => Effect.Effect<McpSchema.CallToolResult | undefined, never, R>;
++}
++/**
++ * Creates a layer that serves tools the server reads on each request, as the
++ * caller, beside the tools registered with {@link toolkit}.
++ *
++ * @stability unstable
++ * @category layers
++ * @since 4.1.4
++ */
++export declare const toolCatalog: <R>(catalog: ToolCatalog<R>) => Layer.Layer<never, never, McpServer | Exclude<R, McpRequestContext>>;
++/**
++ * Resources a server reads on each request, as the caller, for
++ * {@link resourceCatalog}.
++ *
++ * @stability unstable
++ * @category models
++ * @since 4.1.4
++ */
++export interface ResourceCatalog<R = never> {
++    readonly read: (uri: string) => Effect.Effect<McpSchema.ReadResourceResult | undefined, McpSchema.InternalError, R>;
++}
++/**
++ * Creates a layer that serves resources the server reads on each request, as
++ * the caller.
++ *
++ * @stability unstable
++ * @category layers
++ * @since 4.1.4
++ */
++export declare const resourceCatalog: <R>(catalog: ResourceCatalog<R>) => Layer.Layer<never, never, McpServer | Exclude<R, McpRequestContext>>;
  /**
   * Registers an MCP prompt from an Effect program.
   *
 diff --git a/dist/ai/McpServer.js b/dist/ai/McpServer.js
-index d675c7feba0f00b8d573427d154608e3dc0ccfe5..f5ec2ed77fb5595e3b6044c4715c62279eda660b 100644
+index d675c7feba0f00b8d573427d154608e3dc0ccfe5..037f1a42cdbbdcc18c50f78b54a85aa54c7c28ef 100644
 --- a/dist/ai/McpServer.js
 +++ b/dist/ai/McpServer.js
 @@ -894,39 +894,17 @@ const requestSpanOptions = (method, request, options) => {
@@ -989,7 +1033,7 @@ index d675c7feba0f00b8d573427d154608e3dc0ccfe5..f5ec2ed77fb5595e3b6044c4715c6227
  // Leave defects and interruption to makeInvoke; convert only expected failures.
  const handlerFailureToInternalError = cause => Cause.hasDies(cause) || Cause.hasInterrupts(cause) ? Effect.failCause(cause) : Effect.fail(new InternalError({
    message: Cause.prettyErrors(cause)[0].message
-@@ -2518,6 +2565,50 @@ export const registerSkill = /*#__PURE__*/Effect.fnUntraced(function* (options)
+@@ -2518,6 +2565,82 @@ export const registerSkill = /*#__PURE__*/Effect.fnUntraced(function* (options)
   * @since 4.1.1
   */
  export const skill = options => Layer.effectDiscard(registerSkill(options));
@@ -1037,11 +1081,43 @@ index d675c7feba0f00b8d573427d154608e3dc0ccfe5..f5ec2ed77fb5595e3b6044c4715c6227
 +    read: (uri, invocation) => run(catalog.read(uri), invocation).pipe(Effect.map(file => file === undefined ? undefined : McpSkills.readResult(uri, toSkillSourceFile(uri, file))))
 +  });
 +}));
++/**
++ * Creates a layer that serves tools the server reads on each request, as the
++ * caller, beside the tools registered with {@link toolkit}.
++ *
++ * @stability unstable
++ * @category layers
++ * @since 4.1.4
++ */
++export const toolCatalog = catalog => Layer.effectDiscard(Effect.gen(function* () {
++  const server = yield* McpServer;
++  const services = omitRequestServices(yield* Effect.context());
++  const run = (effect, invocation) => provideInvocationContext(effect, invocation).pipe(Effect.provideContext(services));
++  yield* internalState.get(server).core.tools.registerCatalog({
++    list: invocation => run(catalog.list, invocation),
++    call: (call, invocation) => run(catalog.call(call.name, call.arguments), invocation)
++  });
++}));
++/**
++ * Creates a layer that serves resources the server reads on each request, as
++ * the caller.
++ *
++ * @stability unstable
++ * @category layers
++ * @since 4.1.4
++ */
++export const resourceCatalog = catalog => Layer.effectDiscard(Effect.gen(function* () {
++  const server = yield* McpServer;
++  const services = omitRequestServices(yield* Effect.context());
++  yield* internalState.get(server).core.resources.registerCatalog({
++    read: (uri, invocation) => provideInvocationContext(catalog.read(uri), invocation).pipe(Effect.provideContext(services))
++  });
++}));
  /**
   * Registers an MCP prompt from an Effect program.
   *
 diff --git a/dist/ai/internal/mcpCore.js b/dist/ai/internal/mcpCore.js
-index 4c416a837fd627e48c53d7b10fb73198484c40f3..1c1efe73d2a6a2f06a361d75c4948a40bc4ae59b 100644
+index 4c416a837fd627e48c53d7b10fb73198484c40f3..5aebc6e7344ae65c01328dc07ee8f707bfc4a3c3 100644
 --- a/dist/ai/internal/mcpCore.js
 +++ b/dist/ai/internal/mcpCore.js
 @@ -81,6 +81,8 @@ const skillsOverlap = (a, b) => {
@@ -1053,15 +1129,54 @@ index 4c416a837fd627e48c53d7b10fb73198484c40f3..1c1efe73d2a6a2f06a361d75c4948a40
  /**
   * @internal
   */
-@@ -91,6 +93,7 @@ export const make = /*#__PURE__*/Effect.sync(() => {
+@@ -91,19 +93,34 @@ export const make = /*#__PURE__*/Effect.sync(() => {
    const promptRegistrations = new Map();
    const skillRegistrations = new Map();
    const skillFiles = new Set();
 +  let skillCatalog;
++  let toolCatalog;
++  let resourceCatalog;
    const completionRegistrations = new Map();
    const filterList = (registrations, invocation) => Effect.map(Effect.filter(Arr.filter(registrations, entry => entry.isVisible(invocation.protocol)), entry => entry.visible === undefined ? Effect.succeed(true) : entry.visible(invocation)), entries => entries.map(entry => entry.descriptor));
    const tools = {
-@@ -143,6 +146,11 @@ export const make = /*#__PURE__*/Effect.sync(() => {
+     register: registration => Effect.sync(() => {
+       registrations.set(registration.descriptor.name, registration);
+     }),
+-    list: invocation => filterList(registrations.values(), invocation),
++    registerCatalog: catalog => Effect.sync(() => {
++      toolCatalog = catalog;
++    }),
++    // A registered tool shadows a catalog tool of the same name.
++    list: invocation => {
++      const registered = filterList(registrations.values(), invocation);
++      const catalog = toolCatalog;
++      return catalog === undefined ? registered : Effect.flatMap(registered, tools => Effect.map(catalog.list(invocation), listed => [...tools, ...listed.filter(tool => !registrations.has(tool.name))]));
++    },
+     call: (call, invocation, beforeHandle) => Effect.suspend(() => {
+       const registration = registrations.get(call.name);
+       if (registration === undefined) {
+-        return new ToolNotFound({
++        const catalog = toolCatalog;
++        if (catalog === undefined) return new ToolNotFound({
+           name: call.name
+         });
++        return Effect.flatMap(catalog.call(call, invocation), result => result === undefined ? Effect.fail(new ToolNotFound({
++          name: call.name
++        })) : Effect.succeed(OperationOutcome.Complete(result)));
+       }
+       if (!registration.isVisible(invocation.protocol)) {
+         return new ToolNotFound({
+@@ -130,6 +147,9 @@ export const make = /*#__PURE__*/Effect.sync(() => {
+         resourceTemplateRegistrations[index] = registration;
+       }
+     }),
++    registerCatalog: catalog => Effect.sync(() => {
++      resourceCatalog = catalog;
++    }),
+     list: invocation => filterList(resourceRegistrations, invocation),
+     listTemplates: invocation => filterList(resourceTemplateRegistrations, invocation),
+     read: Effect.fnUntraced(function* (uri, invocation) {
+@@ -143,6 +163,15 @@ export const make = /*#__PURE__*/Effect.sync(() => {
            return yield* template.read(uri, params, invocation);
          }
        }
@@ -1070,10 +1185,14 @@ index 4c416a837fd627e48c53d7b10fb73198484c40f3..1c1efe73d2a6a2f06a361d75c4948a40
 +        const result = yield* skillCatalog.read(uri, invocation);
 +        if (result !== undefined) return result;
 +      }
++      if (resourceCatalog !== undefined) {
++        const result = yield* resourceCatalog.read(uri, invocation);
++        if (result !== undefined) return result;
++      }
        return yield* new ResourceNotFound({
          uri
        });
-@@ -184,6 +192,39 @@ export const make = /*#__PURE__*/Effect.sync(() => {
+@@ -184,6 +213,39 @@ export const make = /*#__PURE__*/Effect.sync(() => {
        };
      })
    };
@@ -1113,7 +1232,7 @@ index 4c416a837fd627e48c53d7b10fb73198484c40f3..1c1efe73d2a6a2f06a361d75c4948a40
    const skills = {
      register: registration => Effect.suspend(() => {
        const {
-@@ -204,17 +245,34 @@ export const make = /*#__PURE__*/Effect.sync(() => {
+@@ -204,17 +266,34 @@ export const make = /*#__PURE__*/Effect.sync(() => {
        for (const file of files) skillFiles.add(file);
        return Effect.void;
      }),
@@ -1155,7 +1274,7 @@ index 4c416a837fd627e48c53d7b10fb73198484c40f3..1c1efe73d2a6a2f06a361d75c4948a40
      }),
      readDirectory: Effect.fnUntraced(function* (uri, invocation) {
        const children = new Map();
-@@ -226,6 +284,17 @@ export const make = /*#__PURE__*/Effect.sync(() => {
+@@ -226,6 +305,17 @@ export const make = /*#__PURE__*/Effect.sync(() => {
          found = true;
          for (const child of own) children.set(child.uri, child);
        }
@@ -1173,7 +1292,7 @@ index 4c416a837fd627e48c53d7b10fb73198484c40f3..1c1efe73d2a6a2f06a361d75c4948a40
        if (!found) {
          return yield* new DirectoryNotFound({
            uri
-@@ -234,11 +303,19 @@ export const make = /*#__PURE__*/Effect.sync(() => {
+@@ -234,11 +324,19 @@ export const make = /*#__PURE__*/Effect.sync(() => {
        return Array.from(children.values()).sort((a, b) => a.uri < b.uri ? -1 : a.uri > b.uri ? 1 : 0);
      })
    };
@@ -1185,9 +1304,10 @@ index 4c416a837fd627e48c53d7b10fb73198484c40f3..1c1efe73d2a6a2f06a361d75c4948a40
 +    current: Effect.sync(() => eventsHandler)
 +  };
    const registrationPresence = Effect.sync(() => ({
-     tools: registrations.size > 0,
+-    tools: registrations.size > 0,
 -    resources: resourceRegistrations.length > 0 || resourceTemplateRegistrations.length > 0,
-+    resources: resourceRegistrations.length > 0 || resourceTemplateRegistrations.length > 0 || skillCatalog !== undefined,
++    tools: registrations.size > 0 || toolCatalog !== undefined,
++    resources: resourceRegistrations.length > 0 || resourceTemplateRegistrations.length > 0 || skillCatalog !== undefined || resourceCatalog !== undefined,
      prompts: promptRegistrations.size > 0,
 -    skills: skillRegistrations.size > 0
 +    skills: skillRegistrations.size > 0 || skillCatalog !== undefined,
@@ -1195,7 +1315,7 @@ index 4c416a837fd627e48c53d7b10fb73198484c40f3..1c1efe73d2a6a2f06a361d75c4948a40
    }));
    return {
      tools,
-@@ -246,6 +323,7 @@ export const make = /*#__PURE__*/Effect.sync(() => {
+@@ -246,6 +344,7 @@ export const make = /*#__PURE__*/Effect.sync(() => {
      prompts,
      completions,
      skills,
@@ -2275,7 +2395,7 @@ index ba6c8308c32c069d47aee10daf8361a244c4d9e6..49e207340576873874653ce5ecc88efe
 + */
 +export type UnsubscribeEventParams = typeof UnsubscribeEventParams.Type
 diff --git a/src/ai/McpServer.ts b/src/ai/McpServer.ts
-index b544b6f138b5550bc4fbb465f879d1d04e6443c2..1582c4f65fea118e78cee73965ab4145198a8605 100644
+index b544b6f138b5550bc4fbb465f879d1d04e6443c2..20a89d7336781943d0a35f5538cf503886e23c51 100644
 --- a/src/ai/McpServer.ts
 +++ b/src/ai/McpServer.ts
 @@ -1533,36 +1533,17 @@ const requestSpanOptions = (
@@ -2664,7 +2784,7 @@ index b544b6f138b5550bc4fbb465f879d1d04e6443c2..1582c4f65fea118e78cee73965ab4145
  /**
   * Utility type that validates a completion-handler record against the allowed
   * parameter keys.
-@@ -4011,6 +4173,92 @@ export const registerSkill: (options: SkillOptions) => Effect.Effect<void, Cause
+@@ -4011,6 +4173,197 @@ export const registerSkill: (options: SkillOptions) => Effect.Effect<void, Cause
  export const skill = (options: SkillOptions): Layer.Layer<never, Cause.IllegalArgumentError, McpServer> =>
    Layer.effectDiscard(registerSkill(options))
  
@@ -2754,14 +2874,137 @@ index b544b6f138b5550bc4fbb465f879d1d04e6443c2..1582c4f65fea118e78cee73965ab4145
 +    })
 +  }))
 +
++/**
++ * Tools a server reads on each request, as the caller, for {@link toolCatalog}.
++ *
++ * **Details**
++ *
++ * `list` returns the tools the caller is served beside the registered ones.
++ * `call` runs one of them by name, or returns `undefined` when the caller is
++ * served no tool of that name. A call's failures are its result: return an
++ * `isError` result for them.
++ *
++ * @stability unstable
++ * @category models
++ * @since 4.1.4
++ */
++export interface ToolCatalog<R = never> {
++  readonly list: Effect.Effect<ReadonlyArray<McpSchema.Tool>, never, R>
++  readonly call: (
++    name: string,
++    args: Readonly<Record<string, unknown>>
++  ) => Effect.Effect<McpSchema.CallToolResult | undefined, never, R>
++}
++
++/**
++ * Creates a layer that serves tools the server reads on each request, as the
++ * caller, beside the tools registered with {@link toolkit}.
++ *
++ * **Details**
++ *
++ * `list` runs on `tools/list` and `call` on a `tools/call` no registered tool
++ * answers. A registered tool shadows a catalog tool of the same name. Each runs
++ * with the request's `McpRequestContext` and `McpServerClient`, as events
++ * handlers do. MCP middleware, visibility and parameter header checks do not
++ * run for them: the server checks the caller itself. A server has one tool
++ * catalog; registering another replaces it.
++ *
++ * @stability unstable
++ * @category layers
++ * @since 4.1.4
++ */
++export const toolCatalog = <R>(
++  catalog: ToolCatalog<R>
++): Layer.Layer<never, never, McpServer | Exclude<R, McpRequestContext>> =>
++  Layer.effectDiscard(Effect.gen(function*() {
++    const server = yield* McpServer
++    const services = omitRequestServices(yield* Effect.context<Exclude<R, McpRequestContext>>())
++    const run = <A, E>(effect: Effect.Effect<A, E, R>, invocation: McpCore.McpInvocation): Effect.Effect<A, E> =>
++      provideInvocationContext(effect, invocation).pipe(
++        Effect.provideContext(services as Context.Context<Exclude<R, McpRequestContext>>)
++      )
++    yield* internalState.get(server)!.core.tools.registerCatalog({
++      list: (invocation) => run(catalog.list, invocation),
++      call: (call, invocation) => run(catalog.call(call.name, call.arguments), invocation)
++    })
++  }))
++
++/**
++ * Resources a server reads on each request, as the caller, for
++ * {@link resourceCatalog}.
++ *
++ * **Details**
++ *
++ * `read` returns the resource at `uri`, or `undefined` when the caller is
++ * served none there.
++ *
++ * @stability unstable
++ * @category models
++ * @since 4.1.4
++ */
++export interface ResourceCatalog<R = never> {
++  readonly read: (
++    uri: string
++  ) => Effect.Effect<McpSchema.ReadResourceResult | undefined, McpSchema.InternalError, R>
++}
++
++/**
++ * Creates a layer that serves resources the server reads on each request, as
++ * the caller.
++ *
++ * **Details**
++ *
++ * `read` runs on a `resources/read` that no registered resource, resource
++ * template or skill answers, with the request's `McpRequestContext`. Catalog
++ * resources are not listed by `resources/list`. With a catalog the server
++ * declares the `resources` capability. A server has one resource catalog;
++ * registering another replaces it.
++ *
++ * @stability unstable
++ * @category layers
++ * @since 4.1.4
++ */
++export const resourceCatalog = <R>(
++  catalog: ResourceCatalog<R>
++): Layer.Layer<never, never, McpServer | Exclude<R, McpRequestContext>> =>
++  Layer.effectDiscard(Effect.gen(function*() {
++    const server = yield* McpServer
++    const services = omitRequestServices(yield* Effect.context<Exclude<R, McpRequestContext>>())
++    yield* internalState.get(server)!.core.resources.registerCatalog({
++      read: (uri, invocation) =>
++        provideInvocationContext(catalog.read(uri), invocation).pipe(
++          Effect.provideContext(services as Context.Context<Exclude<R, McpRequestContext>>)
++        )
++    })
++  }))
++
++
  /**
   * Registers an MCP prompt from an Effect program.
   *
 diff --git a/src/ai/internal/mcpCore.ts b/src/ai/internal/mcpCore.ts
-index 643982d6121f953016735b150011c88142119050..044324b7cf4318e2896e1a10d82026ee28d77d5a 100644
+index 643982d6121f953016735b150011c88142119050..15d10da35e8d2bb859fcf8e0fc4ff5919cf3b19b 100644
 --- a/src/ai/internal/mcpCore.ts
 +++ b/src/ai/internal/mcpCore.ts
-@@ -330,6 +330,33 @@ export interface SkillRegistration {
+@@ -200,6 +200,8 @@ export interface Tools {
+   readonly register: (
+     registration: ToolRegistration
+   ) => Effect.Effect<void>
++  // A server has one catalog; registering another replaces it.
++  readonly registerCatalog: (catalog: ToolCatalogRegistration) => Effect.Effect<void>
+   readonly list: (
+     invocation: McpInvocation
+   ) => Effect.Effect<ReadonlyArray<McpSchema.Tool>, RequestRejected>
+@@ -247,6 +249,8 @@ export interface Resources {
+   // Synchronous, so a caller can check skill ownership and register in one step.
+   readonly register: (registration: ResourceRegistration) => void
+   readonly registerTemplate: (registration: ResourceTemplateRegistration) => Effect.Effect<void>
++  // A server has one catalog; registering another replaces it.
++  readonly registerCatalog: (catalog: ResourceCatalogRegistration) => Effect.Effect<void>
+   readonly list: (
+     invocation: McpInvocation
+   ) => Effect.Effect<ReadonlyArray<McpSchema.Resource>, RequestRejected>
+@@ -330,6 +334,61 @@ export interface SkillRegistration {
    readonly directory: (uri: string) => ReadonlyArray<DirectoryChild> | undefined
  }
  
@@ -2792,10 +3035,38 @@ index 643982d6121f953016735b150011c88142119050..044324b7cf4318e2896e1a10d82026ee
 +  ) => Effect.Effect<McpSchema.ReadResourceResult | undefined, McpSchema.InternalError>
 +}
 +
++/**
++ * Tools a server reads on each request, as the caller, beside the tools
++ * registered when it is built. `call` returns `undefined` for a name the
++ * caller is not served.
++ *
++ * @internal
++ */
++export interface ToolCatalogRegistration {
++  readonly list: (invocation: McpInvocation) => Effect.Effect<ReadonlyArray<McpSchema.Tool>>
++  readonly call: (
++    call: typeof McpSchema.CallTool.payloadSchema.Type,
++    invocation: McpInvocation
++  ) => Effect.Effect<McpSchema.CallToolResult | undefined>
++}
++
++/**
++ * Resources a server reads on each request, as the caller. `read` returns
++ * `undefined` for a URI the caller is not served.
++ *
++ * @internal
++ */
++export interface ResourceCatalogRegistration {
++  readonly read: (
++    uri: string,
++    invocation: McpInvocation
++  ) => Effect.Effect<McpSchema.ReadResourceResult | undefined, McpSchema.InternalError>
++}
++
  /**
   * @internal
   */
-@@ -337,6 +364,8 @@ export interface Skills {
+@@ -337,6 +396,8 @@ export interface Skills {
    // Fails when the skill's directory overlaps another skill's, or one of its
    // files is already registered as a resource.
    readonly register: (registration: SkillRegistration) => Effect.Effect<void, Cause.IllegalArgumentError>
@@ -2804,7 +3075,7 @@ index 643982d6121f953016735b150011c88142119050..044324b7cf4318e2896e1a10d82026ee
    // Whether `uri` is a file of a registered skill, which only that skill may serve.
    readonly ownsFile: (uri: string) => boolean
    readonly list: (invocation: McpInvocation) => Effect.Effect<ReadonlyArray<Skill>, RequestRejected>
-@@ -498,6 +527,35 @@ export type ServerNotification = Data.TaggedEnum<{
+@@ -498,6 +559,35 @@ export type ServerNotification = Data.TaggedEnum<{
   */
  export const ServerNotification = Data.taggedEnum<ServerNotification>()
  
@@ -2840,7 +3111,7 @@ index 643982d6121f953016735b150011c88142119050..044324b7cf4318e2896e1a10d82026ee
  /**
   * @internal
   */
-@@ -507,11 +565,13 @@ export interface McpCore {
+@@ -507,11 +597,13 @@ export interface McpCore {
    readonly prompts: Prompts
    readonly completions: Completions
    readonly skills: Skills
@@ -2854,7 +3125,7 @@ index 643982d6121f953016735b150011c88142119050..044324b7cf4318e2896e1a10d82026ee
    }>
  }
  
-@@ -530,6 +590,9 @@ const skillsOverlap = (a: string, b: string): boolean => {
+@@ -530,6 +622,9 @@ const skillsOverlap = (a: string, b: string): boolean => {
    return rootA === rootB || rootA.startsWith(`${rootB}/`) || rootB.startsWith(`${rootA}/`)
  }
  
@@ -2864,15 +3135,61 @@ index 643982d6121f953016735b150011c88142119050..044324b7cf4318e2896e1a10d82026ee
  /**
   * @internal
   */
-@@ -540,6 +603,7 @@ export const make: Effect.Effect<McpCore> = Effect.sync(() => {
+@@ -540,6 +635,9 @@ export const make: Effect.Effect<McpCore> = Effect.sync(() => {
    const promptRegistrations = new Map<string, PromptRegistration>()
    const skillRegistrations = new Map<string, SkillRegistration>()
    const skillFiles = new Set<string>()
 +  let skillCatalog: SkillCatalogRegistration | undefined
++  let toolCatalog: ToolCatalogRegistration | undefined
++  let resourceCatalog: ResourceCatalogRegistration | undefined
    const completionRegistrations = new Map<
      string,
      (
-@@ -620,6 +684,11 @@ export const make: Effect.Effect<McpCore> = Effect.sync(() => {
+@@ -569,12 +667,30 @@ export const make: Effect.Effect<McpCore> = Effect.sync(() => {
+       Effect.sync(() => {
+         registrations.set(registration.descriptor.name, registration)
+       }),
+-    list: (invocation) => filterList(registrations.values(), invocation),
++    registerCatalog: (catalog) =>
++      Effect.sync(() => {
++        toolCatalog = catalog
++      }),
++    // A registered tool shadows a catalog tool of the same name.
++    list: (invocation) => {
++      const registered = filterList(registrations.values(), invocation)
++      const catalog = toolCatalog
++      return catalog === undefined ? registered : Effect.flatMap(registered, (tools) =>
++        Effect.map(
++          catalog.list(invocation),
++          (listed) => [...tools, ...listed.filter((tool) => !registrations.has(tool.name))]
++        ))
++    },
+     call: (call, invocation, beforeHandle) =>
+       Effect.suspend((): Effect.Effect<OperationOutcome<McpSchema.CallToolResult>, ToolError> => {
+         const registration = registrations.get(call.name)
+         if (registration === undefined) {
+-          return new ToolNotFound({ name: call.name })
++          const catalog = toolCatalog
++          if (catalog === undefined) return new ToolNotFound({ name: call.name })
++          return Effect.flatMap(catalog.call(call, invocation), (result) =>
++            result === undefined
++              ? Effect.fail(new ToolNotFound({ name: call.name }))
++              : Effect.succeed(OperationOutcome.Complete(result)))
+         }
+         if (!registration.isVisible(invocation.protocol)) {
+           return new ToolNotFound({ name: call.name })
+@@ -607,6 +723,10 @@ export const make: Effect.Effect<McpCore> = Effect.sync(() => {
+           resourceTemplateRegistrations[index] = registration
+         }
+       }),
++    registerCatalog: (catalog) =>
++      Effect.sync(() => {
++        resourceCatalog = catalog
++      }),
+     list: (invocation) => filterList(resourceRegistrations, invocation),
+     listTemplates: (invocation) => filterList(resourceTemplateRegistrations, invocation),
+     read: Effect.fnUntraced(function*(uri, invocation) {
+@@ -620,6 +740,15 @@ export const make: Effect.Effect<McpCore> = Effect.sync(() => {
            return yield* template.read(uri, params, invocation)
          }
        }
@@ -2881,10 +3198,14 @@ index 643982d6121f953016735b150011c88142119050..044324b7cf4318e2896e1a10d82026ee
 +        const result = yield* skillCatalog.read(uri, invocation)
 +        if (result !== undefined) return result
 +      }
++      if (resourceCatalog !== undefined) {
++        const result = yield* resourceCatalog.read(uri, invocation)
++        if (result !== undefined) return result
++      }
        return yield* new ResourceNotFound({ uri })
      })
    }
-@@ -662,6 +731,42 @@ export const make: Effect.Effect<McpCore> = Effect.sync(() => {
+@@ -662,6 +791,42 @@ export const make: Effect.Effect<McpCore> = Effect.sync(() => {
      })
    }
  
@@ -2927,7 +3248,7 @@ index 643982d6121f953016735b150011c88142119050..044324b7cf4318e2896e1a10d82026ee
    const skills: Skills = {
      register: (registration) =>
        Effect.suspend(() => {
-@@ -680,22 +785,41 @@ export const make: Effect.Effect<McpCore> = Effect.sync(() => {
+@@ -680,22 +845,41 @@ export const make: Effect.Effect<McpCore> = Effect.sync(() => {
          for (const file of files) skillFiles.add(file)
          return Effect.void
        }),
@@ -2975,7 +3296,7 @@ index 643982d6121f953016735b150011c88142119050..044324b7cf4318e2896e1a10d82026ee
        }),
      readDirectory: Effect.fnUntraced(function*(uri, invocation) {
        const children = new Map<string, DirectoryChild>()
-@@ -710,6 +834,17 @@ export const make: Effect.Effect<McpCore> = Effect.sync(() => {
+@@ -710,6 +894,17 @@ export const make: Effect.Effect<McpCore> = Effect.sync(() => {
          found = true
          for (const child of own) children.set(child.uri, child)
        }
@@ -2993,7 +3314,7 @@ index 643982d6121f953016735b150011c88142119050..044324b7cf4318e2896e1a10d82026ee
        if (!found) {
          return yield* new DirectoryNotFound({ uri })
        }
-@@ -717,12 +852,23 @@ export const make: Effect.Effect<McpCore> = Effect.sync(() => {
+@@ -717,12 +912,23 @@ export const make: Effect.Effect<McpCore> = Effect.sync(() => {
      })
    }
  
@@ -3007,10 +3328,11 @@ index 643982d6121f953016735b150011c88142119050..044324b7cf4318e2896e1a10d82026ee
 +  }
 +
    const registrationPresence = Effect.sync(() => ({
-     tools: registrations.size > 0,
+-    tools: registrations.size > 0,
 -    resources: resourceRegistrations.length > 0 || resourceTemplateRegistrations.length > 0,
++    tools: registrations.size > 0 || toolCatalog !== undefined,
 +    resources: resourceRegistrations.length > 0 || resourceTemplateRegistrations.length > 0 ||
-+      skillCatalog !== undefined,
++      skillCatalog !== undefined || resourceCatalog !== undefined,
      prompts: promptRegistrations.size > 0,
 -    skills: skillRegistrations.size > 0
 +    skills: skillRegistrations.size > 0 || skillCatalog !== undefined,

@@ -2,8 +2,14 @@
 import { cacheKey } from "@executor-js/app-cache";
 import { Effect, Schema } from "effect";
 import type { DynamicRouter, RouterMeta } from "../contracts/router.ts";
-import { McpError, McpServerHeader, McpToolMetadata, McpToolsOptions } from "../contracts/mcp.ts";
-import { type JsonValue } from "../contracts/schema.ts";
+import {
+  McpError,
+  McpServerHeader,
+  McpToolMetadata,
+  McpToolsOptions,
+  mcpUiResourceTool,
+} from "../contracts/mcp.ts";
+import { JsonObject, type JsonValue } from "../contracts/schema.ts";
 import {
   catalogCache,
   catalogScope,
@@ -32,6 +38,15 @@ const McpToolSummary = McpToolMetadata.mapFields(
 );
 type McpToolSummary = typeof McpToolSummary.Type;
 
+/** The `ui://` resource a tool names in `_meta.ui`, or in the deprecated flat `ui/resourceUri`. */
+const uiResourceOf = (tool: McpToolMetadata) => {
+  const ui = tool._meta?.ui;
+  const uri = Schema.is(JsonObject)(ui) ? ui.resourceUri : tool._meta?.["ui/resourceUri"];
+  return typeof uri === "string" && uri.startsWith("ui://") ? uri : undefined;
+};
+
+const UiResourceInput = Schema.Struct({ uri: Schema.String });
+
 /** Router metadata from a server's self-description. Author metadata on the router wins. */
 const serverMeta = (server: McpServerHeader): RouterMeta => {
   const title = server.title ?? server.name;
@@ -56,14 +71,14 @@ export const mcpCatalog = (options: McpCatalogOptions, kinds: OperationKinds) =>
     }).pipe(Effect.mapError(invalid));
     const cache = yield* catalogScope(options, options.headers, invalid);
     const id = yield* cacheKey({ url: parsed.url });
-    const key: JsonValue = ["mcp-catalog-v3", id, "current"];
+    const key: JsonValue = ["mcp-catalog-v4", id, "current"];
     const changed =
       cache === undefined ? undefined : fromPromise(method(cache, "invalidate"), "cache")(key);
     const client = yield* mcpClientEffect(parsed, changed);
     const catalog = yield* catalogCache({
       ...options,
       cache,
-      prefix: ["mcp-catalog-v3", id],
+      prefix: ["mcp-catalog-v4", id],
       schema: McpToolMetadata,
       summary: {
         schema: McpToolSummary,
@@ -138,6 +153,34 @@ export const mcpCatalog = (options: McpCatalogOptions, kinds: OperationKinds) =>
               ),
         ),
       );
+    /**
+     * Reads only a resource one of the server's tools declares, so an MCP Apps host cannot use the
+     * account to read anything else the server serves.
+     */
+    const uiResource = nativeOperation(
+      protocolOperations(
+        {
+          [mcpUiResourceTool]: {
+            description: "Read a ui:// resource that one of this server's tools declares.",
+            readOnly: true,
+            annotations: { readOnlyHint: true },
+            input: UiResourceInput,
+            outputSchema: { type: "object" },
+            run: (_context, input) =>
+              Effect.gen(function* () {
+                const { uri } = yield* Schema.decodeUnknownEffect(UiResourceInput)(input).pipe(
+                  Effect.mapError(() => new McpError({ phase: "call", reason: "invalid_input" })),
+                );
+                const tools = yield* catalog.list();
+                if (!tools.some((tool) => uiResourceOf(tool) === uri))
+                  return yield* new McpError({ phase: "call", reason: "invalid_input" });
+                return yield* client.read(uri);
+              }),
+          },
+        },
+        { [mcpUiResourceTool]: "query" },
+      )[mcpUiResourceTool],
+    );
     const router: DynamicRouter = {
       kind: "dynamic",
       meta: () =>
@@ -164,13 +207,15 @@ export const mcpCatalog = (options: McpCatalogOptions, kinds: OperationKinds) =>
             ),
           ),
       resolve: (name) =>
-        catalog
-          .resolve(name)
-          .pipe(
-            Effect.flatMap((tool) =>
-              tool === undefined ? Effect.succeed(undefined) : operation(tool),
-            ),
-          ),
+        name === mcpUiResourceTool
+          ? Effect.succeed(uiResource)
+          : catalog
+              .resolve(name)
+              .pipe(
+                Effect.flatMap((tool) =>
+                  tool === undefined ? Effect.succeed(undefined) : operation(tool),
+                ),
+              ),
     };
     return routerDeclaration(router);
   });
