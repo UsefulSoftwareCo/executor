@@ -271,10 +271,7 @@ export const startManagedServer = (
                         )).flatMap((file) => ["--preload", file]),
                         "./apps/hosted/self-host/scripts/coverage-main.ts",
                       ]
-                    : [
-                        ...preloads.flatMap((url) => ["--import", url.href]),
-                        ...command,
-                      ],
+                    : [...preloads.flatMap((url) => ["--import", url.href]), ...command],
               };
         const child = yield* processes.spawn(
           ChildProcess.make(launch.command, launch.args, {
