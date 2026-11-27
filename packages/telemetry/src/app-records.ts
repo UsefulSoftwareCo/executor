@@ -15,6 +15,7 @@ const operations = [
   "mutate",
   "call",
   "account-check",
+  "connect",
   "webhooks",
   "webhook-validate",
   "webhook-complete",
@@ -265,6 +266,7 @@ const spanAttributes: Readonly<Record<string, Kept>> = {
   "executor.milestone.reached": flag,
   "executor.owner": oneOf("executor", "app", "upstream", "person", "lease", "background"),
   "executor.app.code": oneOf(
+    "connect",
     "factory",
     "router",
     "approval",

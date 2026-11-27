@@ -10,6 +10,7 @@ import {
 import { type AccountId, type AppId, StorageError } from "../contracts/shared.ts";
 import { AccountNotFound } from "../contracts/account.ts";
 import { StoredAccount, type StoredVersion } from "../contracts/storage.ts";
+import { interactiveBinding } from "./interactive-state.ts";
 import { query, type Query } from "./database.ts";
 
 export const selectionAccountIds = (selected: SelectedAccounts): readonly AccountId[] => [
@@ -78,6 +79,13 @@ export const validateSelection = (
             if (account === undefined) return yield* new AccountNotFound({ account: id });
             if (account.provider !== required.provider)
               return yield* Effect.fail(invalid("provider_mismatch"));
+            if (required.definition.auth[account.method]?.type === "interactive") {
+              const binding = yield* interactiveBinding(db, {
+                account: account.id,
+                owner: account.owner,
+              });
+              if (binding?.app !== app) return yield* invalid("app_bound");
+            }
             return account;
           }),
         );
@@ -96,6 +104,7 @@ export const chooseAccounts = (
   version: Pick<StoredVersion, "id" | "requirements">,
   chosen: AppAccounts | undefined,
   read?: SelectionAccountsRead,
+  connecting?: string,
 ) =>
   Effect.gen(function* () {
     const requirements = version.requirements.accounts;
@@ -119,7 +128,9 @@ export const chooseAccounts = (
     }
     const validated = yield* validateSelection(db, app, version.requirements, selected, read);
     const scoped = Object.entries(requirements).filter(
-      ([, required]) => scope === "user" || required.scope === "app",
+      ([slot, required]) =>
+        (scope === "user" || required.scope === "app") &&
+        (connecting === undefined || validated.has(slot)),
     );
     const selections = yield* Effect.forEach(scoped, ([slot, required]) => {
       const selection = validated.get(slot);

@@ -22,8 +22,21 @@ import {
 export type { HostContext, ResolvedAccountsInput } from "./contracts/host.ts";
 export { isolatedCacheSession } from "./implementation/cache-session.ts";
 
-/** Parse trusted account bindings and an optional exact-call approval. Throws safe boundary errors on invalid input. */
-export const hostContext = (accounts: ResolvedAccountsInput, approval?: unknown): HostContext => ({
+/** Parse host-owned accounts, approval and caller identity. Never take the caller from public request input. */
+export const hostContext = (
+  accounts: ResolvedAccountsInput,
+  approval?: unknown,
+  caller?: unknown,
+): HostContext => ({
+  ...(caller === undefined
+    ? {}
+    : {
+        caller: Effect.runSync(
+          Schema.decodeUnknownEffect(Schema.NonEmptyString)(caller).pipe(
+            Effect.mapError(() => new HostInputInvalid()),
+          ),
+        ),
+      }),
   ...(approval === undefined
     ? {}
     : {

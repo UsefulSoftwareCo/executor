@@ -103,6 +103,7 @@ export const workerdHostHandler = (options: {
               state: "execute",
               seed,
               accounts: Redacted.value(context.accounts),
+              ...(context.caller === undefined ? {} : { caller: context.caller }),
             });
           }
           case "load": {

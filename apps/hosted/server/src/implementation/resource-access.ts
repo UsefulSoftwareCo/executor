@@ -4,7 +4,13 @@ import { Effect } from "effect";
 import { SqlClient } from "effect/sql";
 import { teamAppPending } from "./provisioning.ts";
 import { HttpApiBuilder } from "effect/http-api";
-import { StorageError, type AppId, type Provider, type ProviderId } from "@executor-js/sdk/core";
+import {
+  isProvisionedMethod,
+  StorageError,
+  type AppId,
+  type Provider,
+  type ProviderId,
+} from "@executor-js/sdk/core";
 import { HostedApi } from "../contracts/api.ts";
 import { HostedExecutor } from "../contracts/executor.ts";
 import { CurrentOrganization } from "../contracts/organization.ts";
@@ -96,6 +102,7 @@ export const resourceDirectory = (view: "available" | "managed" = "available") =
           provider = yield* executor.accounts.provider({ owner, account: account.id });
           providers.set(account.provider, provider);
         }
+        if (isProvisionedMethod(provider.definition, account.method)) return [];
         const checks = health.get(account.id);
         return [
           checks === undefined ? { account, provider } : { account, provider, health: checks },

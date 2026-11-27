@@ -33,6 +33,7 @@ const readEach = <A extends { readonly text: string }>(
 
 export const setupHelp = (definition: ProviderDefinition): ReadonlyArray<HelpText> =>
   Object.entries(definition.auth).flatMap(([name, method]) => {
+    if (method.type === "interactive") return [];
     const [guide, text, fields] =
       method.type === "secrets"
         ? ["guide", method.guide, method.fields]

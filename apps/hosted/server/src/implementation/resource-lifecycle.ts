@@ -1,5 +1,10 @@
+import { CurrentOrganization } from "../contracts/organization.ts";
+import { GroupDatabase } from "../contracts/groups.ts";
+import { canDeleteAccountWithSql, replacingAccounts } from "./interactive-retirement.ts";
+import { checkConnection } from "./connection-policy.ts";
 import {
   AccountConnectionRefused,
+  AccountProvisioned,
   AccountConnectionTargetChanged,
   AccountId,
   AccountScope,
@@ -179,6 +184,35 @@ export const hostedResourceLifecycle = Effect.gen(function* () {
         if (rows.length !== 1) return yield* new StorageError();
         return user;
       });
+    const authority = (owner: OwnerId) =>
+      Effect.gen(function* () {
+        const organization = yield* organizationOf(owner);
+        const user = yield* CurrentUserId;
+        const rows =
+          yield* sql`select role from member where "organizationId" = ${organization} and "userId" = ${user ?? ""}`;
+        const role = (yield* Schema.decodeUnknownEffect(
+          Schema.Array(Schema.Struct({ role: Schema.Literals(["owner", "admin", "member"]) })),
+        )(rows))[0]?.role;
+        if (role === undefined) return yield* new StorageError();
+        return { organization, owner, role };
+      }).pipe(
+        Effect.catchTags({
+          SqlError: () => new StorageError(),
+          SchemaError: () => new StorageError(),
+        }),
+      );
+    const asOwner = <A, E, R>(
+      owner: OwnerId,
+      work: Effect.Effect<A, E, R | CurrentOrganization | GroupDatabase>,
+    ) =>
+      authority(owner).pipe(
+        Effect.flatMap((organization) =>
+          work.pipe(
+            Effect.provideService(CurrentOrganization, organization),
+            Effect.provideService(GroupDatabase, Effect.succeed(sql)),
+          ),
+        ),
+      );
     const lifecycle: ResourceLifecycle = {
       userLinks: (input) =>
         linkedAccounts(sql, { subject: input.subject, apps: [input.app] }).pipe(
@@ -534,16 +568,51 @@ export const hostedResourceLifecycle = Effect.gen(function* () {
             where organization_id = ${organization} and client_id = ${survivor.id}`;
           return true;
         }).pipe(Effect.catchTag("SqlError", () => new StorageError())),
+      accountRetiring: (account) =>
+        canDeleteAccountWithSql(sql, account.id).pipe(
+          Effect.flatMap((allowed) => (allowed ? Effect.void : Effect.fail(new StorageError()))),
+        ),
+      connectionSaving: (connection, save) =>
+        Effect.gen(function* () {
+          const instance = yield* executor;
+          const pending = yield* instance.accountConnections
+            .get({ connection })
+            .pipe(
+              Effect.mapError((error) =>
+                Schema.is(AccountConnectionTargetChanged)(error) ? error : new StorageError(),
+              ),
+            );
+          if (pending.state.status === "completed") return yield* save;
+          const access = yield* asOwner(pending.owner, checkConnection(pending)).pipe(
+            Effect.mapError(() => new StorageError()),
+          );
+          return yield* asOwner(
+            pending.owner,
+            replacingAccounts(
+              instance,
+              {
+                app: pending.target.app,
+                requirement: pending.target.requirement,
+                subject: access.target.scope === "app" ? null : ((yield* CurrentUserId) ?? null),
+              },
+              save,
+            ),
+          );
+        }),
       accountRemoving: (account) =>
         Effect.gen(function* () {
           const organization = yield* organizationOf(account.owner);
           const user = yield* member(organization, yield* CurrentUserId);
           const policy = yield* sql`select p.account_id from hosted_account_access p
-        where p.account_id = ${account.id} and p.organization_id = ${organization}
-        and p.personal_user_id = ${user} for update`;
+          where p.account_id = ${account.id} and p.organization_id = ${organization}
+          and p.personal_user_id = ${user} for update`;
           if (policy.length !== 1) return yield* new StorageError();
           yield* sql`select id from executor_accounts where id = ${account.id} for update`;
-          if ((yield* appLinkApps(sql, account.id)).length > 0) return yield* new StorageError();
+          const interactive =
+            yield* sql`select id from executor_account_connections where owner = ${account.owner}
+            and state ->> 'status' = 'completed' and state -> 'account' ->> 'id' = ${account.id} and state -> 'interactive' is not null`;
+          if (interactive.length === 0 && (yield* appLinkApps(sql, account.id)).length > 0)
+            return yield* new StorageError();
           yield* sql`delete from hosted_app_account_links where account = ${account.id}`;
         }).pipe(Effect.catchTag("SqlError", () => new StorageError())),
       appRemoving: (app) =>
@@ -592,13 +661,20 @@ export const hostedResourceLifecycle = Effect.gen(function* () {
             if (!usable.has(input.account.id)) return yield* new AccountConnectionRefused(target);
           }
           const sources = yield* webhooks;
-          yield* addLink(sql, sources, {
-            app: input.app,
-            requirement: input.requirement,
-            account: input.account.id,
-            subject: input.scope === "app" ? null : user,
-            linkedBy: user,
-          }).pipe(Effect.mapError(() => new StorageError()));
+          yield* asOwner(
+            input.account.owner,
+            addLink(sql, sources, {
+              app: input.app,
+              requirement: input.requirement,
+              account: input.account.id,
+              subject: input.scope === "app" ? null : user,
+              linkedBy: user,
+            }),
+          ).pipe(
+            Effect.mapError((error) =>
+              Schema.is(AccountProvisioned)(error) ? error : new StorageError(),
+            ),
+          );
         }).pipe(
           Effect.catchTags({
             SqlError: () => new StorageError(),

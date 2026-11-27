@@ -16,7 +16,7 @@ import {
   permitsApp,
   permittedAppIds,
 } from "@executor-js/authorization";
-import { AppId } from "@executor-js/sdk/core";
+import { AppId, isProvisionedMethod } from "@executor-js/sdk/core";
 import { Context } from "effect";
 import {
   currentResourceAuthority,
@@ -282,11 +282,21 @@ export const inventory = (owner: OwnerId) =>
     const listedApps = yield* executor.apps.list({ owner, ids: permittedAppIds(policy) });
     const actor = yield* currentResourceAuthority;
     const apps = yield* visibleAppsAs(actor, listedApps);
-    const accounts = permitsAction(policy, "read")
+    const visible = permitsAction(policy, "read")
       ? yield* executor.accounts
           .list({ owner })
           .pipe(Effect.flatMap((listed) => visibleAccountsAs(actor, listed)))
       : [];
+    const providers = new Map(
+      (yield* executor.accounts.providers({ owner })).map((provider) => [
+        provider.id,
+        provider.definition,
+      ]),
+    );
+    const accounts = visible.filter((account) => {
+      const definition = providers.get(account.provider);
+      return definition !== undefined && !isProvisionedMethod(definition, account.method);
+    });
     const ids = apps.map((app) => app.id);
     const linked = yield* callerLinkedAccounts(ids);
     const links = [

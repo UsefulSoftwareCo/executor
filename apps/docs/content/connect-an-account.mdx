@@ -3,22 +3,27 @@ title: Connect an account
 description: "Save a credential once as an account, from the app you are configuring or through an agent, then link it to apps that need that provider and that you have permission to configure."
 ---
 
-An **account** is one saved set of credentials for one **provider**. On **Local**, **Self-host**, and **Cloud**, open a deployed app's **Accounts** tab and choose **Connect new account** beside a provider requirement. You can reuse a saved account for matching requirements on apps you have permission to configure.
+An **account** is one saved set of credentials for one **provider**. On **Local**, **Self-host**, and **Cloud**, open a deployed app's **Accounts** tab and choose **Connect new account** beside a provider requirement. You can reuse a saved account for matching requirements on apps you have permission to configure. App-owned sign-ins stay bound to the app that acquired them.
 
 **Prerequisites:** The app must be deployed and declare the provider requirement. On **Self-host** and **Cloud**, you need access to use the app for **Your accounts** and permission to edit it for **App accounts**. For agent setup on Cloud or Self-host, use a connection with management access that can call the built-in Executor app with its linked service account. On Local, use the Local Executor MCP connection.
 
 **You'll know it worked when:** The new account appears linked under the requirement on the app's **Accounts** tab (or, when started from an agent, `connection.state.status === "completed"`).
 
-There are two kinds of credential, and the provider decides which it accepts:
+The provider decides which sign-in methods it accepts:
 
 - **Secrets**: fields you paste, such as an API token, or an email and a key.
 - **OAuth**: browser sign-in or a client ID and secret for machine-to-machine access.
   Executor stores and renews the resulting tokens.
+- **App-owned sign-in**: the app presents a link, device code or paste-back step
+  in the Connect dialog. Its backend keeps the credential; Executor stores an
+  opaque reference that only this app can use.
 
 ## From the dashboard
 
 Every account is connected for a deployed app. Choose **Connect new account** at the end of a provider's list on the app's
 **Accounts** tab, then choose **Connect \<provider\>** (or **Reconnect \<provider\>** when replacing credentials, or **Continue to \<provider\>** for an intermediate step) to start browser sign-in. For a new secrets account, enter the fields in the dialog and select **Connect account**.
+
+The connection dialog contains the sign-in methods supported by the provider.
 
 The dialog uses the provider fields already loaded with the app. Opening it does
 not create a connection or fetch the fields again. A connection is created when
@@ -56,6 +61,14 @@ Closing it keeps the default. Reconnecting keeps the existing name. You can also
 rename an account later from its menu on the app's **Accounts** tab, or with **Edit
 details** on the **Accounts** page.
 
+For app-owned sign-in, the initial name comes from the identity the app reports,
+when available. Close an unfinished dialog to cancel its sign-in. A refused or
+expired attempt can be started again. Removing an app-owned account's final
+link also removes it from the app's backend, so the dialog asks for confirmation.
+If removal fails, the account stays available for another attempt. These
+accounts cannot be reused by another app or reconnected in place; connect a
+new account instead.
+
 Completing an app-specific connection saves and links the account together when the requirement and access checks pass. Browser sign-in returns to the app's Accounts tab;
 cancelling or failing sign-in offers a direct way back to the app.
 
@@ -89,7 +102,9 @@ Local has the same Accounts tab. See "Which accounts a call uses" below.
 
 ## From an agent
 
-Open the complete connection link returned by the Executor app's management tool in your browser. For a new secrets account, enter the fields and select **Connect account**. For OAuth, finish sign-in with the provider. The page shows **Account connected** on success.
+An agent can start the same flow. It must never ask you for a secret in chat,
+and must never read a token out of your files. It asks Executor for a connection
+link and gives you the link; you finish in your browser.
 
 <CodeGroup>
 

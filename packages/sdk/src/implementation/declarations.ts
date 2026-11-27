@@ -133,6 +133,7 @@ export const makeDeclarations = (options: {
             state.version.id,
             appCacheNamespace(state.version.build, versionHostApi(options.hostApi, state.version)),
             state.scope,
+            state.scope === "user" ? state.actor : undefined,
             selections,
           ]),
         ),

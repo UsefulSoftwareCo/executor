@@ -1,4 +1,4 @@
-import { AccountId } from "@executor-js/sdk/core";
+import { AccountId, type Executor } from "@executor-js/sdk/core";
 import { permittedAppIds } from "@executor-js/authorization";
 import { callerLinkedAccounts } from "../app-accounts.ts";
 import { Effect, Layer, Schema } from "effect";
@@ -22,14 +22,13 @@ import {
   visibleAppsAs,
 } from "../resource-policy.ts";
 
-const checkAccountAccess = (account: AccountId) =>
+export const checkAccountAccess = (executor: Executor, account: AccountId) =>
   Effect.gen(function* () {
     const actor = yield* currentResourceAuthority;
     yield* requireAccountOwnerAs(actor, account);
     const owner = organizationOwner(actor.organization);
     const scope = yield* CurrentPolicy;
     if (scope.tools.kind !== "all") {
-      const executor = yield* Effect.flatten(HostedExecutor);
       const apps = yield* executor.apps.list({ owner, ids: permittedAppIds(scope) });
       const reachable = yield* visibleAppsAs(actor, apps);
       const linked = yield* callerLinkedAccounts(reachable.map((app) => app.id));
@@ -37,10 +36,14 @@ const checkAccountAccess = (account: AccountId) =>
     }
     return { owner, account };
   });
+const accountAccess = (account: AccountId) =>
+  Effect.flatMap(Effect.flatten(HostedExecutor), (executor) =>
+    checkAccountAccess(executor, account),
+  );
 
 const grant = <A extends AccountAction>(action: A) =>
   Effect.flatMap(AccountTargets[action], ({ account }) =>
-    Effect.map(checkAccountAccess(account), (checked) => checked as AccountProof<A>),
+    Effect.map(accountAccess(account), (checked) => checked as AccountProof<A>),
   );
 
 export const AccountGrants = {

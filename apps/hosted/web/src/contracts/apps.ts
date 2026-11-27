@@ -1,3 +1,4 @@
+import { interactiveConnectionActions } from "./interactive-accounts.ts";
 import { hydrated } from "@executor-js/ui/contracts/http";
 import { revalidated } from "@executor-js/ui/contracts/refresh";
 import { pollingQuery } from "@executor-js/ui/contracts/polling";
@@ -233,6 +234,9 @@ export function appConnectionAtoms(key: {
   };
   return {
     request,
+    interactive: interactiveConnectionActions(key.organization, connection, saved, (get) =>
+      get.set(request, undefined),
+    ),
     submit: HostedClient.runtime.fn(
       (payload: { method: string; fields: typeof AccountFieldsInput.Type }, get) =>
         Effect.gen(function* () {
@@ -443,6 +447,21 @@ export function acknowledgeApp(
       apps: upsert(data.apps, saved),
     }));
 }
+
+export const acknowledgeInteractiveConnection = (
+  get: Atom.FnContext,
+  key: { readonly organization: OrganizationReference; readonly connection: AccountConnectionId },
+  account: Account,
+) => {
+  const connection = AsyncResult.value(get(connectionAtom(key)));
+  connectionSaved(
+    get,
+    new ConnectionKey(key),
+    account,
+    Option.isSome(connection) ? connection.value.target.app : null,
+  );
+  get.refresh(connectionAtom(key));
+};
 
 function connectionSaved(
   get: Atom.FnContext,

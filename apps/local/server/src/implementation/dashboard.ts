@@ -1,3 +1,4 @@
+import { isProvisionedMethod } from "@executor-js/sdk/core";
 import { sourceDisplay, sourceDisplayFile } from "@executor-js/app-management/source-display";
 import { connectOptions, connectionClient } from "./oauth-clients.ts";
 import { localResourceHandlers } from "./resources.ts";
@@ -266,6 +267,7 @@ export const dashboard = (
     for (const account of accounts) {
       const definition = definitions.get(account.provider);
       if (definition === undefined) return yield* Effect.fail(new StorageError());
+      if (isProvisionedMethod(definition, account.method)) continue;
       const health = checks.get(account.id);
       display.push({
         ...account,

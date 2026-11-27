@@ -1,3 +1,9 @@
+import { AccountProvisioned } from "./provider.ts";
+import {
+  InteractiveRetirementBusy,
+  InteractiveRetirementFailed,
+  InteractiveReconnectUnsupported,
+} from "./interactive-errors.ts";
 import { UserFacingError } from "@executor-js/utils/user-facing-error";
 /** Pending account setup shared by browser forms, OAuth, and other SDK consumers. */
 import { Schema } from "effect";
@@ -226,12 +232,15 @@ export const AccountConnectionClosed = UserFacingError.define({
 export type AccountConnectionClosed = typeof AccountConnectionClosed.Type;
 
 const errors = [
+  AccountProvisioned,
   StorageError,
   AccountConnectionNotFound,
   ProviderNotFound,
   AccountNotFound,
 ] as const;
 const saveErrors = [
+  InteractiveRetirementBusy,
+  InteractiveRetirementFailed,
   ...errors,
   AccountConnectionClosed,
   AccountConnectionTargetChanged,
@@ -247,6 +256,8 @@ export const AccountConnectionsGroup = HttpApiGroup.make("accountConnections")
       payload: CreateAccountConnection,
       success: AccountConnection,
       error: [
+        AccountProvisioned,
+        InteractiveReconnectUnsupported,
         StorageError,
         ProviderNotFound,
         AccountNotFound,
@@ -307,6 +318,8 @@ export const AccountConnectionsGroup = HttpApiGroup.make("accountConnections")
       payload: StartConnectionOAuth,
       success: OAuthStartResult,
       error: [
+        InteractiveRetirementBusy,
+        InteractiveRetirementFailed,
         ...errors,
         AccountConnectionClosed,
         AccountConnectionTargetChanged,
@@ -334,6 +347,8 @@ export const AccountConnectionsGroup = HttpApiGroup.make("accountConnections")
       payload: CompleteConnectionOAuth,
       success: Account,
       error: [
+        InteractiveRetirementBusy,
+        InteractiveRetirementFailed,
         ...errors,
         AccountConnectionClosed,
         AccountConnectionTargetChanged,
