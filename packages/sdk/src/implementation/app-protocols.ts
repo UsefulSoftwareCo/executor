@@ -77,6 +77,8 @@ const protocol13: AppProtocol = {
         },
 };
 
+const protocol15: AppProtocol = { ...protocol14, version: 15, nodeEntry: nodeAppEntry(15) };
+
 const unscopedAccounts = <Slots>(accounts: {
   readonly app: Slots;
   readonly user?: Slots;
@@ -217,6 +219,7 @@ const protocols: ReadonlyMap<number, AppProtocol> = new Map(
     protocol12,
     protocol13,
     protocol14,
+    protocol15,
   ].map((protocol) => [protocol.version, protocol]),
 );
 

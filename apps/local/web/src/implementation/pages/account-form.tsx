@@ -1,7 +1,14 @@
 import type { AccountSubmission } from "@executor-js/ui/contracts/credentials";
 import { useAtomSet } from "@effect/atom-react";
 import { useState, type ReactNode } from "react";
-import type { Account, AccountScope, AppId, VersionId, Provider } from "@executor-js/sdk";
+import type {
+  Account,
+  AccountId,
+  AccountScope,
+  AppId,
+  VersionId,
+  Provider,
+} from "@executor-js/sdk";
 import { providerDisplayUrl } from "@executor-js/ui/contracts/dashboard";
 import { AccountForm as SharedAccountForm } from "@executor-js/ui/dashboard/account-form";
 import { accountToNameAtom, checkCredentialsAtom } from "../../contracts/accounts.ts";
@@ -17,6 +24,7 @@ export function AppAccountForm({
   requirement,
   provider,
   account,
+  initialAccount,
   checkWith,
   header,
   actions,
@@ -29,6 +37,7 @@ export function AppAccountForm({
   readonly requirement: string;
   readonly provider: Provider;
   readonly account?: Account | undefined;
+  readonly initialAccount?: AccountId | undefined;
   readonly checkWith?: boolean;
   readonly header?: ReactNode;
   readonly actions?: ReactNode;
@@ -87,6 +96,9 @@ export function AppAccountForm({
         <AppOAuthFields
           provider={provider}
           app={app}
+          scope={scope}
+          requirement={requirement}
+          initialAccount={initialAccount}
           atoms={atoms}
           {...(account ? { account } : {})}
           onSaved={saved}

@@ -1,3 +1,8 @@
+import { VerifyIdentities } from "@executor-js/ui/dashboard/verify-identities";
+import { useAtomSet } from "@effect/atom-react";
+import { identifyAccountsAtom } from "../../contracts/accounts.ts";
+import { IdentityAppPicker } from "@executor-js/ui/dashboard/identity-app-picker";
+import { AppAccountForm } from "./account-form.tsx";
 import { Failure } from "../components/common.tsx";
 import { dashboardAtoms } from "../../contracts/dashboard-bindings.ts";
 import { AccountsPage as SharedPage } from "@executor-js/ui/dashboard/accounts";
@@ -12,12 +17,20 @@ import {
   type AccountDialogKind,
 } from "./account-actions.tsx";
 export function AccountsPage({ highlight }: { readonly highlight?: AccountId | undefined }) {
+  const identify = useAtomSet(identifyAccountsAtom, { mode: "promiseExit" });
   const [dialog, setDialog] = useState<{ account: AccountId; kind: AccountDialogKind }>();
   return (
     <>
       <SharedPage
         query={dashboardAtoms.inventory}
         Failure={Failure}
+        action={
+          <VerifyIdentities
+            query={dashboardAtoms.inventory}
+            identify={identify}
+            Failure={Failure}
+          />
+        }
         highlight={highlight}
         empty={
           <EmptyState
@@ -31,6 +44,24 @@ export function AccountsPage({ highlight }: { readonly highlight?: AccountId | u
             Open an app to connect an account.
           </EmptyState>
         }
+        identityActions={(bindings, inventory) => (
+          <IdentityAppPicker bindings={bindings} inventory={inventory}>
+            {({ app, requirement, slot, account, onDone, onPendingChange }) => (
+              <AppAccountForm
+                key={`${app.id}:${slot}`}
+                app={app.id}
+                version={app.activeVersion}
+                scope={requirement.scope}
+                requirement={slot}
+                provider={{ id: requirement.provider, definition: requirement.definition }}
+                initialAccount={account}
+                checkWith={requirement.health === true}
+                onSaved={onDone}
+                onPendingChange={onPendingChange}
+              />
+            )}
+          </IdentityAppPicker>
+        )}
         accountActions={(account) => (
           <LocalAccountActions
             account={account}

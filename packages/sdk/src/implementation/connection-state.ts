@@ -7,6 +7,7 @@ import {
   type AccountConnectionState,
   type GetAccountConnection,
 } from "../contracts/account-connection.ts";
+import { OAuthAdditionalConnection } from "../contracts/oauth.ts";
 import type { Account } from "../contracts/account.ts";
 import type { ResourceLifecycle } from "../contracts/executor.ts";
 import { StorageError } from "../contracts/shared.ts";
@@ -50,7 +51,10 @@ export const readConnection = (db: Query, input: typeof GetAccountConnection.Typ
             ...(yield* recordedFailure(stored.failure)),
           }
         : stored;
-    return { ...row, target, state };
+    const additionalConnections = yield* Schema.decodeUnknownEffect(
+      Schema.Array(OAuthAdditionalConnection),
+    )(row.additionalTargets).pipe(Effect.mapError(() => new StorageError()));
+    return { ...row, target, state, additionalConnections };
   });
 export const lockConnection = (
   db: Query,

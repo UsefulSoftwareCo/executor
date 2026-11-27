@@ -1,6 +1,7 @@
 import { UserFacingError } from "@executor-js/utils/user-facing-error";
 /** Provider definitions are authored in apps, not registered through SDK CRUD. */
-import { Schema } from "effect";
+import { Schema, SchemaGetter } from "effect";
+import { oauthIdentityDefaults } from "./oauth-families.ts";
 import { ProviderId } from "./shared.ts";
 import { CredentialHost, DeclaredAuthMethod } from "apps/contracts";
 
@@ -18,12 +19,27 @@ export type ProviderAuthMethod = typeof ProviderAuthMethod.Type;
  * not choose a global ID or register an owner-specific provider. The host's
  * normalization and hash implementation derive the reference; OAuth client resolution remains deferred.
  */
-export const ProviderDefinition = Schema.Struct({
+const ProviderDefinitionFields = Schema.Struct({
   name: Schema.NonEmptyString,
   auth: Schema.Record(AuthMethodName, ProviderAuthMethod),
   /** Where the declaring app sends credentials. Not part of the identity; see grantedHosts. */
   hosts: Schema.optionalKey(Schema.Array(CredentialHost)),
 });
+
+export const ProviderDefinition = ProviderDefinitionFields.pipe(
+  Schema.decodeTo(ProviderDefinitionFields, {
+    decode: SchemaGetter.transform((definition) => ({
+      ...definition,
+      auth: Object.fromEntries(
+        Object.entries(definition.auth).map(([name, method]) => [
+          name,
+          oauthIdentityDefaults(method),
+        ]),
+      ),
+    })),
+    encode: SchemaGetter.passthrough(),
+  }),
+);
 
 export type ProviderDefinition = typeof ProviderDefinition.Type;
 

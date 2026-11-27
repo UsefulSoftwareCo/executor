@@ -3,6 +3,7 @@ import { appSlug } from "./app-slug.ts";
 /** Persisted records. Decode database results with these schemas before use. */
 import { Effect, Schema, Struct } from "effect";
 import { Account } from "./account.ts";
+import { AccountIdentityId } from "./account-identity.ts";
 import { AccountScope, AppFields, AppRequirements } from "./apps.ts";
 import { Version } from "./version.ts";
 import {
@@ -30,6 +31,9 @@ export const StoredAccount = Schema.Struct({
   credentialGeneration: Schema.Int,
   /** Hosts the account was connected for, or null when it was connected without hosts. */
   allowedHosts: Schema.NullOr(Schema.Array(Schema.String)),
+  identityId: Schema.NullOr(AccountIdentityId),
+  /** Null keeps the legacy grant encrypted under this account's own ID. */
+  oauthGrantId: Schema.NullOr(AccountId),
 });
 /** Parsed account storage record; encrypted bytes remain redacted in memory. */
 export type StoredAccount = typeof StoredAccount.Type;

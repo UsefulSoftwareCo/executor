@@ -51,6 +51,7 @@ const decodeObject = Schema.decodeUnknownEffect(JsonObject);
 const ownerTables = [
   "apps",
   "accounts",
+  "accountIdentities",
   "deployments",
   "profiles",
   "schedules",
@@ -181,7 +182,7 @@ export const makeOwnerMoves = (db: Query, credentials: Credentials): OwnerMoves 
         }
         const accounts = yield* query(() =>
           tx.findMany("accounts", {
-            select: ["id", "owner", "provider"],
+            select: ["id", "owner", "provider", "oauthGrantId"],
             where: (b) => b("owner", "in", from),
           }),
         );
@@ -194,16 +195,16 @@ export const makeOwnerMoves = (db: Query, credentials: Credentials): OwnerMoves 
                     b(
                       "id",
                       "in",
-                      accounts.map((account) => account.id),
+                      accounts.map((account) => account.oauthGrantId ?? account.id),
                     ),
                 }),
               );
         for (const row of grants) {
-          const account = accounts.find((each) => each.id === AccountId.make(row.id));
+          const account = accounts.find((each) => (each.oauthGrantId ?? each.id) === row.id);
           if (account === undefined) continue;
           const grant = yield* readable(
             { kind: "oauth_grant", id: account.id, owner: account.owner },
-            decrypt(account.id, row.encrypted).pipe(
+            decrypt(AccountId.make(row.id), row.encrypted).pipe(
               Effect.flatMap(Schema.decodeUnknownEffect(OAuthGrant)),
             ),
           );
@@ -386,6 +387,19 @@ export const makeOwnerMoves = (db: Query, credentials: Credentials): OwnerMoves 
         for (const table of ownerTables)
           yield* query(() =>
             tx.updateMany(table, { where: (b) => b("owner", "in", from), set: { owner: to } }),
+          );
+        yield* query(() =>
+          tx.updateMany("oauthGrants", {
+            where: (b) => b("owner", "in", from),
+            set: { owner: to },
+          }),
+        );
+        for (const previous of from)
+          yield* query(() =>
+            tx.updateMany("accountIdentities", {
+              where: (b) => b.and(b("owner", "=", to), b("placement", "=", previous)),
+              set: { placement: to },
+            }),
           );
         for (const row of movedCredentials) {
           const id = identity(row);

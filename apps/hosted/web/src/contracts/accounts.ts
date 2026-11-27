@@ -169,3 +169,16 @@ export const checkCredentialsAtom = HostedClient.runtime.fn(
       }),
     ),
 );
+
+export const identifyAccountsAtom = Atom.family((organization: OrganizationReference) =>
+  HostedClient.runtime.fn((accounts: readonly AccountId[], get) =>
+    Effect.forEach(
+      accounts,
+      (account) =>
+        Effect.flatMap(HostedClient, (client) =>
+          client.accounts.identify({ params: { organization, account } }),
+        ),
+      { concurrency: 2 },
+    ).pipe(Effect.tap(() => Effect.sync(() => get.refresh(inventoryAtom(organization))))),
+  ),
+);

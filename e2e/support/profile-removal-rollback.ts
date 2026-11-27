@@ -1,3 +1,13 @@
+export const beforeAccountIdentities = () =>
+  [
+    { sql: "ALTER TABLE executor_accounts DROP COLUMN identity_id, DROP COLUMN oauth_grant_id" },
+    { sql: "DROP TABLE executor_account_identities" },
+    {
+      sql: "ALTER TABLE executor_account_connections DROP COLUMN source_account, DROP COLUMN additional_targets",
+    },
+    { sql: "ALTER TABLE executor_oauth_grants DROP COLUMN owner" },
+  ] as const;
+
 export const beforeProfileRemoval = (
   options: { readonly toolSearch: boolean } = { toolSearch: true },
 ): ReadonlyArray<{ readonly sql: string }> => [
@@ -32,6 +42,7 @@ export const profileAppCopiesPending = (
 ];
 
 export const beforeAppAccounts = (): ReadonlyArray<{ readonly sql: string }> => [
+  ...beforeAccountIdentities(),
   { sql: "DROP INDEX executor_event_subscriptions_owner_selection" },
   {
     sql: `ALTER TABLE executor_event_subscriptions DROP COLUMN selection,

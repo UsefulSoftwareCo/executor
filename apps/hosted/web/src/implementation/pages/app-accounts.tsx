@@ -1,3 +1,7 @@
+import { IdentityConsent } from "@executor-js/ui/dashboard/identity-consent";
+import { identityConsentAtoms } from "../../contracts/identity-consent.ts";
+import { resourceInventoryAtom } from "../../contracts/resource-access.ts";
+import type { IdentityConsentSelection } from "@executor-js/ui/contracts/identity-consent";
 import { use, useContext, useState } from "react";
 import { RegistryContext, useAtomSet, useAtomMount } from "@effect/atom-react";
 import { AtomRegistry } from "effect/reactivity";
@@ -22,7 +26,7 @@ import { HostedFailure } from "../components/dashboard-bindings.tsx";
 import { appConnectionAtoms, oauthSetupAtom } from "../../contracts/apps.ts";
 import { HostedAccountForm, OAuthReturnContext, openAccountOAuth } from "./connect-account.tsx";
 import type { HostedOAuthSignIn } from "@executor-js/hosted-server";
-import type { AccountConnectionId } from "@executor-js/sdk";
+import type { AccountId, AccountConnectionId } from "@executor-js/sdk";
 import {
   linkAccountAtom,
   requirementChoicesAtom,
@@ -242,11 +246,13 @@ export function AppConnectionDialogContent({
   method,
   redirectUri,
   account,
+  initialAccount,
   onPendingChange,
   onSaved,
 }: {
   readonly app: App;
   readonly account?: AccountSummary | undefined;
+  readonly initialAccount?: AccountId | undefined;
   readonly scope: AccountScope;
   readonly slot: string;
   readonly requirement: AccountRequirement;
@@ -270,6 +276,7 @@ export function AppConnectionDialogContent({
       <AppConnectionFields
         app={app}
         account={account}
+        initialAccount={initialAccount}
         scope={scope}
         slot={slot}
         form={form}
@@ -290,8 +297,10 @@ function AppConnectionFields({
   onSaved,
   checks,
   account,
+  initialAccount,
 }: {
   readonly account?: AccountSummary | undefined;
+  readonly initialAccount?: AccountId | undefined;
   readonly checks: boolean;
   readonly app: App;
   readonly scope: AccountScope;
@@ -317,7 +326,13 @@ function AppConnectionFields({
   useAtomMount(atoms.request);
   const submit = useAtomSet(atoms.submit, { mode: "promiseExit" });
   const start = useAtomSet(atoms.startOAuth, { mode: "promiseExit" });
-  return (
+  const [identityAtoms] = useState(() =>
+    identityConsentAtoms({ organization, app, scope, requirement: slot }),
+  );
+  const plan = useAtomSet(identityAtoms.plan, { mode: "promiseExit" });
+  const reuse = useAtomSet(identityAtoms.reuse, { mode: "promiseExit" });
+  const authorize = useAtomSet(identityAtoms.start, { mode: "promiseExit" });
+  const fields = (selection: IdentityConsentSelection) => (
     <HostedAccountForm<HostedOAuthSignIn & { readonly connection: AccountConnectionId }>
       provider={form.provider}
       app={checks ? app : undefined}
@@ -325,7 +340,9 @@ function AppConnectionFields({
       redirectUri={form.redirectUri}
       initialMethod={form.method}
       submit={submit}
-      start={start}
+      start={(input) =>
+        account !== undefined ? start(input) : authorize({ ...selection, ...input })
+      }
       onPendingChange={onPendingChange}
       onSaved={onSaved}
       onAuthorized={(value) =>
@@ -345,5 +362,42 @@ function AppConnectionFields({
         )
       }
     />
+  );
+  if (account !== undefined) return fields({});
+  return (
+    <IdentityConsent
+      query={resourceInventoryAtom(organization)}
+      Failure={HostedFailure}
+      provider={form.provider}
+      method={form.method}
+      app={app}
+      initialAccount={initialAccount}
+      disabled={false}
+      onPendingChange={onPendingChange}
+      plan={plan}
+      reuse={reuse}
+      start={(selection) => authorize({ method: form.method, ...selection })}
+      onSaved={onSaved}
+      onAuthorized={(value) => {
+        if (value.status === "completed") {
+          onSaved();
+          return;
+        }
+        openAccountOAuth(
+          {
+            organization,
+            organizationSlug,
+            app,
+            connection: value.connection,
+            redirectUri: value.redirectUri,
+            manualClient: false,
+            ...(returnTo === undefined ? {} : { returnTo }),
+          },
+          value.authorizationUrl,
+        );
+      }}
+    >
+      {fields}
+    </IdentityConsent>
   );
 }

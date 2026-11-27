@@ -108,3 +108,21 @@ export const checkCredentialsAtom = DashboardClient.runtime.fn(
       }),
     ),
 );
+
+export const identifyAccountsAtom = DashboardClient.runtime.fn(
+  (accounts: readonly AccountId[], get) =>
+    Effect.forEach(
+      accounts,
+      (account) =>
+        Effect.flatMap(DashboardClient, (client) =>
+          client.dashboard.identifyAccount({ params: { account } }),
+        ),
+      { concurrency: 2 },
+    ).pipe(
+      Effect.tap((accounts) =>
+        Effect.sync(() => {
+          for (const account of accounts) accountCredentialsChanged(get, account);
+        }),
+      ),
+    ),
+);

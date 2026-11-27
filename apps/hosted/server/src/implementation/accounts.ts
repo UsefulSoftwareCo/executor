@@ -1,3 +1,9 @@
+import {
+  checkOAuthConnections,
+  planOAuth,
+  reuseOAuth,
+  cancelConnection,
+} from "./oauth-account-connections.ts";
 import { accountOAuthRedirectUri } from "./auth.ts";
 import { audited } from "./security-audit.ts";
 import { ScheduleWakeup } from "../contracts/schedules.ts";
@@ -108,6 +114,11 @@ export const checkCredentials = (
     yield* requireAppAccess(input.app, "use");
     return yield* executor.apps.checkCredentials({ ...input, owner });
   });
+export const identifyAccount = Effect.gen(function* () {
+  const { owner, account } = yield* AccountGrants.use;
+  return yield* (yield* Effect.flatten(HostedExecutor)).accounts.identify({ owner, account });
+});
+
 export const checkAccount = Effect.gen(function* () {
   const { owner, account } = yield* AccountGrants.use;
   const executor = yield* Effect.flatten(HostedExecutor);
@@ -302,7 +313,7 @@ export const startOAuth = (
 ) =>
   Effect.gen(function* () {
     const executor = yield* Effect.flatten(HostedExecutor);
-    yield* checkConnection(yield* ownedConnection(executor, owner, input.connection));
+    yield* checkOAuthConnections(executor, owner, input);
     const client = yield* connectionClient(executor, owner, input);
     const { client: _selected, ...rest } = input;
     return yield* executor.accountConnections.startOAuth({
@@ -317,7 +328,7 @@ export const completeOAuth = (
 ) =>
   Effect.gen(function* () {
     const executor = yield* Effect.flatten(HostedExecutor);
-    yield* checkConnection(yield* ownedConnection(executor, owner, input.connection));
+    yield* checkOAuthConnections(executor, owner, input);
     return yield* executor.accountConnections
       .completeOAuth({ ...input, owner })
       .pipe(Effect.tap(() => Effect.flatten(ScheduleWakeup)));
@@ -335,6 +346,7 @@ export const hostedAccountHandlers = HttpApiBuilder.group(HostedApi, "accounts",
           checkCredentials(owner, { app: params.app, ...payload }),
         ),
       )
+      .handle("identify", () => identifyAccount)
       .handle("check", () => checkAccount)
       .handle("disconnect", () => disconnectAccount)
       .handle("update", ({ payload }) => updateAccount(payload))
@@ -365,6 +377,21 @@ export const hostedAccountHandlers = HttpApiBuilder.group(HostedApi, "accounts",
           submitConnection(owner, { connection: params.connection, ...payload }).pipe(
             Effect.provideService(BearerAuthentication, api),
           ),
+        ),
+      )
+      .handle("planOAuth", ({ params, payload }) =>
+        Effect.flatMap(currentOwner, (owner) =>
+          planOAuth(owner, { connection: params.connection, ...payload }),
+        ),
+      )
+      .handle("reuseOAuth", ({ params, payload }) =>
+        Effect.flatMap(currentOwner, (owner) =>
+          reuseOAuth(owner, { connection: params.connection, ...payload }),
+        ),
+      )
+      .handle("cancelConnection", ({ params }) =>
+        Effect.flatMap(currentOwner, (owner) =>
+          cancelConnection(owner, { connection: params.connection }),
         ),
       )
       .handle("startOAuth", ({ params, payload }) =>

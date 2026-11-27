@@ -37,7 +37,16 @@ const tones = {
 export function AccountCheckDot({ health }: { readonly health: AccountAppHealth | undefined }) {
   const format = useDisplayFormat();
   const check = health?.check;
-  if (check === null || check === undefined || health?.checkable !== true) return null;
+  if (health?.checkable !== true) return null;
+  if (check === null || check === undefined)
+    return (
+      <span
+        className={`size-1.5 shrink-0 rounded-full ${tones.muted}`}
+        role="img"
+        aria-label="Not checked"
+        title="Not checked"
+      />
+    );
   const { label, tone } = describeAccountCheck(check.status);
   const text = `${check.current ? label : `${label} (outdated)`}${check.message === undefined ? "" : `: ${check.message}`}`;
   return (

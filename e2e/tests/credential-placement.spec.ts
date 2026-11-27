@@ -1014,20 +1014,23 @@ layer(HostedLive, { excludeTestServices: true })("Credential placement", (it) =>
         );
         expect(allowed.setup).toMatchObject({
           firstParty: { label: "Executor for Google" },
-          scopes: [calendar],
+          scopes: [calendar, "openid", "email"],
         });
         expect(allowed.started.status, JSON.stringify(allowed.started.body)).toBe(200);
         const sent = new URL((yield* body(Redirect, allowed.started)).authorizationUrl);
         expect(`${sent.origin}${sent.pathname}`).toBe(google.authorizationUrl);
         expect(sent.searchParams.get("client_id")).toBe(clientId);
-        expect(sent.searchParams.get("scope")).toBe(calendar);
+        expect(sent.searchParams.get("scope")).toBe(`${calendar} openid email`);
         expect(sent.searchParams.get("access_type")).toBe("offline");
         expect(sent.searchParams.get("prompt")).toBe("consent");
-        expect(sent.searchParams.has("include_granted_scopes")).toBe(false);
+        expect(sent.searchParams.get("include_granted_scopes")).toBe("true");
         expect(defaults.setup).toMatchObject({
           firstParty: { label: "Executor for Google" },
-          scopes: ["openid", "email", "profile"],
+          scopes: ["openid", "email"],
         });
+        expect(defaults.started.status, JSON.stringify(defaults.started.body)).toBe(200);
+        const defaultsUrl = new URL((yield* body(Redirect, defaults.started)).authorizationUrl);
+        expect(defaultsUrl.searchParams.get("scope")).toBe("openid email");
         for (const [key, scopes] of [
           ["youtube", ["youtube", "youtube.force-ssl"]],
           ["ads", ["adwords"]],
@@ -1043,19 +1046,29 @@ layer(HostedLive, { excludeTestServices: true })("Credential placement", (it) =>
           expect(product.started.status, key).toBe(200);
           const url = new URL((yield* body(Redirect, product.started)).authorizationUrl);
           expect(url.searchParams.get("client_id"), key).toBe(clientId);
-          expect(url.searchParams.get("scope")?.split(" "), key).toEqual(requested);
+          expect(url.searchParams.get("scope")?.split(" "), key).toEqual([
+            ...requested,
+            "openid",
+            "email",
+          ]);
         }
         expect(fullGmail.setup.firstParty).toEqual({ label: "Executor for Google" });
         expect(fullGmail.started.status, JSON.stringify(fullGmail.started.body)).toBe(200);
         const approved = new URL((yield* body(Redirect, fullGmail.started)).authorizationUrl);
         expect(approved.searchParams.get("client_id")).toBe(clientId);
-        expect(approved.searchParams.get("scope")?.split(" ")).toEqual([gmail, drive, calendar]);
+        expect(approved.searchParams.get("scope")?.split(" ")).toEqual([
+          gmail,
+          drive,
+          calendar,
+          "openid",
+          "email",
+        ]);
 
         expect(modify.setup.operatorScopeRefusal).toBeUndefined();
         expect(modify.setup).toMatchObject({
           mode: "automatic",
           firstParty: { label: "Executor for Google" },
-          scopes: [gmailModify, drive, calendar],
+          scopes: [gmailModify, drive, calendar, "openid", "email"],
         });
         expect(modify.started.status, JSON.stringify(modify.started.body)).toBe(200);
         const modifySent = new URL((yield* body(Redirect, modify.started)).authorizationUrl);
@@ -1065,6 +1078,8 @@ layer(HostedLive, { excludeTestServices: true })("Credential placement", (it) =>
           gmailModify,
           drive,
           calendar,
+          "openid",
+          "email",
         ]);
         expect(mixed.setup.firstParty).toBeUndefined();
         expect(mixed.setup.operatorScopeRefusal).toBeUndefined();

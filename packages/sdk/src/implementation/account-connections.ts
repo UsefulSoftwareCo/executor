@@ -24,6 +24,7 @@ import {
   requireTargetProvider,
   targetProvider,
 } from "./connection-target.ts";
+import { canonical } from "./provider.ts";
 import { query, transaction, type Query } from "./database.ts";
 
 export const makeAccountConnections = (
@@ -41,7 +42,8 @@ export const makeAccountConnections = (
       );
     });
   const describe = (
-    row: Pick<ConnectionRow, "id" | "owner" | "target" | "createdAt" | "expiresAt" | "state">,
+    row: Pick<ConnectionRow, "id" | "owner" | "target" | "createdAt" | "expiresAt" | "state"> &
+      Partial<Pick<ConnectionRow, "sourceAccount" | "additionalConnections">>,
     provider: Provider,
     reconnectAccount: Account | null,
   ) => ({
@@ -57,6 +59,10 @@ export const makeAccountConnections = (
     createdAt: row.createdAt,
     expiresAt: row.expiresAt,
     state: row.state,
+    ...(row.sourceAccount == null ? {} : { sourceAccount: row.sourceAccount }),
+    ...(row.additionalConnections === undefined || row.additionalConnections.length === 0
+      ? {}
+      : { additionalConnections: row.additionalConnections }),
   });
   const show = (row: ConnectionRow, shown: Provider | undefined) =>
     Effect.gen(function* () {
@@ -130,14 +136,32 @@ export const makeAccountConnections = (
     cancel: (input: typeof GetAccountConnection.Type) =>
       transaction(db, (tx) =>
         Effect.gen(function* () {
-          const row = yield* lockConnection(tx, input, crypto);
-          if (row.state.status === "pending")
-            yield* query(() =>
-              tx.updateMany("accountConnections", {
-                where: (b) => b("id", "=", row.id),
-                set: { state: { status: "cancelled" }, oauthAttempt: null },
-              }),
-            );
+          const before = yield* readConnection(tx, input);
+          const ids = [before.id, ...before.additionalConnections.map((entry) => entry.connection)];
+          const locked = yield* Effect.forEach([...new Set(ids)].sort(), (connection) =>
+            lockConnection(tx, { connection, owner: before.owner }, crypto),
+          );
+          const row = locked.find((entry) => entry.id === before.id);
+          if (row === undefined) return yield* new StorageError();
+          if (row.state.status === "pending") {
+            if (
+              row.oauthAttempt !== before.oauthAttempt ||
+              canonical(row.additionalConnections) !== canonical(before.additionalConnections)
+            )
+              return yield* new StorageError();
+            for (const current of locked)
+              if (
+                current.state.status === "pending" &&
+                (current.id === row.id ||
+                  (row.oauthAttempt !== null && current.oauthAttempt === row.oauthAttempt))
+              )
+                yield* query(() =>
+                  tx.updateMany("accountConnections", {
+                    where: (b) => b("id", "=", current.id),
+                    set: { state: { status: "cancelled" }, oauthAttempt: null },
+                  }),
+                );
+          }
           const cancelled = yield* readConnection(db, input);
           return yield* show(cancelled, yield* endedProvider(cancelled));
         }),
