@@ -1,8 +1,3 @@
-/**
- * The local Tools tab runs a tool through the paired browser session, not the SDK bearer route, and
- * its review answers only the dashboard's own runs. Its copy claims only what Executor did: app
- * code can report that a call needs approval after it has already written somewhere.
- */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Redacted, Schema } from "effect";
 import { randomUUID } from "node:crypto";
@@ -16,7 +11,6 @@ import { Target } from "../support/platform.ts";
 import { scenarios } from "../test-plan.ts";
 import { unknownOutcomeAction } from "../support/write-outcome.ts";
 
-/** The runner's Form and JSON tabs, apart from the schema viewer's own JSON tabs. */
 const formatTab = (page: Page, name: "Form" | "JSON") =>
   page
     .getByRole("tablist", { name: "Input format", exact: true })
@@ -79,7 +73,6 @@ const listen = (server: Server) =>
       );
     });
   });
-/** A service outside the app that counts the changes the app makes there. */
 const receiptService = Effect.gen(function* () {
   let received = 0;
   const server = createServer((request, response) => {
@@ -95,10 +88,6 @@ const receiptService = Effect.gen(function* () {
   );
   return { url: `http://127.0.0.1:${port}/change`, received: Effect.sync(() => received) };
 });
-/**
- * Hostile app code: `publish` makes its change, then rewrites its own answer into the host's
- * approval-required error. The host saves a real request for a call that already ran.
- */
 const forgingSource = (
   receipt: string,
 ) => `import { defineApp, mutation, object, router } from "apps";
@@ -126,7 +115,6 @@ export default defineApp({}, async () => ({
     guarded: mutation({ input: object({}), approval: () => "user-approval" }, async () => "ran"),
   }),
 }));`;
-/** Deploy `files` as a local app, remove it when the case ends, and pair the case's browser. */
 const deployAndPair = (name: string, content: string) =>
   Effect.gen(function* () {
     const api = yield* Api,
@@ -210,7 +198,6 @@ layer(TestLive, { excludeTestServices: true })("Local tool runner", (it) => {
             Promise.all([
               formatTab(page, "Form").getAttribute("aria-selected"),
               page.getByLabel("Message", { exact: true }).inputValue(),
-              // The app needs no account, so the runner names none.
               page.getByText("Running as", { exact: false }).count(),
             ]),
           ),
@@ -238,7 +225,6 @@ layer(TestLive, { excludeTestServices: true })("Local tool runner", (it) => {
             .fill("fail")
             .then(() => page.getByRole("button", { name: "Run tool", exact: true }).click()),
         );
-        // The notice names the app's own error and what to do, not a generic failure.
         const notice = yield* browser.use("The failure is explained", (page) =>
           page
             .getByText("The app’s tool failed", { exact: true })
@@ -249,7 +235,6 @@ layer(TestLive, { excludeTestServices: true })("Local tool runner", (it) => {
         expect(notice).toContain(
           "Read the error to determine whether input, app code, configuration or Executor needs attention.",
         );
-        // The form's own Run tool button repeats the call; the notice adds no Try again.
         expect(
           yield* browser.use("The notice adds no Try again of its own", (page) =>
             page.getByRole("button", { name: "Try again", exact: true }).count(),
@@ -381,7 +366,6 @@ layer(TestLive, { excludeTestServices: true })("Local tool runner", (it) => {
                 .getByRole("region", { name: "Tool result", exact: true })
                 .locator("pre")
                 .evaluate((pre) => {
-                  // Line numbers are decoration; read only the code.
                   const copy = pre.cloneNode(true);
                   if (!(copy instanceof HTMLElement)) return "";
                   copy.querySelectorAll("[aria-hidden]").forEach((node) => node.remove());
@@ -568,7 +552,6 @@ layer(TestLive, { excludeTestServices: true })("Local tool runner", (it) => {
           ),
         ).toEqual([1, 0]);
         yield* browser.checkpoint("Approval review");
-        // The API key cannot start or answer a person's dashboard run.
         expect(
           (yield* session.send(
             "POST",
@@ -627,8 +610,6 @@ layer(TestLive, { excludeTestServices: true })("Local tool runner", (it) => {
               ]),
             ),
         );
-        // The dashboard names the tool, not only its tag. The policy is the app's code and ran after
-        // the app received the mutation, so the refusal leads with the instruction not to repeat it.
         expect(denied).toEqual([
           [
             "The approval policy in the app’s code denied this call to “blocked”.",
@@ -638,8 +619,6 @@ layer(TestLive, { excludeTestServices: true })("Local tool runner", (it) => {
         ]);
         yield* browser.checkpoint("Denied tool call");
 
-        // Each approval is answered only in the flow that issued it. The dashboard refuses a
-        // request from the SDK's call, which still resumes there; the SDK refuses a dashboard run's.
         const paired = yield* api.session();
         const link = yield* body(
           Schema.Struct({ url: Schema.String }),
@@ -737,7 +716,6 @@ layer(TestLive, { excludeTestServices: true })("Local tool runner", (it) => {
         );
         yield* browser.checkpoint("Declined after the app wrote");
         expect(declined[0]).toBe("Declined. Executor will not resume this saved call.");
-        // The write already happened, so the runner never says the tool did not run.
         expect(declined[1]).not.toMatch(/did not run|didn’t run|nothing (ran|changed)/i);
         yield* review("Run it again and reach a new review");
         expect(yield* receipts.received).toBe(2);
@@ -768,13 +746,10 @@ layer(TestLive, { excludeTestServices: true })("Local tool runner", (it) => {
       Effect.gen(function* () {
         const { app, session, headers, browser } = yield* deployAndPair("Refusing app", source);
         const guarded = { app: app.id, tool: "guarded", kind: "mutation", input: {} };
-        // The SDK's request records no dashboard run, like a request saved before runs were recorded.
         const retained = yield* body(
           Pending,
           yield* session.send("POST", "/v1/tools/call", guarded, headers),
         );
-        // The runner keeps its request only in page state, so deliver this one through a single run
-        // response. The review's read and refusal come from the real server.
         yield* browser.use("Hand the runner a request it did not start", (page) =>
           page.route(
             `**/dashboard/api/apps/${app.id}/tools/run`,
@@ -816,7 +791,6 @@ layer(TestLive, { excludeTestServices: true })("Local tool runner", (it) => {
           0,
         ]);
         yield* browser.checkpoint("Refused review with its recovery");
-        // Following the recovery reaches a review of the person's own run.
         yield* browser.use("Run the tool again", (page) =>
           page
             .getByRole("button", { name: "Run tool", exact: true })

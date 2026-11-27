@@ -1,4 +1,3 @@
-/** Saved identities reuse one actual grant; the host remains authoritative for every selected app. */
 import { useEffect, useMemo, useState, type ComponentType, type ReactNode } from "react";
 import { Exit, type Cause } from "effect";
 import type {
@@ -122,7 +121,6 @@ function IdentityConsentFields<E, S extends OAuthStartResult>({
   useEffect(() => {
     let current = true;
     if (group === undefined) return;
-    // An Atom command has one result; overlapping writes would cancel or misassociate plans.
     void (async () => {
       const ready: { source: AccountId; plan: OAuthConnectionPlan }[] = [];
       let failure: Cause.Cause<E> | undefined;

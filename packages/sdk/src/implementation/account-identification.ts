@@ -1,5 +1,4 @@
-/** Verify retained accounts without changing their IDs, selections, clients, or working credentials. */
-import { Clock, type Crypto, Effect, Redacted, Schema } from "effect";
+import { Clock, Effect, Redacted, Schema } from "effect";
 import type { Executor, ResourceLifecycle } from "../contracts/executor.ts";
 import { Account } from "../contracts/account.ts";
 import { Provider } from "../contracts/provider.ts";
@@ -15,12 +14,13 @@ import { accountGrantId, accountIdentity, recordAccountIdentity } from "./accoun
 import { ownedAccount } from "./accounts.ts";
 import { query, transaction, type Query } from "./database.ts";
 import { makeOAuthProtocol } from "./oauth-protocol.ts";
+import type { HostCrypto } from "./host-crypto.ts";
 
 export const makeAccountIdentification =
   (
     db: Query,
     credentials: Credentials,
-    crypto: Crypto.Crypto,
+    crypto: HostCrypto,
     options: OAuthOptions | undefined,
     lifecycle: ResourceLifecycle | undefined,
   ) =>
@@ -88,7 +88,7 @@ export const makeAccountIdentification =
         identity: { issuer: proof.issuer, subject: proof.subject },
       }).pipe(Effect.mapError(() => new StorageError()));
       const encrypted = yield* credentials.encrypt(grantId, Redacted.make(json));
-      const ready = `ready_${yield* crypto.randomUUIDv4.pipe(Effect.mapError(() => new StorageError()))}`;
+      const ready = `ready_${yield* crypto.random.uuidV4().pipe(Effect.mapError(() => new StorageError()))}`;
       const now = new Date(yield* Clock.currentTimeMillis);
       yield* transaction(db, (tx) =>
         Effect.gen(function* () {

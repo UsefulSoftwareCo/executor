@@ -1,4 +1,3 @@
-/** Concurrent permission reads share the same independently created requests within one dialog. */
 import { Effect, Semaphore } from "effect";
 import type { AccountConnection } from "@executor-js/sdk";
 import type { IdentityAppTarget, IdentityConsentSelection } from "./identity-consent.ts";

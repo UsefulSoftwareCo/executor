@@ -20,7 +20,6 @@ async function github(context: WebhookCtx, path: string, init: RequestInit = {})
   });
 }
 
-// Lookup by the stable callback URL recovers a registration whose response was lost.
 async function findHook(context: WebhookCtx, path: string, callbackUrl: string) {
   for (let page = 1; ; page++) {
     const hooks = await decodeJson(
@@ -32,7 +31,6 @@ async function findHook(context: WebhookCtx, path: string, callbackUrl: string) 
   }
 }
 
-/** Register with GitHub; read Gmail on verified delivery using the subscription's saved account IDs. */
 export const issueOpened = {
   account: { user: "github" },
   config: Repository,
@@ -73,12 +71,10 @@ export const issueOpened = {
       return new Response(null, { status: 401 });
     if (request.headers.get("x-github-event") !== "issues")
       return new Response(null, { status: 204 });
-    // Providers can challenge/ping before register has returned. Ordinary events wait for saved state.
     if (state === null) return new Response(null, { status: 503 });
     const event = await decodeJson(new Response(bytes), Issue);
     if (event.action === "opened") {
       const messages = await searchMail(context, { query: event.issue.html_url });
-      // GitHub's delivery ID stays the same when it redelivers, so subscribers see the issue once.
       context.events.emit(
         "issue.opened",
         {

@@ -1,5 +1,4 @@
 import { useAtomSet, useAtomValue } from "@effect/atom-react";
-/** The last card on cloud organization settings: irreversible, owner-only removal. */
 import { Exit, Option } from "effect";
 import { AsyncResult } from "effect/reactivity";
 import { useState } from "react";
@@ -64,7 +63,6 @@ export function DeleteOrganization() {
     setConfirmation("");
     setError(undefined);
   };
-  // Admins manage the organization; only an owner can end it. The server checks this too.
   const disabledReason =
     organization.role === "owner"
       ? undefined
@@ -141,7 +139,6 @@ export function DeleteOrganization() {
                   setError(organizationRemovalError(result.cause));
                   return;
                 }
-                // Drop the remembered destination before leaving, or entry returns here.
                 if (userId !== undefined) forgetOrganization(userId, organization.organization);
                 setOpen(false);
                 const next = remaining?.[0];

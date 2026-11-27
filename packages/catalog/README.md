@@ -24,14 +24,18 @@ Official apps are vetted `@executor.sh/<service>` packages in the integrations
 repository. Its `scripts/feed.ts` writes a static feed: `index.json` lists each
 app's id, package, title, description, auth methods, category and icons; `apps/<id>.json` holds the app's complete source; icons are
 files beside them. Paths in the index are relative to it. Hosts read the feed at
-`EXECUTOR_CATALOG_URL`. Without one, the catalog lists no feed apps.
+`EXECUTOR_CATALOG_URL`. Local and self-host read it with `catalogFeedSetting`: the published
+feed (`officialCatalogUrl`) when unset, or none for `off`. `catalog.list` never fails: it
+returns `{ apps, feed }`, where `feed.status` is `listed`, `off` (no feed) or `unavailable` (the
+feed could not be read, with `CatalogUnavailable` and its recovery), so a host can keep its
+built-in apps listed and say why the official ones are missing.
 
 Every entry installs directly: nothing has to be guessed, because the package
 already declares its providers and auth methods. The user connects an account
 through the app's own providers after install. Preparation reads the index
 again, fetches the app's source and checks that its `package.json` names the
-listed package. Redirects are not followed, and nothing is cached between
-reads.
+listed package. Redirects are not followed. Listing keeps the last index with its `ETag` and
+revalidates it on every read; overlapping listings share one read. Preparation caches nothing.
 
 `catalog.custom(input)` prepares a remote MCP server a user entered by URL. It
 is added only when the server itself confirms how to connect: anonymous

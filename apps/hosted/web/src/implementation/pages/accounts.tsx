@@ -10,21 +10,26 @@ import {
   HostedAccountDialog,
   type AccountDialogKind,
 } from "./account-actions.tsx";
-import { Option } from "effect";
 import { AccountsPage as SharedPage } from "@executor-js/ui/dashboard/accounts";
 import { EmptyState } from "@executor-js/ui/dashboard/empty-state";
 import { Button } from "@executor-js/ui/components/button";
 import { Link } from "@tanstack/react-router";
-import { useQuery } from "@executor-js/ui/dashboard/context";
+import { Option } from "effect";
+import { usePreload, useQuery } from "@executor-js/ui/dashboard/context";
 import { HostedFailure } from "../components/dashboard-bindings.tsx";
-import { useOrganizationDetails, useOrganizationRoute } from "../components/organization.tsx";
+import {
+  type OrganizationPageReads,
+  useOrganizationDetails,
+  useOrganizationRoute,
+} from "../components/organization.tsx";
 import { OAuthClientsDialog } from "./oauth-clients.tsx";
 import { inventoryAtom } from "../../contracts/organization.ts";
-import { resourceDirectoryAtom, resourceInventoryAtom } from "../../contracts/resource-access.ts";
-/**
- * Personal and shared credentials use one list. Administrators also manage the organization's
- * OAuth clients from here, since those clients only exist to connect accounts.
- */
+import { resourceInventoryAtom } from "../../contracts/resource-access.ts";
+
+export const accountsPageReads: OrganizationPageReads = (organization) => [
+  resourceInventoryAtom(organization),
+  inventoryAtom(organization),
+];
 export function AccountsPage({
   highlight,
   oauthClients,
@@ -33,8 +38,8 @@ export function AccountsPage({
   readonly oauthClients: { readonly open: boolean; readonly onOpenChange: (open: boolean) => void };
 }) {
   const { organization, slug: organizationSlug } = useOrganizationRoute();
+  usePreload(...accountsPageReads(organization, {}));
   const identify = useAtomSet(identifyAccountsAtom(organization), { mode: "promiseExit" });
-  const directory = useQuery(resourceDirectoryAtom(organization));
   const setup = useQuery(inventoryAtom(organization));
   const [dialog, setDialog] = useState<{ account: AccountId; kind: AccountDialogKind }>();
   const role = useOrganizationDetails()?.role;
@@ -73,7 +78,7 @@ export function AccountsPage({
               </div>
             }
           >
-            Open an app to connect an account, or ask a teammate to share one.
+            Open an app to connect your own account.
           </EmptyState>
         }
         highlight={highlight}
@@ -101,27 +106,11 @@ export function AccountsPage({
           );
         }}
         accountActions={(account) => {
-          const entry = Option.isSome(directory.data)
-            ? directory.data.value.accounts.find((item) => item.account.id === account.id)
-            : undefined;
           return (
             <HostedAccountActions
               account={account}
-              access={entry?.access}
               open={(kind) => setDialog({ account: account.id, kind })}
             />
-          );
-        }}
-        accountMeta={(account) => {
-          const access = Option.isSome(directory.data)
-            ? directory.data.value.accounts.find((item) => item.account.id === account.id)?.access
-            : undefined;
-          return (
-            access && (
-              <span className="rounded border px-1.5 py-0.5 text-[10px]">
-                {access.ownership.kind === "personal" ? "Personal" : "Shared"}
-              </span>
-            )
           );
         }}
       />

@@ -5,22 +5,18 @@ import { HugeiconsIcon } from "@hugeicons/react";
 import { ArrowDown01Icon, ArrowUp01Icon, Tick02Icon } from "@hugeicons/core-free-icons";
 import { Select as SelectPrimitive } from "radix-ui";
 
-/** Unstyled trigger for composing an existing control with Radix Select behavior. */
 const SelectPrimitiveTrigger = SelectPrimitive.Trigger;
 
 import { cn } from "../lib/utils.ts";
 
-/** Select primitive; accepts native props and composes caller styles. */
 function Select({ ...props }: React.ComponentProps<typeof SelectPrimitive.Root>) {
   return <SelectPrimitive.Root data-slot="select" {...props} />;
 }
 
-/** Select Group primitive; accepts native props and composes caller styles. */
 function SelectGroup({ ...props }: React.ComponentProps<typeof SelectPrimitive.Group>) {
   return <SelectPrimitive.Group data-slot="select-group" {...props} />;
 }
 
-/** Select Value primitive; accepts native props and composes caller styles. */
 function SelectValue({ className, ...props }: React.ComponentProps<typeof SelectPrimitive.Value>) {
   return (
     <SelectPrimitive.Value
@@ -31,7 +27,6 @@ function SelectValue({ className, ...props }: React.ComponentProps<typeof Select
   );
 }
 
-/** Select Trigger primitive; accepts native props and composes caller styles. */
 function SelectTrigger({
   className,
   size = "default",
@@ -63,7 +58,6 @@ function SelectTrigger({
   );
 }
 
-/** Select Content primitive; accepts native props and composes caller styles. */
 function SelectContent({
   className,
   children,
@@ -101,7 +95,6 @@ function SelectContent({
   );
 }
 
-/** Select Label primitive; accepts native props and composes caller styles. */
 function SelectLabel({ className, ...props }: React.ComponentProps<typeof SelectPrimitive.Label>) {
   return (
     <SelectPrimitive.Label
@@ -112,7 +105,6 @@ function SelectLabel({ className, ...props }: React.ComponentProps<typeof Select
   );
 }
 
-/** Select Item primitive; accepts native props and composes caller styles. */
 function SelectItem({
   className,
   children,
@@ -140,7 +132,6 @@ function SelectItem({
   );
 }
 
-/** Select Separator primitive; accepts native props and composes caller styles. */
 function SelectSeparator({
   className,
   ...props
@@ -154,7 +145,6 @@ function SelectSeparator({
   );
 }
 
-/** Select Scroll Up Button primitive; accepts native props and composes caller styles. */
 function SelectScrollUpButton({
   className,
   ...props
@@ -170,7 +160,6 @@ function SelectScrollUpButton({
   );
 }
 
-/** Select Scroll Down Button primitive; accepts native props and composes caller styles. */
 function SelectScrollDownButton({
   className,
   ...props

@@ -1,5 +1,4 @@
-/** Consent commits one verified grant and all its selected app bindings in the resource transaction. */
-import { Clock, type Crypto, Effect, Redacted, Schema } from "effect";
+import { Clock, Effect, Redacted, Schema } from "effect";
 import { Base64 } from "effect/encoding";
 import { AccountConnectionRefused } from "../contracts/account-connection.ts";
 import type { ResourceLifecycle } from "../contracts/executor.ts";
@@ -35,11 +34,11 @@ import {
   grantBindings,
 } from "./oauth-grant-bindings.ts";
 import { canonical } from "./provider.ts";
+import type { HostCrypto } from "./host-crypto.ts";
 
-/** All selected requests lock in the same order; each remains independently authorized and cancellable. */
 export const lockOAuthConnections = (
   db: Query,
-  crypto: Crypto.Crypto,
+  crypto: HostCrypto,
   input: {
     readonly connection: AccountConnectionId;
     readonly owner: OwnerId;
@@ -65,7 +64,6 @@ export const lockOAuthConnections = (
     return yield* readConnection(db, input);
   });
 
-/** No refresh, reconnect, promotion, owner move, or identity change may replace the selected revision. */
 export const lockOAuthConsentSource = (
   db: Query,
   credentials: Credentials,
@@ -75,7 +73,6 @@ export const lockOAuthConsentSource = (
 ) =>
   Effect.gen(function* () {
     const changed = () => new OAuthCompletionFailed({ reason: "grant_changed" });
-    // Upgrades lock every affected binding in the same order before replacing their shared grant.
     for (const binding of (yield* grantBindings(db, selected.grant)).sort((a, b) =>
       a.id.localeCompare(b.id),
     )) {
@@ -148,7 +145,7 @@ export const lockOAuthConsentSource = (
 export const completeOAuthConsent = (
   db: Query,
   credentials: Credentials,
-  crypto: Crypto.Crypto,
+  crypto: HostCrypto,
   lifecycle: ResourceLifecycle | undefined,
   input: {
     readonly attempt: typeof OAuthAttemptRecord.Type;
@@ -219,7 +216,7 @@ export const completeOAuthConsent = (
           : {}),
       }).pipe(Effect.mapError(() => new StorageError()));
       const encrypted = yield* credentials.encrypt(root, Redacted.make(json));
-      const status = `ready_${yield* crypto.randomUUIDv4.pipe(Effect.mapError(() => new StorageError()))}`;
+      const status = `ready_${yield* crypto.random.uuidV4().pipe(Effect.mapError(() => new StorageError()))}`;
       const updatedAt = new Date(yield* Clock.currentTimeMillis);
       yield* query(() =>
         db.updateMany("oauthGrants", {

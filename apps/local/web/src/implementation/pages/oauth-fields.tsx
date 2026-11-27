@@ -36,11 +36,9 @@ import { ConnectionLinkFailure, Failure } from "../components/common.tsx";
 type FieldsProps = AccountOAuthProps & {
   readonly provider: Provider;
   readonly account?: Account;
-  /** Where the sign-in goes once saved; the shared form shows it above Connect. */
   readonly access?: ReactNode;
 };
 
-/** A sign-in for an app requirement on its app page; the browser returns to that app. */
 export function AppOAuthFields({
   app,
   scope,
@@ -102,7 +100,6 @@ export function AppOAuthFields({
   );
 }
 
-/** A sign-in on an agent's connection link page, which keeps its grant across the redirect. */
 export function LinkOAuthFields({
   grant,
   onSaved,
@@ -131,6 +128,7 @@ function Fields<E, S extends OAuthStartResult = OAuthStartResult>({
   onPendingChange,
   access,
   disabled,
+  clientGuide,
   query,
   Failure,
   start,
@@ -148,6 +146,7 @@ function Fields<E, S extends OAuthStartResult = OAuthStartResult>({
       {({ setup, action, refresh }) => (
         <SharedFields<S, E>
           providerName={provider.definition.name}
+          clientGuide={clientGuide}
           {...(account ? { account } : {})}
           Failure={Failure}
           setup={setup}

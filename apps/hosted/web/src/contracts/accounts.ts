@@ -5,7 +5,6 @@ import { discoveryTarget, refreshAppDiscovery } from "./app-discovery.ts";
 import { linkedAccountIds } from "@executor-js/ui/contracts/app-accounts";
 import { acknowledgeResourceAccount, resourceDirectoryAtom } from "./resource-access.ts";
 import { protectedQuery } from "./protected-query.ts";
-/** Account queries remain independent across organizations, including OAuth returns. */
 import type { Account, AccountFieldsInput, AccountId, AppId, ProviderId } from "@executor-js/sdk";
 import type { OrganizationReference } from "@executor-js/hosted-server/organization";
 import { Data, Effect, Option } from "effect";
@@ -38,13 +37,11 @@ const updateAccount = Atom.family((key: AccountKey) =>
     ),
   ),
 );
-/** Run the checks of the apps this member can use and show the results where accounts are listed. */
 const runCheck = (get: Atom.FnContext, key: AccountKey) =>
   Effect.flatMap(HostedClient, (client) => client.accounts.check({ params: key })).pipe(
     Effect.tap((health) =>
       Effect.sync(() => {
         acknowledge(get, accountAtom(key), (data) => ({ ...data, health }));
-        // The account list reads the resource directory; reload it for the recorded results.
         get.refresh(resourceDirectoryAtom(key.organization));
         get.refresh(resourceDirectoryAtom(key.organization, "managed"));
         acknowledge(get, inventoryAtom(key.organization), (data) => ({
@@ -59,7 +56,6 @@ const runCheck = (get: Atom.FnContext, key: AccountKey) =>
 const checkAccount = Atom.family((key: AccountKey) =>
   HostedClient.runtime.fn((_: void, get) => runCheck(get, key)),
 );
-/** Run the checks of the apps this member can use; the account query shows the results. */
 export const checkAccountAtom = (key: {
   organization: OrganizationReference;
   account: AccountId;
@@ -72,8 +68,6 @@ class AppAccountKey extends Data.Class<{
 const checkAppAccount = Atom.family((key: AppAccountKey) =>
   HostedClient.runtime.fn((_: void, get) =>
     runCheck(get, new AccountKey({ organization: key.organization, account: key.account })).pipe(
-      // The app's Accounts tab shows each linked account's health from the app's links, which
-      // show the results before the check settles, so the row never falls back to the old ones.
       Effect.tap((health) =>
         Effect.sync(() =>
           acknowledgeLinkChecks(get, { organization: key.organization, app: key.app }, health),
@@ -82,25 +76,18 @@ const checkAppAccount = Atom.family((key: AppAccountKey) =>
     ),
   ),
 );
-/** Check an account from one app's accounts, whose links then show the results. */
 export const checkAppAccountAtom = (key: {
   organization: OrganizationReference;
   app: AppId;
   account: AccountId;
 }) => checkAppAccount(new AppAccountKey(key));
-/**
- * A new account waiting to be named. The organization layout shows the prompt, so page refreshes
- * after saving, and the OAuth return navigation, cannot dismiss it.
- */
 export const accountToNameAtom = Atom.make<
   (AccountToName & { readonly organization: OrganizationReference }) | undefined
 >(undefined).pipe(Atom.keepAlive);
-/** A different account cannot supersede this account's name or description update. */
 export const updateAccountAtom = (key: {
   organization: OrganizationReference;
   account: AccountId;
 }) => updateAccount(new AccountKey(key));
-/** A fresh read of which apps select an account, taken after a selection change commits. */
 export const accountUsageAtom = Atom.family((organization: OrganizationReference) =>
   HostedClient.runtime.fn((account: AccountId) =>
     Effect.flatMap(HostedClient, (client) =>
@@ -125,13 +112,11 @@ const disconnectAccount = Atom.family((key: AccountKey) =>
     ),
   ),
 );
-/** Remove the confirmed account and its selections without choosing a replacement. */
 export const disconnectAccountAtom = (key: {
   organization: OrganizationReference;
   account: AccountId;
 }) => disconnectAccount(new AccountKey(key));
 
-/** Save safe metadata without inventing credential health or changing app selections. */
 export function acknowledgeAccount(
   get: Atom.FnContext,
   organization: OrganizationReference,
@@ -169,10 +154,6 @@ function refreshCredentialDependents(
       }
 }
 
-/**
- * Check unsaved credentials with an app's check. A newer check replaces an older one still
- * running, which is what a form checking its latest input wants.
- */
 export const checkCredentialsAtom = HostedClient.runtime.fn(
   (input: {
     readonly organization: OrganizationReference;
@@ -189,7 +170,6 @@ export const checkCredentialsAtom = HostedClient.runtime.fn(
     ),
 );
 
-/** Verification uses the caller's account-use authority and preserves every existing binding. */
 export const identifyAccountsAtom = Atom.family((organization: OrganizationReference) =>
   HostedClient.runtime.fn((accounts: readonly AccountId[], get) =>
     Effect.forEach(

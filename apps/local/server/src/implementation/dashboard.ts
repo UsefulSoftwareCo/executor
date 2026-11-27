@@ -13,7 +13,6 @@ import {
   unlinkAccount,
 } from "./app-accounts.ts";
 import { appOrigin } from "../contracts/app-ui.ts";
-/** Product projections over the existing SDK and retained version storage. */
 import {
   StorageError,
   AppNameTaken,
@@ -36,12 +35,13 @@ import {
 import { Effect, Layer, Result, Schema, Stream } from "effect";
 import type { SqlClient } from "effect/sql";
 import { ApprovalResponse, approvalElicitation } from "apps/contracts";
+import { type AppUiPages, type UiFailed } from "apps/ui/contracts";
 import {
   ToolRunApprovalRefused,
   type BrowserApprovalView,
   type BrowserToolRun,
 } from "@executor-js/mcp/browser";
-import { HttpServerResponse } from "effect/http";
+import { HttpServerRequest, HttpServerResponse } from "effect/http";
 import { HttpApiBuilder } from "effect/http-api";
 import { localBearer, localRequest, requestOrigin, sessionCookie, type LocalAuth } from "./auth.ts";
 import { createCatalog, deployedCopy } from "@executor-js/catalog";
@@ -67,7 +67,6 @@ import {
   type AppAccountTarget,
 } from "../contracts/dashboard.ts";
 
-/** A person's own decisions come from their paired browser, never from the API key. */
 export const browserOnly = (config: ServerConfig, auth: LocalAuth) =>
   Effect.gen(function* () {
     const request = yield* localRequest(config.port, config.browserOrigin).pipe(
@@ -81,12 +80,7 @@ export const browserOnly = (config: ServerConfig, auth: LocalAuth) =>
     if (!(yield* auth.valid(request.cookies[sessionCookie(config)])))
       return yield* new DashboardUnauthorized();
   });
-/**
- * The paired browser's own runs. Their approvals are saved with this issuer, so only the dashboard
- * can read or answer them; MCP, schedules and `/v1/tools/call` save no issuer.
- */
 const dashboardRun = ToolApprovalIssuer.make("dashboard");
-/** Authenticate local browser and bearer requests using the same session boundary. */
 export const dashboardAccess = (config: ServerConfig, auth: LocalAuth) =>
   Layer.succeed(DashboardAccess, (response) =>
     Effect.gen(function* () {
@@ -100,7 +94,6 @@ export const dashboardAccess = (config: ServerConfig, auth: LocalAuth) =>
     }),
   );
 
-/** Serve authenticated read endpoints without granting browser access to SDK mutations. */
 export const dashboard = (
   executor: Executor,
   sql: SqlClient.SqlClient,
@@ -114,15 +107,22 @@ export const dashboard = (
     managedAccount,
     ownerMigration,
     wakeWebhookSources,
+    uiPages,
+    uiIcon,
   }: {
-    /** The official app feed's index.json; without one the catalog lists no apps. */
     readonly catalogFeedUrl?: string | undefined;
     readonly managedApp?: AppId;
     readonly managedAccount?: AccountId;
-    /** Why this start did not move other owners' records to `local`, if it did not. */
     readonly ownerMigration: Effect.Effect<LocalOwnerMigration | null>;
-    /** Wakes webhook source reconciliation after saved intent commits. */
     readonly wakeWebhookSources: Effect.Effect<void>;
+    readonly uiPages: (app: App) => Effect.Effect<AppUiPages, UiFailed>;
+    readonly uiIcon: (
+      app: App,
+    ) => Effect.Effect<
+      HttpServerResponse.HttpServerResponse,
+      never,
+      HttpServerRequest.HttpServerRequest
+    >;
   },
 ) => {
   const appCatalog = createCatalog({
@@ -130,7 +130,6 @@ export const dashboard = (
     clientMetadataUrl: config.oauthClientMetadataUrl,
     feedUrl: catalogFeedUrl,
   });
-  /** Only status and a non-refreshable expiry leave the trusted host. */
   const signIn = (account: AccountId) =>
     executor.accounts.signIn({ account }).pipe(
       Effect.map((state) =>
@@ -142,18 +141,8 @@ export const dashboard = (
     );
   const manage = <A, E, R>(account: AccountId, operation: Effect.Effect<A, E, R>) =>
     account === managedAccount ? Effect.fail(new AccountManagementBlocked({ account })) : operation;
-  /**
-   * The server links its own Executor app to its managed account when it starts; that app's tools
-   * fail without it. Its links are never changed through these routes.
-   */
   const changeLinks = <A, E, R>(app: AppId, operation: Effect.Effect<A, E, R>) =>
     app === managedApp ? Effect.fail(new AppAccountLinksBlocked({ app })) : operation;
-  /**
-   * Every dashboard sign-in fills an app requirement in the route's scope; completing it links the
-   * account to the app in that scope, or refuses if the requirement has moved to the other one. A
-   * reconnect names the account, which the local server's own account cannot be, and the server's
-   * own app is never connected this way.
-   */
   const appConnection = (
     params: { readonly app: AppId; readonly requirement: string },
     scope: AccountScope,
@@ -173,7 +162,6 @@ export const dashboard = (
             }),
           );
     });
-  /** A connected account is linked to its requirement, which may change the webhook sources. */
   const connectWithFields = (
     params: { readonly app: AppId; readonly requirement: string },
     scope: AccountScope,
@@ -200,10 +188,11 @@ export const dashboard = (
       readonly method: typeof AuthMethodName.Type;
       readonly label?: string | undefined;
       readonly client?: OAuthClientSelection | undefined;
+      readonly chooseAgain?: true | undefined;
     },
   ) =>
     Effect.gen(function* () {
-      const { method, label, client, ...target } = payload;
+      const { method, label, client, chooseAgain, ...target } = payload;
       const request = yield* localRequest(config.port, config.browserOrigin).pipe(
         Effect.mapError(() => new DashboardForbidden()),
       );
@@ -214,18 +203,17 @@ export const dashboard = (
         method,
         ...(label === undefined ? {} : { label }),
         ...(chosen === undefined ? {} : { client: chosen }),
+        ...(chooseAgain === true ? { chooseAgain } : {}),
         redirectUri: new URL(OAuthCallbackPath, requestOrigin(config, request)).href,
       });
       return { ...signIn, connection: connection.id };
     });
   const access = dashboardAccess(config, auth);
   const identityConnections = dashboardOAuthConnections(executor, managedApp);
-  /** Only the dashboard's own runs are reviewed here. The arguments shown and resumed are the saved invocation's. */
   const reviewedTool = (app: AppId, requestId: ApprovalRequestId) =>
     Effect.gen(function* () {
       yield* browserOnly(config, auth);
       const pending = yield* executor.tools.approval({ requestId, owner });
-      // MCP, scheduled and API approvals are answered only in their own flow.
       if (pending.issuer !== dashboardRun)
         return yield* new ToolRunApprovalRefused({
           reason: pending.issuer === undefined ? "unrecorded" : "another-person",
@@ -234,7 +222,6 @@ export const dashboard = (
       const found = yield* executor.apps.get({ app });
       return { ...pending, appName: found.name };
     });
-  // Database reads infer dependencies in the shared storage service, including reads in SDK calls.
   const overview = Effect.gen(function* () {
     const { apps, accounts, providers } = yield* Effect.all(
       {
@@ -248,8 +235,6 @@ export const dashboard = (
       },
       { concurrency: 4 },
     );
-    // An account's checks are those of the apps that link it, in either scope; the inventory
-    // lists the user links, each app and account once.
     const all = yield* accountLinks(sql, executor);
     const pairs = (subjectScoped: boolean) => {
       const seen = new Set<string>();
@@ -261,6 +246,21 @@ export const dashboard = (
       });
     };
     const links = pairs(true);
+    const listed = new Map(accounts.map((account) => [account.id, account]));
+    const appLinks = all.flatMap((link) => {
+      const account = listed.get(link.account);
+      return link.subject !== null || account === undefined
+        ? []
+        : [
+            {
+              app: link.app,
+              requirement: link.requirement,
+              account: account.id,
+              provider: account.provider,
+              label: account.label,
+            },
+          ];
+    });
     const health = yield* executor.accounts.listHealth({ links: pairs(false) });
     const checks = new Map(health.map((entry) => [entry.account, entry]));
     const definitions = new Map(providers.map((provider) => [provider.id, provider.definition]));
@@ -277,32 +277,23 @@ export const dashboard = (
         ...(health === undefined ? {} : { health }),
       });
     }
-    return { apps, links, accounts: display };
+    return { apps, links, appLinks, accounts: display };
   });
   const appDetail = (appId: AppId) =>
     Effect.gen(function* () {
       const app = yield* executor.apps.get({ app: appId });
       const versions = yield* executor.apps.versions({ app: appId });
-      const source =
-        app.activeVersion === null
-          ? null
-          : yield* executor.apps.source({ app: appId }).pipe(
-              Effect.catchTags({
-                VersionNotFound: () => new StorageError(),
-                AppNotDeployed: () => new StorageError(),
-              }),
-            );
+      const pages = yield* uiPages(app).pipe(Effect.mapError(() => new StorageError()));
+      const served = app.owner === owner;
       return {
         app,
-        uiUrl:
-          source !== null && source.files.some((file) => file.path === "ui/index.html")
-            ? HttpUrl.make(appOrigin(app.id, config.port))
-            : null,
+        uiUrl: served && pages.main ? HttpUrl.make(appOrigin(app.id, config.port)) : null,
+        uiIcon: pages.icon,
+        uiMenuBar: served && pages.menuBar,
         canDelete: app.id !== managedApp,
         versions,
       };
     });
-  /** The apps an account is linked to, in either scope. */
   const linkedApps = (account: AccountId) =>
     Effect.gen(function* () {
       const found = yield* executor.accounts.get({ account });
@@ -311,7 +302,6 @@ export const dashboard = (
       );
       return (yield* executor.apps.list()).filter((app) => linked.has(app.id));
     });
-  /** The app and the accounts a call or listing runs with. */
   const resolved = (appId: AppId) =>
     Effect.gen(function* () {
       const app: App = yield* executor.apps.get({ app: appId });
@@ -328,7 +318,6 @@ export const dashboard = (
         account: account.id,
         apps: apps.map((app) => app.id),
       });
-      // An unreadable grant is unreadable storage to this view.
       const { revocation } = yield* executor.accounts
         .revocation({ account: account.id })
         .pipe(Effect.catchTag("CredentialsError", () => new StorageError()));
@@ -383,7 +372,6 @@ export const dashboard = (
         ),
         Stream.mapEffect((snapshot) =>
           Effect.gen(function* () {
-            // Idle sessions are rechecked too; a revoked browser session cannot retain a subscription.
             yield* authorize;
             return snapshot;
           }),
@@ -395,14 +383,10 @@ export const dashboard = (
       reactivity.subscribe(authorize.pipe(Effect.andThen(Effect.result(read)))),
     );
 
-  // Only this app's execution inputs can trigger expensive upstream discovery. The cheap
-  // tracked query may rerun after any account write, but credentials never enter a response.
   const toolInputs = (appId: AppId) =>
     Effect.gen(function* () {
       const { app, accounts: selections } = yield* resolved(appId);
       const ids = [...new Set(invocationEntries(selections).flatMap(([, used]) => used))];
-      // The fingerprint stands in for the credential bytes: any credential write changes it, so the
-      // catalog is listed again exactly when its inputs changed.
       const accounts = yield* Effect.forEach(ids, (id) =>
         Effect.gen(function* () {
           const account = yield* executor.accounts
@@ -421,7 +405,6 @@ export const dashboard = (
       );
       return { version: app.activeVersion, selections, accounts };
     });
-  /** The app's whole catalog without schemas; the page reads a selected tool's with `tool`. */
   const toolIndex = (app: AppId) =>
     resolved(app).pipe(
       Effect.flatMap(({ accounts }) => executor.tools.index({ app, accounts })),
@@ -471,7 +454,9 @@ export const dashboard = (
       .handle("overview", () => overview)
       .handle("ownerMigration", () => ownerMigration)
       .handle("app", ({ params }) => appDetail(params.app))
-      // Links change webhook sources and the accounts calls and schedules run with.
+      .handle("appIcon", ({ params }) =>
+        executor.apps.get({ app: params.app }).pipe(Effect.flatMap(uiIcon)),
+      )
       .handle("appList", ({ params }) =>
         executor.apps
           .get(params)
@@ -575,7 +560,6 @@ export const dashboard = (
           const existing = yield* executor.apps.list({ owner, name: payload.name });
           if (existing.length > 0) return yield* new AppNameTaken({ owner, name: payload.name });
           const generated = yield* appCatalog.prepare(payload);
-          // An official app is installed as a copy, the way a published app is.
           if (generated.origin !== undefined)
             return yield* executor.apps
               .copy({
@@ -584,7 +568,6 @@ export const dashboard = (
                 name: payload.name,
               })
               .pipe(
-                // A snapshot reads no registry or earlier app; those failures belong to other copy sources.
                 Effect.catchTags({
                   RegistryError: Effect.die,
                   VersionNotFound: Effect.die,
@@ -614,7 +597,6 @@ export const dashboard = (
       .handle("updateAccount", ({ params, payload }) =>
         manage(params.account, executor.accounts.update({ ...params, ...payload })),
       )
-      // An app uses an app link for every call, so it must be unlinked first.
       .handle("disconnectAccount", ({ params }) =>
         manage(
           params.account,
@@ -666,7 +648,6 @@ export const dashboard = (
           Effect.tap(() => wakeWebhookSources),
         ),
       )
-      // The paired browser is the person running the tool, so approval waits for their review.
       .handle("runTool", ({ params, payload }) =>
         Effect.andThen(browserOnly(config, auth), resolved(params.app)).pipe(
           Effect.flatMap(({ accounts }) =>
@@ -688,8 +669,6 @@ export const dashboard = (
               status: "approval-required",
               requestId: params.requestId,
               invocation,
-              // Built from the saved call, so it describes what approval resumes; the review card
-              // shows the exact arguments from the invocation.
               elicitation: approvalElicitation(invocation.tool, invocation.input),
               expiresAt,
             },
@@ -705,7 +684,6 @@ export const dashboard = (
           const response = yield* Schema.decodeUnknownEffect(ApprovalResponse)(
             payload.response,
           ).pipe(Effect.mapError(() => new RequestInvalid()));
-          // The SDK checks the issuer again before it consumes the request.
           const result = yield* executor.tools.resume(
             { requestId: params.requestId, owner, response },
             { issuer: dashboardRun },

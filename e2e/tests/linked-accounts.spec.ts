@@ -1,4 +1,3 @@
-/** Local app account links through the real SDK HTTP surface, dashboard API, MCP and workflow engine. */
 import { expect, layer } from "@effect/vitest";
 import { Clock, Effect, Redacted, Schema } from "effect";
 import { Api, body, type Session } from "../support/api.ts";
@@ -163,7 +162,6 @@ layer(TestLive, { excludeTestServices: true })("Linked accounts", (it) => {
           return yield* body(Subscriptions, response);
         });
 
-        // Accounts connected for another app stay saved but are not linked to this one.
         for (const [provider, labels] of [
           [ledgerProvider, ["sink-a", "sink-b"]],
           [serviceProvider, ["mail-b"]],
@@ -174,7 +172,6 @@ layer(TestLive, { excludeTestServices: true })("Linked accounts", (it) => {
             accounts: labels.map((label) => ({ label, fields: { token: label } })),
           }))
             accounts.push(account.id);
-        // Connecting an account from the app links it and makes it a webhook source.
         const connection = yield* api.request(agent, "POST", "/v1/account-connections", {
           owner,
           target: { app: app.id, requirement: "mail" },
@@ -191,7 +188,6 @@ layer(TestLive, { excludeTestServices: true })("Linked accounts", (it) => {
         const [sinkA, sinkB, mailB, mailA] = accounts;
         if (!mailA || !mailB || !sinkA || !sinkB)
           return yield* Effect.die(new Error("Missing fixture account"));
-        /** The app's links by requirement, each oldest first. */
         const links = localAccountLinks(agent, app.id).pipe(
           Effect.map((pairs) => {
             const grouped: Record<string, string[]> = {};
@@ -201,7 +197,6 @@ layer(TestLive, { excludeTestServices: true })("Linked accounts", (it) => {
         );
         expect(yield* links).toEqual({ mail: [mailA] });
 
-        // Calls name no accounts; they run with the app's links and share its storage.
         const kinds = { write: "mutation", inspect: "query" } as const;
         const call = (tool: keyof typeof kinds, input = {}) =>
           api.request(agent, "POST", "/v1/tools/call", {
@@ -223,7 +218,6 @@ layer(TestLive, { excludeTestServices: true })("Linked accounts", (it) => {
             expect(response.status, JSON.stringify(response.body)).toBe(200);
             return (yield* body(Completed, response)).value;
           });
-        // Without a linked sink account, the plain requirement has nothing to use.
         const unlinked = yield* call("inspect");
         expect(unlinked.status, JSON.stringify(unlinked.body)).toBe(409);
         expect(unlinked.body).toMatchObject({ _tag: "AccountRequired", slot: "sink" });
@@ -235,12 +229,9 @@ layer(TestLive, { excludeTestServices: true })("Linked accounts", (it) => {
           sink: sinkA,
           totalRows: 1,
         });
-        // A many() requirement uses every linked account: linking another adds it.
         yield* linkLocal(agent, app.id, "mail", mailB);
         expect(yield* links).toEqual({ mail: [mailA, mailB], sink: [sinkA] });
         expect(yield* inspected).toMatchObject({ mail: [mailA, mailB], sink: sinkA });
-        // `sink` is plain, so linking sink-b to it replaces sink-a, which stays saved. Calls then
-        // use sink-b with the same storage.
         yield* linkLocal(agent, app.id, "sink", sinkB);
         expect(yield* links).toEqual({ mail: [mailA, mailB], sink: [sinkB] });
         expect((yield* api.request(agent, "GET", `/v1/accounts/${sinkA}`)).status).toBe(200);
@@ -251,7 +242,6 @@ layer(TestLive, { excludeTestServices: true })("Linked accounts", (it) => {
           totalRows: 2,
         });
 
-        // The SDK routes refuse an account choice instead of running with it.
         const Refused = Schema.Struct({ _tag: Schema.Literal("AccountChoiceUnsupported") });
         const chosenCall = yield* api.request(agent, "POST", "/v1/tools/call", {
           app: app.id,
@@ -271,8 +261,6 @@ layer(TestLive, { excludeTestServices: true })("Linked accounts", (it) => {
         yield* body(Refused, chosenStart);
         expect((yield* inspected).totalRows).toBe(2);
 
-        // The dashboard runs with the same links. Dashboard runs belong to the paired browser,
-        // not the API key.
         const operator = yield* pairLocalOperator;
         const dashboardRun = yield* api.request(
           operator,
@@ -287,7 +275,6 @@ layer(TestLive, { excludeTestServices: true })("Linked accounts", (it) => {
           ),
         ).toMatchObject({ mail: [mailA, mailB], sink: sinkB });
 
-        // MCP lists the app once and runs it with the same links; its input offers no choice.
         const mcp = yield* McpClient;
         const client = yield* mcp.connect(target.apiKey, "linked-accounts");
         const execute = (step: string, code: string) =>
@@ -334,7 +321,6 @@ layer(TestLive, { excludeTestServices: true })("Linked accounts", (it) => {
           sink: sinkB,
         });
 
-        // Each linked mail account is a webhook source that registers with the app's links.
         yield* poll("The mail sources register", sources, (rows) =>
           [mailA, mailB].every((account) =>
             rows.some((row) => row.account === account && row.status === "ready"),
@@ -357,8 +343,6 @@ layer(TestLive, { excludeTestServices: true })("Linked accounts", (it) => {
             .map((source) => ({ source, context: { auth: false, profile: false } })),
         );
 
-        // A delivery starts a run with the app's links; the run keeps them after the plain
-        // requirement's link is replaced.
         const delivered = yield* api.request(
           session,
           "POST",
@@ -403,7 +387,6 @@ layer(TestLive, { excludeTestServices: true })("Linked accounts", (it) => {
           source: "direct",
         });
 
-        // The local subject's schedule copy runs with the same links; there is nothing to choose.
         const schedules = Effect.gen(function* () {
           const response = yield* api.request(agent, "GET", `${path}/schedules`);
           expect(response.status, JSON.stringify(response.body)).toBe(200);
@@ -444,7 +427,6 @@ layer(TestLive, { excludeTestServices: true })("Linked accounts", (it) => {
           (rows) => rows.some((row) => row.status === "succeeded"),
         );
 
-        // A new version keeps the storage; webhook sources register on it.
         const newer = yield* api.request(agent, "POST", "/v1/apps/deploy", {
           owner,
           app: app.id,
@@ -483,7 +465,6 @@ layer(TestLive, { excludeTestServices: true })("Linked accounts", (it) => {
         ).toBe(true);
         expect(replaced.find((item) => item.id === hook.id)?.status).toBe("stopped");
 
-        // Unlinking stops the account's webhook source; the account stays saved.
         yield* unlinkLocal(agent, app.id, "mail", mailA);
         yield* poll("The unlinked source is removed", sources, (rows) =>
           rows.every((row) => row.account !== mailA),
@@ -495,8 +476,6 @@ layer(TestLive, { excludeTestServices: true })("Linked accounts", (it) => {
         ).toEqual([]);
         expect((yield* api.request(agent, "GET", `/v1/accounts/${mailA}`)).status).toBe(200);
 
-        // Unlinking the sink leaves the schedule waiting for an account; it never runs with
-        // another saved account.
         yield* unlinkLocal(agent, app.id, "sink", sinkA);
         expect(yield* links).toEqual({ mail: [mailB] });
         expect(yield* schedules).toEqual([
@@ -542,7 +521,6 @@ export default defineApp({ user: { accounts: { service } } }, { tools: router({ 
         expect(deployed.status, JSON.stringify(deployed.body)).toBe(200);
         const app = (yield* body(Schema.Struct({ app: Resource }), deployed)).app;
         const path = `/v1/apps/${app.id}`;
-        // Connected for another app, so the account is linked but not yet this app's source.
         const [created] = yield* connectAccountsThroughOtherApp(agent, {
           provider: sourceRevisionProvider,
           method: "key",
@@ -585,7 +563,6 @@ export default defineApp({ user: { accounts: { service } } }, { tools: router({ 
         if (read === undefined) return yield* Effect.die(new Error("Missing webhook source"));
         const expected = { id: read.id, actor: read.actor, revision: read.revision };
 
-        // The source the caller read is changed and keeps its actor.
         const saved = yield* configure(expected, "first");
         expect(saved.status, JSON.stringify(saved.body)).toBe(200);
         expect(saved.body).toMatchObject({
@@ -595,7 +572,6 @@ export default defineApp({ user: { accounts: { service } } }, { tools: router({ 
           config: { incoming: { channel: "first" } },
           status: "pending",
         });
-        // A revision read before that change, or another actor, no longer names the source.
         for (const stale of [
           expected,
           { ...expected, revision: read.revision + 1, actor: "other" },
@@ -606,7 +582,6 @@ export default defineApp({ user: { accounts: { service } } }, { tools: router({ 
         }
         expect((yield* sourceOf)?.config).toEqual({ incoming: { channel: "first" } });
 
-        // Once unlinked, the source cannot be changed back to pending, nor recreated.
         const current = { ...expected, revision: read.revision + 1 };
         expect(
           (yield* api.request(agent, "DELETE", `${path}/webhook-sources/${account}`)).status,
@@ -628,7 +603,6 @@ export default defineApp({ user: { accounts: { service } } }, { tools: router({ 
         expect(removed.status, JSON.stringify(removed.body)).toBe(409);
         expect(yield* sourceOf).toBeUndefined();
 
-        // Linking the account again creates another source, which an earlier read does not name.
         expect((yield* link).status).toBe(200);
         const relinked = yield* sourceOf;
         expect(relinked?.id).not.toBe(read.id);
@@ -659,7 +633,6 @@ export default defineApp({ user: { accounts: { service } } }, { tools: router({ 
           },
         };
         const owner = "local";
-        /** An app whose skill text depends on the account of the named requirement. */
         const version = (requirement: string) => [
           {
             path: "index.ts",
@@ -694,7 +667,6 @@ export default defineApp({ user: { accounts: { ${requirement}: service } } }, as
             for (const id of created) yield* api.request(agent, "DELETE", `/v1/accounts/${id}`);
           }).pipe(Effect.orDie),
         );
-        /** Connect an account from the app for one requirement, which links it there. */
         const connect = (requirement: string, token: string) =>
           Effect.gen(function* () {
             const connected = yield* connectLocalAccount(agent, {
@@ -720,15 +692,12 @@ export default defineApp({ user: { accounts: { ${requirement}: service } } }, as
           version: app.activeVersion,
           content: expect.stringContaining(account),
         });
-        // A newer version renames the requirement the skill's text depends on.
         const redeployed = yield* api.request(agent, "POST", "/v1/apps/deploy", {
           owner,
           app: app.id,
           files: version("mail"),
         });
         expect(redeployed.status, JSON.stringify(redeployed.body)).toBe(200);
-        // Links name their requirement, so the renamed one has none until an account is linked
-        // to it: the current skill needs one.
         const unlinked = yield* read("");
         expect(unlinked.status, JSON.stringify(unlinked.body)).toBe(409);
         expect(unlinked.body).toMatchObject({ _tag: "AccountRequired", slot: "mail" });
@@ -737,8 +706,6 @@ export default defineApp({ user: { accounts: { ${requirement}: service } } }, as
         expect(current.version).not.toBe(first.version);
         expect(current.content).toContain(renamed);
         expect(current.content).not.toContain(account);
-        // The earlier version's skill reads with that version's own requirement, whose link
-        // to the first account remains.
         const pinned = yield* read(`?version=${first.version}`);
         expect(pinned.status, JSON.stringify(pinned.body)).toBe(200);
         expect(yield* body(SkillRead, pinned)).toMatchObject({

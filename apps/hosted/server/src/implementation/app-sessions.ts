@@ -1,8 +1,8 @@
 import { resolveOrganizationReference } from "./organization-reference.ts";
-/** Better Auth owns persistence and atomic consume; no schema or dashboard-token copies are introduced. */
 import type { AuthContext } from "@better-auth/core";
 import { AppSignInId } from "apps/ui/auth/contracts";
 import { UiFailed, UiForbidden, UiUnauthorized } from "apps/ui/contracts";
+import { refuse } from "./auth-telemetry.ts";
 import { Clock, Effect, Redacted, Result, Schema } from "effect";
 import {
   AppUiAttempt,
@@ -26,12 +26,15 @@ const sameTarget = (a: AppUiTarget, b: AppUiTarget) =>
   a.organization === b.organization &&
   a.origin === b.origin &&
   a.slug === b.slug;
-const Parent = Schema.Struct({ userId: Principal.fields.userId, expiresAt: Schema.Date });
+const Parent = Schema.Struct({
+  userId: Principal.fields.userId,
+  expiresAt: Schema.Date,
+  impersonatedBy: Schema.optional(Schema.NullOr(Principal.fields.userId)),
+});
 const Organization = Schema.Struct({ id: OrganizationId, slug: OrganizationSlug });
 const Membership = Schema.Struct({ role: OrganizationRole });
 const Stored = Schema.Struct({ value: Schema.String, expiresAt: Schema.Date });
 const recordJson = Schema.fromJsonString(AppUiRecord);
-/** Run two checks together but report the first one's failure first, as if they ran in order. */
 const inOrder = <A, B, E1, E2>(first: Effect.Effect<A, E1>, second: Effect.Effect<B, E2>) =>
   Effect.all([Effect.result(first), Effect.result(second)], { concurrency: "unbounded" }).pipe(
     Effect.flatMap(([a, b]) =>
@@ -43,7 +46,6 @@ const inOrder = <A, B, E1, E2>(first: Effect.Effect<A, E1>, second: Effect.Effec
     ),
   );
 
-/** Adapt one existing Better Auth context. Persisted state works across restarts and serving processes. */
 export const hostedAppSessions = (
   context: {
     readonly internalAdapter: Pick<
@@ -90,12 +92,12 @@ export const hostedAppSessions = (
           ? context.internalAdapter.consumeVerificationValue(identifier)
           : context.internalAdapter.findVerificationValue(identifier),
       );
-      if (row === null) return yield* new UiUnauthorized();
+      if (row === null) return yield* refuse("unknown", new UiUnauthorized());
       const stored = yield* Schema.decodeUnknownEffect(Stored)(row).pipe(
         Effect.mapError(unavailable),
       );
       if (stored.expiresAt.getTime() <= (yield* Clock.currentTimeMillis))
-        return yield* new UiUnauthorized();
+        return yield* refuse("expired", new UiUnauthorized());
       return yield* Schema.decodeUnknownEffect(recordJson)(stored.value).pipe(
         Effect.mapError(unavailable),
       );
@@ -106,18 +108,16 @@ export const hostedAppSessions = (
         context.adapter.findOne({
           model: "session",
           where: [{ field: "id", value: id }],
-          select: ["userId", "expiresAt"],
+          select: ["userId", "expiresAt", "impersonatedBy"],
         }),
       );
-      if (row === null) return yield* new UiUnauthorized();
+      if (row === null) return yield* refuse("revoked", new UiUnauthorized());
       const session = yield* Schema.decodeUnknownEffect(Parent)(row).pipe(
         Effect.mapError(unavailable),
       );
-      if (
-        session.userId !== user ||
-        session.expiresAt.getTime() <= (yield* Clock.currentTimeMillis)
-      )
-        return yield* new UiUnauthorized();
+      if (session.userId !== user) return yield* refuse("wrong_resource", new UiUnauthorized());
+      if (session.expiresAt.getTime() <= (yield* Clock.currentTimeMillis))
+        return yield* refuse("expired", new UiUnauthorized());
       return session;
     });
   const membership = (
@@ -135,7 +135,7 @@ export const hostedAppSessions = (
           select: ["role"],
         }),
       );
-      if (row === null) return yield* new UiForbidden();
+      if (row === null) return yield* refuse("not_member", new UiForbidden());
       const member = yield* Schema.decodeUnknownEffect(Membership)(row).pipe(
         Effect.mapError(() => new UiForbidden()),
       );
@@ -158,7 +158,8 @@ export const hostedAppSessions = (
             ? {
                 id: yield* resolveOrganizationReference(context.adapter, find.reference).pipe(
                   Effect.catchTags({
-                    OrganizationForbidden: () => Effect.fail(new UiForbidden()),
+                    OrganizationForbidden: () =>
+                      refuse("organization_not_found", new UiForbidden()),
                     AuthenticationUnavailable: () => Effect.fail(unavailable()),
                   }),
                 ),
@@ -175,7 +176,7 @@ export const hostedAppSessions = (
             select: ["id", "slug"],
           }),
         );
-        if (row === null) return yield* new UiForbidden();
+        if (row === null) return yield* refuse("organization_not_found", new UiForbidden());
         return yield* Schema.decodeUnknownEffect(Organization)(row).pipe(
           Effect.mapError(unavailable),
         );
@@ -231,7 +232,6 @@ export const hostedAppSessions = (
           parent(grant.parent, grant.user),
           membership(grant.user, target),
         );
-        // Only one callback across all issued codes may consume this browser attempt.
         yield* Effect.all([read(attemptKey, true), read(grantKey, true)], {
           concurrency: "unbounded",
         });
@@ -253,11 +253,11 @@ export const hostedAppSessions = (
       Effect.gen(function* () {
         const session = yield* read(key("session", yield* digest(token)));
         if (!Schema.is(AppUiSession)(session) || !sameTarget(session.target, target))
-          return yield* new UiUnauthorized();
-        yield* parent(session.parent, session.user);
-        // The serving host checks current membership together with app/account
-        // permissions. A second lookup here adds no authority to that decision.
-        return { userId: session.user };
+          return yield* refuse("wrong_resource", new UiUnauthorized());
+        const login = yield* parent(session.parent, session.user);
+        return typeof login.impersonatedBy === "string"
+          ? { userId: session.user, impersonatedBy: login.impersonatedBy }
+          : { userId: session.user };
       }),
   });
 };

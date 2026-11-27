@@ -17,10 +17,6 @@ import type { DashboardError } from "../../contracts/errors.ts";
 import { Failure, ProviderIcon } from "../components/common.tsx";
 import { AppOAuthFields } from "./oauth-fields.tsx";
 
-/**
- * Connect an account for one app requirement, or replace a linked account's credentials. Saving a
- * new account links it to the requirement in the given scope.
- */
 export function AppAccountForm({
   app,
   version,
@@ -36,22 +32,18 @@ export function AppAccountForm({
   onPendingChange,
 }: {
   readonly app: AppId;
-  /** The version whose discovery the page shows, read again once the account is linked. */
   readonly version: VersionId | null;
   readonly scope: AccountScope;
   readonly requirement: string;
   readonly provider: Provider;
-  /** Replace this account's credentials instead of adding an account. */
   readonly account?: Account | undefined;
   readonly initialAccount?: AccountId | undefined;
-  /** Validate entered credentials with the app's check before they are saved. */
   readonly checkWith?: boolean;
   readonly header?: ReactNode;
   readonly actions?: ReactNode;
   readonly onSaved: (account: Account) => void;
   readonly onPendingChange?: (pending: boolean) => void;
 }) {
-  // One dialog is one attempt.
   const [atoms] = useState(() =>
     appConnectionAtoms({
       app,
@@ -64,7 +56,6 @@ export function AppAccountForm({
   const submit = useAtomSet(atoms.submit, { mode: "promiseExit" });
   const checkCredentials = useAtomSet(checkCredentialsAtom, { mode: "promiseExit" });
   const requestName = useAtomSet(accountToNameAtom);
-  // A new account is named once saved; a reconnect keeps its name.
   const saved = (saved: Account) => {
     if (account === undefined)
       requestName({ account: saved.id, saved: { account: saved, provider }, app });
@@ -94,8 +85,11 @@ export function AppAccountForm({
       submit={(input: AccountSubmission) => submit(input)}
       {...(checkWith
         ? {
-            check: (input: AccountSubmission) =>
-              checkCredentials({ app, provider: provider.id, ...input }),
+            check: {
+              app,
+              run: (input: AccountSubmission) =>
+                checkCredentials({ app, provider: provider.id, ...input }),
+            },
           }
         : {})}
       oauth={(props) => (

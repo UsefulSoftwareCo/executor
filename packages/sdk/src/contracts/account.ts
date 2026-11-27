@@ -309,7 +309,6 @@ export const AccountWebhooksActive = ApiError.define({
       .join(", ");
     const more = visible.length - maxNamedWebhookDependents;
     const unseen = `${hidden} webhook ${hidden === 1 ? "subscription" : "subscriptions"} you can't see`;
-    // Removal needs its actor or an app manager, who for a member's subscription must use its source.
     const removers =
       hidden === 1
         ? "Ask the person it runs as, or a manager of its app who can use its source account, to remove it."
@@ -421,7 +420,6 @@ export const AccountsGroup = HttpApiGroup.make("accounts")
       params: accountParams,
       query: {
         ...ownerQuery,
-        // A JSON query value preserves [] instead of dropping it as an absent query parameter.
         apps: Schema.fromJsonString(AccountInputs.health.fields.apps),
       },
       success: AccountHealth,

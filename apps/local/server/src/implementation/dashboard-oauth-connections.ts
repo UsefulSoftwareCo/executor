@@ -1,4 +1,3 @@
-/** Browser selection uses the saved local destination and never changes a request's owner or scope. */
 import { Effect } from "effect";
 import { AccountConnectionRefused } from "@executor-js/sdk/core";
 import type {

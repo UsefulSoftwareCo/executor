@@ -26,7 +26,6 @@ class DepthScenarioFailed extends Schema.TaggedError<DepthScenarioFailed>()("Dep
   status: Schema.optionalKey(Schema.Number),
 }) {}
 
-/** Forwards the MCP request it holds once its own hop count reaches zero; holds no state. */
 const relaySource = `
 export default {
   async fetch(request, env) {
@@ -81,7 +80,6 @@ const RefusalBody = Schema.fromJsonString(
   }),
 );
 const depthLimit = /^Subrequest depth limit exceeded/u;
-/** Well past Cloudflare's 32 Worker invocations per request, so the sweep always ends refused. */
 const maximumHops = 64;
 
 layer(Layer.mergeAll(FetchHttpClient.layer), { excludeTestServices: true })(
@@ -158,7 +156,6 @@ layer(Layer.mergeAll(FetchHttpClient.layer), { excludeTestServices: true })(
               HttpClientRequest.delete(`${workers}/scripts/${name}?force=true`),
             ).pipe(Effect.catch(() => Console.error(`Could not delete the relay Worker ${name}.`))),
           );
-          // A service binding names an existing script, so the relay binds itself on its second upload.
           yield* upload([{ type: "service", name: "SELF", service: name }]);
           yield* cloudflare(
             "Enable the relay's workers.dev route",
@@ -209,7 +206,6 @@ layer(Layer.mergeAll(FetchHttpClient.layer), { excludeTestServices: true })(
               }),
             ).pipe(Effect.provideService(HttpClient.TracerPropagationEnabled, false));
 
-          // A new workers.dev route takes a few seconds to answer.
           const shallowest = yield* at(0).pipe(
             Effect.retry({ schedule: Schedule.spaced("2 seconds"), times: 45 }),
           );

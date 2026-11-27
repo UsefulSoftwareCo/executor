@@ -1,9 +1,3 @@
-/**
- * A retained build stores the app's own modules and names the `apps` framework it links; each
- * framework release is stored once and linked on load. Self-host keeps builds as files in its data
- * directory, so the scenarios read them there. Cloud keeps them in R2, which the scenarios cannot
- * read, so there they check only that each build loads and answers.
- */
 import { expect, layer } from "@effect/vitest";
 import { Effect, FileSystem, Path, Schema } from "effect";
 import { randomUUID } from "node:crypto";
@@ -17,9 +11,7 @@ import { Evidence } from "../support/evidence.ts";
 import { Target } from "../support/platform.ts";
 import { serverControl } from "../support/server-control.ts";
 
-/** A build record is the app's code; the framework it links is about 1.8 MB on its own. */
 const recordLimit = 64 * 1024;
-/** The published release the side-by-side app pins, which hosts resolve from npm. */
 const olderRelease = "0.0.1-beta.5";
 
 const current = (marker: string) => [
@@ -31,8 +23,6 @@ export default defineApp({}, { tools: router({ ping }) });`,
   },
   appsManifest,
 ];
-// app-user-accounts: keep, as source of an earlier `apps` release.
-/** Source written for the protocol-3 framework, before routers. */
 const older = (marker: string) => [
   {
     path: "index.ts",
@@ -83,7 +73,6 @@ const hosted = Effect.gen(function* () {
       );
       return { app, path, build };
     });
-  /** Call the app's one query. */
   const ping = (path: string, tool: string) =>
     Effect.gen(function* () {
       const response = yield* api.request(actors.owner, "POST", `${path}/tools/call`, {
@@ -94,7 +83,6 @@ const hosted = Effect.gen(function* () {
       expect(response.status, JSON.stringify(response.body)).toBe(200);
       return response.body;
     });
-  /** Self-host keeps each build's record and every framework under its data directory. */
   const builds = Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem,
       path = yield* Path.Path;
@@ -152,8 +140,6 @@ layer(HostedLive, { excludeTestServices: true })("Build framework storage", (it)
           expect(framework.sha256).toBe(record.framework.sha256);
           expect(Object.keys(framework.modules)).toContain("node_modules/apps/index.js");
           expect(yield* store.inlined(deployed.build), "No inlined copy is written").toBe(false);
-          // A restarted host has no Worker or decoded build; the call cold-loads the record and
-          // links the stored framework.
           yield* serverControl("restart");
         }
         expect(yield* ping(deployed.path, "ping")).toBe(marker);
@@ -211,7 +197,6 @@ layer(HostedLive, { excludeTestServices: true })("Build framework storage", (it)
           const stored = yield* store.frameworks;
           for (const identity of [newerIdentity, olderIdentity])
             expect(stored).toContain(`${identity.version}-${identity.sha256}.json`);
-          // Both cold-load and link their own framework after a restart.
           yield* serverControl("restart");
         }
 

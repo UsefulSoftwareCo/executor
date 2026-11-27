@@ -1,8 +1,3 @@
-/**
- * App versions were called deployments. Local API callers written before the rename still use the
- * former paths and field names: `/v1` serves both, accepts either field name, and repeats the
- * former names in its responses.
- */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Redacted, Schema } from "effect";
 import { randomUUID } from "node:crypto";
@@ -59,7 +54,6 @@ layer(TestLive, { excludeTestServices: true })("Local version API compatibility"
         yield* Effect.addFinalizer(() =>
           api.request(agent, "DELETE", `/v1/apps/${first.app.id}`).pipe(Effect.orDie),
         );
-        // The deploy response names the new version, and the app's active one, under both names.
         expect(first.deployment.id).toBe(first.version.id);
         expect(first.app.activeDeployment).toBe(first.app.activeVersion);
         const second = yield* body(
@@ -73,7 +67,6 @@ layer(TestLive, { excludeTestServices: true })("Local version API compatibility"
         expect(second.version.id).not.toBe(first.version.id);
         const path = `/v1/apps/${first.app.id}`;
 
-        // The version list answers on its new path and its former one.
         const versions = yield* api.request(agent, "GET", `${path}/versions`);
         const deployments = yield* api.request(agent, "GET", `${path}/deployments`);
         expect(versions.status).toBe(200);
@@ -84,7 +77,6 @@ layer(TestLive, { excludeTestServices: true })("Local version API compatibility"
           [first.version.id, second.version.id].sort(),
         );
 
-        // One version reads on either path and selects it by either query name.
         for (const endpoint of ["version", "deployment"])
           for (const name of ["version", "deployment"]) {
             const read = yield* api.request(
@@ -96,7 +88,6 @@ layer(TestLive, { excludeTestServices: true })("Local version API compatibility"
             expect((yield* body(Retained, read)).id, `${endpoint} ${name}`).toBe(first.version.id);
           }
 
-        // Activation accepts the former field names.
         const activated = yield* api.request(agent, "POST", `${path}/activate`, {
           deployment: first.version.id,
           expectedDeployment: second.version.id,

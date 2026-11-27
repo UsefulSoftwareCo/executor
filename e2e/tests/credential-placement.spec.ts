@@ -1,24 +1,22 @@
-/**
- * A method that declares placements (`request`) sends its secret fields only where a request
- * matches one of its templates exactly; a handle anywhere else is refused, so an allowed host
- * cannot be made to store the secret and hand it back. Tokens from the operator's own OAuth client
- * are managed: sealed, and sent only in the operator's header to the operator's hosts, whatever
- * the provider declares.
- */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Fiber, FileSystem, Schedule, Schema } from "effect";
 import { FetchHttpClient, HttpClient } from "effect/http";
 import { randomUUID } from "node:crypto";
 import { Actors } from "../support/actors.ts";
 import { Api, body } from "../support/api.ts";
+import { Browser } from "../support/browser.ts";
 import { publishedRelease } from "../support/app-package.ts";
 import { appsManifest, unscopedAccounts } from "../support/apps-release.ts";
 import { HostedLive, withHostedCase } from "../support/case.ts";
 import { Resource } from "../support/contracts.ts";
 import { credentialUpstream, type ReceivedRequest } from "../support/credential-upstream.ts";
-import { Telemetry } from "../support/evidence.ts";
+import { Evidence, Telemetry } from "../support/evidence.ts";
 import type { OperatorSettings } from "../support/managed-server.ts";
-import { OperatorOAuthFixture, operatorOAuthFile } from "../support/operator-oauth.ts";
+import {
+  OperatorOAuthFixture,
+  operatorOAuthFile,
+  syntheticCloudGoogle,
+} from "../support/operator-oauth.ts";
 import {
   oauthSetupIssuer,
   oauthSetupIssuerOn,
@@ -40,7 +38,6 @@ const Refusal = Schema.Struct({
   location: Schema.optional(Schema.String),
   allowedHosts: Schema.optional(Schema.Array(Schema.String)),
 });
-/** One request an app sent, as the app saw its answer. */
 const Sent = Schema.Struct({ status: Schema.Number, refusal: Schema.NullOr(Refusal) });
 const Redirect = Schema.Struct({
   status: Schema.Literal("redirect"),
@@ -52,6 +49,21 @@ const Setup = Schema.Struct({
   scopes: Schema.Array(Schema.String),
   firstParty: Schema.optional(Schema.Struct({ label: Schema.String })),
   userScopes: Schema.optional(Schema.Array(Schema.String)),
+  operatorScopeRefusal: Schema.optional(
+    Schema.Struct({
+      client: Schema.String,
+      scopes: Schema.Array(Schema.String),
+      instead: Schema.Array(
+        Schema.Struct({ scope: Schema.String, scopes: Schema.Array(Schema.String) }),
+      ),
+    }),
+  ),
+});
+const ScopeRefused = Schema.Struct({
+  _tag: Schema.Literal("OAuthSetupFailed"),
+  reason: Schema.Literal("operator_scope_refused"),
+  message: Schema.String,
+  recovery: Schema.Struct({ action: Schema.String, instructions: Schema.String }),
 });
 const Health = Schema.Struct({
   apps: Schema.Array(
@@ -67,35 +79,42 @@ const Run = Schema.Struct({
   output: Schema.optionalKey(Schema.Json),
 });
 const Tools = Schema.Struct({ items: Schema.Array(Schema.Struct({ name: Schema.String })) });
-/** A placed or managed handle, which an outbound from before placements never opens. */
 const handle = /^exsec2_[0-9a-f]+_$/;
-/** A failure as the API answers it. */
 const Failure = Schema.Struct({ _tag: Schema.String, message: Schema.String });
-/**
- * Wording that presents revocation as done. Executor revokes refused tokens beside its answer, and
- * the service may refuse or not support it, so an error never states it as a fact.
- */
 const claimsRevoked = /\b(was|were|been|is|are) revoked\b/u;
-/** The message of a failure the API answered; any other answer, as JSON, fails checks on it. */
 const messageOf = (response: { readonly body: unknown }) =>
   Schema.decodeUnknownEffect(Failure)(response.body).pipe(
     Effect.map((failure) => failure.message),
     Effect.orElseSucceed(() => JSON.stringify(response.body)),
   );
 
-/** Send a request and report its status and, for a refusal, why. Shared by every fixture app. */
+const SignInFailure = Schema.Struct({
+  _tag: Schema.String,
+  reason: Schema.String,
+  message: Schema.String,
+  cause: Schema.optional(
+    Schema.Struct({
+      stage: Schema.String,
+      status: Schema.optional(Schema.Number),
+      providerError: Schema.optional(Schema.String),
+    }),
+  ),
+  serviceError: Schema.optional(Schema.Unknown),
+  retryAfter: Schema.optional(Schema.String),
+});
+const FailedConnection = Schema.Struct({
+  state: Schema.Struct({
+    status: Schema.String,
+    failure: Schema.optional(Schema.Struct({ at: Schema.String, error: SignInFailure })),
+  }),
+});
+
 const sendSource = `const send = async (url, init) => {
   const response = await fetch(url, init);
   const text = await response.text();
   return { status: response.status, refusal: response.status === 421 ? JSON.parse(text).refusal : null };
 };`;
 
-/**
- * Four providers that place their secrets differently, all on `host`: a bearer token, Basic
- * credentials with a plain username, Basic credentials with two secrets (two accounts), and a key
- * sent as a header or a query parameter. `probe` sends each credential everywhere it may and may
- * not go.
- */
 const placedApp = (name: string, host: string) => `import {
   base64, basic, bearer, defineApp, defineProvider, header, object, plain, query, router, secrets, string, t,
 } from "apps";
@@ -195,7 +214,6 @@ export default defineApp({ user: { accounts: { bearerService, basicService, pair
   }),
 });`;
 
-/** An app whose provider has a method with `request`, for checking what its declaration allows. */
 const declaredApp = (request: string, options: { readonly hosts?: boolean } = {}) =>
   `import { bearer, defineApp, defineProvider, header, object, plain, raw, router, secrets, string, t } from "apps";
 const service = defineProvider({
@@ -211,11 +229,6 @@ const service = defineProvider({
 });
 export default defineApp({ user: { accounts: { service } } }, { tools: router({}) });`;
 
-/**
- * A token placed as a bearer and one substituted anywhere, both on `host`. `fail` sends each where
- * the network cannot take the real value, a header value with a line break, and reports how the
- * app's fetch ended; `trace` sends each with `TRACE`.
- */
 const outboundApp = (
   name: string,
   host: string,
@@ -250,7 +263,6 @@ export default defineApp({ user: { accounts: { placed, anywhere } } }, {
   }),
 });`;
 
-/** A provider that declares its OAuth endpoints itself, as an app could for any server. */
 const endpointsApp = (
   name: string,
   hosts: readonly string[],
@@ -264,37 +276,27 @@ export default defineApp({ user: { accounts: { mail } } }, {
   tools: router({ fields: query({ input: object({}) }, async ({ user: { accounts } }) => accounts.mail.fields) }),
 });`;
 
-/** The token the issuer gives every first sign-in. */
 const token = "synthetic-access-token";
-/** What a service received when the operator's placement carried the real token. */
 const realBearer = `Bearer ${token}`;
 
-/**
- * The operator's OAuth client, without its credentials: its authorization server, which every
- * request carrying its secret or a user's tokens goes to, its scope menu and its placement. An E2E
- * host adds it to the reviewed clients from `EXECUTOR_TEST_OAUTH_CLIENT_DEFINITIONS`.
- */
 const operatorDefinition = (
   issuerOrigin: string,
   hosts: readonly string[],
   options: {
     readonly revocation?: boolean;
-    /** Requested for a method that asks for no scopes; `mail.read` by default. */
     readonly defaultScopes?: readonly string[];
-    /** What a sign-in may ask for and a grant may hold; `mail.read` and `mail.compose` by default. */
     readonly allowedScopes?: readonly string[];
-    /** How the server separates the scopes it reports granting, such as GitHub's `,`. */
+    readonly heldScopes?: ReadonlyArray<{
+      readonly scope: string;
+      readonly instead: readonly string[];
+    }>;
     readonly grantedScopeSeparator?: string;
-    /** Extra sign-in parameters the operator sends, such as Slack's `user_scope`. */
     readonly authorizationParams?: Readonly<Record<string, string>>;
-    /** The header the token goes in, and its scheme; `Authorization: Bearer` by default. */
     readonly header?: string;
     readonly scheme?: string | null;
     /** A path on the issuer the operator sends as its own RFC 8707 resource, as Slack's is. */
     readonly resourcePath?: string;
-    /** Where the token response nests the grant, as Slack's `authed_user`. */
     readonly tokenResponse?: { readonly path: string };
-    /** Withheld from new sign-ins; offered only to reconnect its own accounts. */
     readonly unlisted?: boolean;
   } = {},
 ) => ({
@@ -319,6 +321,7 @@ const operatorDefinition = (
   tokenEndpointAuthMethod: "client_secret_basic",
   defaultScopes: options.defaultScopes ?? ["mail.read"],
   allowedScopes: options.allowedScopes ?? ["mail.read", "mail.compose"],
+  ...(options.heldScopes === undefined ? {} : { heldScopes: options.heldScopes }),
   placement: {
     hosts,
     ...(options.header === undefined ? {} : { header: options.header }),
@@ -326,45 +329,32 @@ const operatorDefinition = (
   },
   ...(options.unlisted === undefined ? {} : { unlisted: options.unlisted }),
 });
-/** The settings that turn the operator's client on: its definition and its credentials. */
 const operatorClients = (...definition: Parameters<typeof operatorDefinition>) => ({
   EXECUTOR_TEST_OAUTH_CLIENT_DEFINITIONS: JSON.stringify([operatorDefinition(...definition)]),
   EXECUTOR_OAUTH_SYNTHETIC_MAIL_CLIENT_ID: "first-party-client",
   EXECUTOR_OAUTH_SYNTHETIC_MAIL_CLIENT_SECRET: "first-party-secret",
 });
 
-/** The operator turns its client off: its credentials are unset, as an empty value is. */
 const noOperatorClients = {
   EXECUTOR_OAUTH_SYNTHETIC_MAIL_CLIENT_ID: "",
   EXECUTOR_OAUTH_SYNTHETIC_MAIL_CLIENT_SECRET: "",
 };
 
-/**
- * A mail service on the operator client's issuer. `discover` and `scopes` choose the authorization
- * server and what it asks for; `request` adds the provider's own placements, which the operator's
- * header replaces for a managed account.
- */
 const mailApp = (options: Parameters<typeof mailSource>[0]) =>
   options.legacy === true ? unscopedAccounts(mailSource(options)) : mailSource(options);
 const mailSource = (options: {
   readonly name: string;
   readonly discover: string;
-  /** Undefined declares no hosts. */
   readonly hosts: readonly string[] | undefined;
-  /** Null declares none, so discovery reads what the resource advertises. */
   readonly scopes?: readonly string[] | null;
   readonly scopeSeparator?: string;
-  /** Extra sign-in parameters the provider declares. */
   readonly authorizationParams?: Readonly<Record<string, string>>;
   readonly request?: string;
   readonly resource: string;
   readonly store: string;
   readonly undeclared: string;
-  /** Where the account check reads with the token; the store's `/check` by default. */
   readonly check?: string;
-  /** Built with a framework from before placements, which writes its header by hand. */
   readonly legacy?: boolean;
-  /** Mark the access token `raw()`, which a managed account ignores. */
   readonly rawToken?: boolean;
 }) => `import {
   ${options.legacy === true ? "" : "bearer, header,"} defineApp, defineProvider, oauth2, object, ProviderError, query, raw, router, string, workflow,
@@ -484,7 +474,6 @@ const harness = Effect.gen(function* () {
     actors = yield* Actors,
     http = yield* HttpClient.HttpClient;
   const prefix = `/api/organizations/${actors.organization.id}`;
-  /** Deploy `files`; the app is deleted when the case ends. */
   const deploy = (name: string, content: string, manifest = appsManifest) =>
     Effect.gen(function* () {
       const deployed = yield* api.request(actors.owner, "POST", `${prefix}/apps/deploy`, {
@@ -498,7 +487,6 @@ const harness = Effect.gen(function* () {
       );
       return { path: `${prefix}/apps/${app.id}`, app };
     });
-  /** Open a connection for `requirement`; the account it saves is linked to the app. */
   const connection = (path: string, requirement: string) =>
     api.request(actors.owner, "POST", connectionsPath(path, "user", requirement), {}).pipe(
       Effect.tap((response) =>
@@ -507,7 +495,6 @@ const harness = Effect.gen(function* () {
       Effect.flatMap((response) => body(Resource, response)),
       Effect.map((resource) => resource.id),
     );
-  /** Connect a secrets account for `requirement`, which links it to the app. */
   const submit = (path: string, requirement: string, fields: object) =>
     Effect.gen(function* () {
       const id = yield* connection(path, requirement);
@@ -523,11 +510,8 @@ const harness = Effect.gen(function* () {
       );
       return account;
     });
-  /** Call `tool` with the accounts linked to the app: for a plain requirement, the newest. */
   const call = <A>(path: string, output: Schema.Decoder<A>, tool: string) =>
     Effect.gen(function* () {
-      // Every tool here only reads. Naming the kind, once a kept listing confirms it (`list`),
-      // lets a refused call renew and repeat.
       const response = yield* api.request(actors.owner, "POST", `${path}/tools/call`, {
         tool,
         kind: "query",
@@ -545,17 +529,11 @@ const harness = Effect.gen(function* () {
       expect(response.status, JSON.stringify(response.body)).toBe(200);
       return yield* body(output, response);
     });
-  /**
-   * List the app's tools, as a caller discovering them does. The listing is kept, and only a kept
-   * listing confirms that a query only reads, so a refused query is repeated after renewal and a
-   * failed renewal is its failure.
-   */
   const list = (path: string) =>
     Effect.gen(function* () {
       const listed = yield* api.request(actors.owner, "GET", `${path}/tools`);
       expect(listed.status, JSON.stringify(listed.body)).toBe(200);
     });
-  /** The first redirect of an authorization URL: the callback the issuer sends the browser to. */
   const consent = (authorizationUrl: string) =>
     Effect.scoped(
       Effect.gen(function* () {
@@ -591,14 +569,12 @@ layer(HostedLive, { excludeTestServices: true })("Credential placement", (it) =>
           encoded: `synthetic-encoded-${randomUUID()}`,
           insecure: `synthetic-insecure-${randomUUID()}`,
         };
-        // Each requirement links the accounts connected for it, so calls need no choice.
         yield* submit(path, "bearerService", { token: values.token });
         yield* submit(path, "basicService", { email: values.email, token: values.basic });
         for (const pair of values.pairs) yield* submit(path, "pairs", pair);
         yield* submit(path, "keyService", { key: values.key });
         yield* submit(path, "encodedService", { key: values.encoded });
         yield* submit(path, "insecureService", { token: values.insecure });
-        // The service serves only requests that carry what it issued, exactly where it expects it.
         const basicOf = (user: string, password: string) =>
           `Basic ${Buffer.from(`${user}:${password}`).toString("base64")}`;
         yield* upstream.issue([
@@ -643,11 +619,9 @@ layer(HostedLive, { excludeTestServices: true })("Credential placement", (it) =>
           "fields",
           {},
         );
-        // Secret fields are handles; a plain field keeps its value.
         expect(fields.bearer.token).toMatch(handle);
         expect(fields.basic.email).toBe(values.email);
         expect(fields.basic.token).toMatch(handle);
-        // Every secret field of every account is sealed.
         const pairFields = fields.pairs.flatMap((pair) => [pair.user, pair.password]);
         expect(pairFields).toHaveLength(4);
         for (const value of pairFields) expect(value).toMatch(handle);
@@ -659,7 +633,6 @@ layer(HostedLive, { excludeTestServices: true })("Credential placement", (it) =>
         });
         const sent = (key: string) => probe[key]?.status;
         const refused = (key: string) => probe[key]?.refusal;
-        // Exactly the declared templates are substituted, written by hand or by the helpers.
         for (const key of [
           "bearerHelper",
           "bearerWritten",
@@ -672,7 +645,6 @@ layer(HostedLive, { excludeTestServices: true })("Credential placement", (it) =>
           "encodedHeader",
         ])
           expect(sent(key), key).toBe(200);
-        // Anything else carrying a placed handle is refused, naming where the handle was.
         const placement = (location: string) => ({ reason: "credential_placement", location });
         expect(refused("bearerPrefixed")).toEqual(placement("authorization header"));
         expect(refused("bearerTwice")).toEqual(placement("authorization header"));
@@ -682,13 +654,11 @@ layer(HostedLive, { excludeTestServices: true })("Credential placement", (it) =>
         expect(refused("formBody")).toEqual(placement("request body"));
         expect(refused("urlPath")).toEqual(placement("URL"));
         expect(refused("queryParameter")).toEqual(placement("token query parameter"));
-        // A secret cannot fill another field's slot, and Basic slots cannot be swapped or mixed.
         expect(refused("basicSecretAsUser")).toEqual(placement("authorization header"));
         expect(refused("bearerAsBasic")).toEqual(placement("authorization header"));
         expect(refused("pairSwapped")).toEqual(placement("authorization header"));
         expect(refused("pairAcrossAccounts")).toEqual(placement("authorization header"));
         expect(refused("keyWrongName")).toEqual(placement("apikey query parameter"));
-        // Over plain HTTP to a host that is not loopback, a placed credential is never sent.
         expect(refused("insecure")).toEqual({ reason: "credential_transport" });
 
         const received = yield* upstream.received;
@@ -704,12 +674,10 @@ layer(HostedLive, { excludeTestServices: true })("Credential placement", (it) =>
         expect(at("/bearer-helper").authorization).toBe(`Bearer ${values.token}`);
         expect(at("/bearer-written").authorization).toBe(`Bearer ${values.token}`);
         expect(basicDecoded(at("/basic-helper"))).toBe(`${values.email}:${values.basic}`);
-        // A plain field's slot carries what the app wrote; the secret still fills only its own.
         expect(basicDecoded(at("/basic-other-user"))).toBe(`someone@example.test:${values.basic}`);
         expect(values.pairs.map((pair) => `${pair.user}:${pair.password}`)).toContain(
           basicDecoded(at("/pair-helper")),
         );
-        // Base64 placements are found and filled in a query parameter and after literal text.
         const encodedQuery = new URL(at("/encoded-query").url, upstream.origin);
         expect(encodedQuery.searchParams.get("auth")).toBe(
           Buffer.from(`k:${values.encoded}`).toString("base64"),
@@ -719,12 +687,10 @@ layer(HostedLive, { excludeTestServices: true })("Credential placement", (it) =>
         );
         const keyRequests = received.filter((entry) => entry.url.startsWith("/key-"));
         expect(keyRequests).toHaveLength(2);
-        // The key header carries exactly the key, under the name the provider declares.
         expect(at("/key-header").headers["x-goog-api-key"]).toBe(values.key);
         const keyUrl = new URL(at("/key-url").url, upstream.origin);
         expect(keyUrl.searchParams.get("key")).toBe(values.key);
         expect(keyUrl.searchParams.get("q")).toBe("a b");
-        // Refused requests were never sent, and every request sent carried a real credential.
         expect(received.filter((entry) => entry.url.startsWith("/refused"))).toEqual([]);
         for (const entry of received) expect(entry.authenticated, entry.url).toBe(true);
         const secrets = [
@@ -757,7 +723,6 @@ layer(HostedLive, { excludeTestServices: true })("Credential placement", (it) =>
       context,
       Effect.gen(function* () {
         const { api, actors, prefix } = yield* harness;
-        /** Deploy a declaration that must fail, and return what the deployer reads. */
         const refusedDeploy = (request: string, options?: { readonly hosts?: boolean }) =>
           Effect.gen(function* () {
             const response = yield* api.request(actors.owner, "POST", `${prefix}/apps/deploy`, {
@@ -767,7 +732,6 @@ layer(HostedLive, { excludeTestServices: true })("Credential placement", (it) =>
             expect(response.status, JSON.stringify(response.body)).not.toBe(200);
             return JSON.stringify(response.body);
           });
-        // An untagged template literal turns a field reference into a string, which throws.
         expect(
           yield* refusedDeploy('({ token }) => header("authorization", `Bearer ${token}`)'),
         ).toContain("Build placement values with t`...`");
@@ -799,7 +763,6 @@ layer(HostedLive, { excludeTestServices: true })("Credential placement", (it) =>
         const upstream = yield* credentialUpstream;
         const name = `Credential outbound ${randomUUID().slice(0, 8)}`;
         const { path } = yield* deploy(name, outboundApp(name, `127.0.0.1:${upstream.port}`));
-        // Secrets the network cannot send as header values. App code holds handles, which it can.
         const secret = (label: string) => `synthetic-${label}-${randomUUID()}\r\nx-injected: 1`;
         const values = { placed: secret("placed"), anywhere: secret("anywhere") };
         yield* submit(path, "placed", { token: values.placed });
@@ -811,8 +774,6 @@ layer(HostedLive, { excludeTestServices: true })("Credential placement", (it) =>
           "fail",
           { origin: upstream.origin },
         );
-        // Neither request was sent, and nothing app code read or the server logged quotes the
-        // value the outbound substituted.
         expect(failed.placed.status).not.toBe(200);
         expect(failed.anywhere.status).not.toBe(200);
         const output = (yield* fs.readFileString(log)).slice(logged);
@@ -821,7 +782,6 @@ layer(HostedLive, { excludeTestServices: true })("Credential placement", (it) =>
           expect(JSON.stringify(failed)).not.toContain(quoted);
           expect(output).not.toContain(quoted);
         }
-        // TRACE asks the service to send the request back, so no handle is ever sent with it.
         const traced = yield* callWith(
           path,
           Schema.Struct({ placed: Sent, anywhere: Sent }),
@@ -835,7 +795,6 @@ layer(HostedLive, { excludeTestServices: true })("Credential placement", (it) =>
     ),
   );
 
-  /** Restart the product with the operator's client settings changed to `settings`. */
   const restartWith = (settings: typeof OperatorSettings.Type, clockAdvance?: number) =>
     Effect.gen(function* () {
       yield* serverControl("stop");
@@ -845,10 +804,6 @@ layer(HostedLive, { excludeTestServices: true })("Credential placement", (it) =>
       yield* serverControl("start");
     });
 
-  /**
-   * Turn on the operator's OAuth client for the issuer, restarting the product with it. `hosts`
-   * replaces the client's hosts, the issuer's and the store's by default.
-   */
   const operatorWith = (
     options: Parameters<typeof operatorDefinition>[2] & {
       readonly hosts?: (origins: { issuerHost: string; storeHost: string }) => readonly string[];
@@ -860,9 +815,6 @@ layer(HostedLive, { excludeTestServices: true })("Credential placement", (it) =>
       const store = yield* credentialUpstream;
       const issuerHost = new URL(issuer.origin).host;
       const storeHost = `127.0.0.1:${store.port}`;
-      // Unless asked, nothing else could sign in: the issuer registers no clients. Its resource
-      // and the store serve only the tokens the issuer issued, as real services do, so a request
-      // whose handle was never replaced by the token is refused.
       yield* issuer.configure({
         registration: options.registration ?? false,
         refreshTokens: true,
@@ -881,7 +833,6 @@ layer(HostedLive, { excludeTestServices: true })("Credential placement", (it) =>
       context,
       Effect.gen(function* () {
         const { api, actors, prefix, deploy, connection } = yield* harness;
-        // The operator's client asks for its own user permissions, as Slack's `user_scope` does.
         const { issuer, store, issuerHost, storeHost } = yield* operatorWith({
           authorizationParams: { user_scope: "admin.users:write" },
         });
@@ -895,7 +846,6 @@ layer(HostedLive, { excludeTestServices: true })("Credential placement", (it) =>
           store: store.origin,
           undeclared: store.undeclaredOrigin,
         };
-        /** How setup answers for the app's provider, given a connection to it. */
         const setup = (deployed: { readonly path: string; readonly app: typeof App.Type }) =>
           Effect.gen(function* () {
             const id = yield* connection(deployed.path, "mail");
@@ -919,25 +869,17 @@ layer(HostedLive, { excludeTestServices: true })("Credential placement", (it) =>
           path: "package.json",
           content: JSON.stringify({ dependencies: { apps: release.url } }),
         };
-        // The provider asks for other user permissions than the operator's client does.
         const userRead = { authorizationParams: { user_scope: "users:read" } };
         const variants = {
           matched: mailApp({ ...base, ...userRead }),
-          // The provider asks for no user permissions; the operator's client still does.
           unscoped: mailApp(base),
-          // The provider asks for no scopes: the operator's default scopes are asked for.
           defaults: mailApp({ ...base, scopes: [] }),
-          // The same provider name on another authorization server is not the operator's.
           elsewhere: mailApp({ ...base, ...userRead, discover: `${other.origin}/mcp` }),
-          // A scope the operator does not allow.
           wider: mailApp({ ...base, scopes: ["mail.read", "mail.delete"] }),
-          // Placements of its own, which the operator's header replaces.
           leaky: mailApp({
             ...base,
             request: '({ access_token }) => header("x-leak", access_token)',
           }),
-          // A separator that would smuggle a scope the operator does not allow between the
-          // requested ones.
           separator: mailApp({
             ...base,
             scopes: ["mail.read", "mail.compose"],
@@ -952,7 +894,6 @@ layer(HostedLive, { excludeTestServices: true })("Credential placement", (it) =>
                 Effect.map((answer) => [key, answer] as const),
               ),
             ),
-            // A build that knows no placements receives sealed handles all the same.
             deploy(
               `Mail protocol 11 ${randomUUID().slice(0, 8)}`,
               mailApp({ ...base, legacy: true }),
@@ -975,8 +916,6 @@ layer(HostedLive, { excludeTestServices: true })("Credential placement", (it) =>
         expect(new URL(redirect.authorizationUrl).searchParams.get("client_id")).toBe(
           "first-party-client",
         );
-        // Setup shows the user permissions the operator's client will ask for, which sign-in
-        // sends, whatever the provider declares; another client asks for the provider's.
         for (const key of ["matched", "unscoped"]) {
           const answer = answers[key]!;
           expect(answer.setup.firstParty, key).toBeDefined();
@@ -986,26 +925,21 @@ layer(HostedLive, { excludeTestServices: true })("Credential placement", (it) =>
           expect(sent.searchParams.get("user_scope"), key).toBe("admin.users:write");
         }
         expect(answers["elsewhere"]!.setup.userScopes).toEqual(["users:read"]);
-        // The operator's client is offered, but the scope parameter is the operator's own joining
-        // of exactly the requested scopes; the provider's separator never reaches the wire.
         const separated = answers["separator"]!;
         expect(separated.started.status, JSON.stringify(separated.started.body)).toBe(200);
         const separatedUrl = new URL((yield* body(Redirect, separated.started)).authorizationUrl);
         expect(separatedUrl.searchParams.get("client_id")).toBe("first-party-client");
         expect(separatedUrl.searchParams.get("scope")).toBe("mail.read mail.compose");
-        // A provider that asks for no scopes gets the operator's defaults, and setup says so.
         const defaults = answers["defaults"]!;
         expect(defaults.setup.scopes).toEqual(["mail.read"]);
         const defaultsUrl = new URL((yield* body(Redirect, defaults.started)).authorizationUrl);
         expect(defaultsUrl.searchParams.get("client_id")).toBe("first-party-client");
         expect(defaultsUrl.searchParams.get("scope")).toBe("mail.read");
-        // App-declared placements and an older framework do not decide whether it is offered.
         for (const key of ["leaky", "protocol11"]) {
           expect(answers[key]!.setup.firstParty, key).toBeDefined();
           const started = new URL((yield* body(Redirect, answers[key]!.started)).authorizationUrl);
           expect(started.searchParams.get("client_id"), key).toBe("first-party-client");
         }
-        // Another server, or a scope outside `allowedScopes`, is never offered the client.
         for (const key of ["elsewhere", "wider"]) {
           expect(answers[key]!.setup.firstParty, key).toBeUndefined();
           expect(answers[key]!.started.body, key).toMatchObject({ _tag: "OAuthClientUnavailable" });
@@ -1014,63 +948,67 @@ layer(HostedLive, { excludeTestServices: true })("Credential placement", (it) =>
     ),
   );
 
+  const google = {
+    authorizationUrl: "https://accounts.google.com/o/oauth2/v2/auth",
+    tokenUrl: "https://oauth2.googleapis.com/token",
+  };
+  const calendar = "https://www.googleapis.com/auth/calendar";
+  const gmail = "https://mail.google.com/";
+  const gmailModify = "https://www.googleapis.com/auth/gmail.modify";
+  const drive = "https://www.googleapis.com/auth/drive";
+  const cloudPlatform = "https://www.googleapis.com/auth/cloud-platform";
+  const signInGoogle = (key: string, scopes: readonly string[]) =>
+    Effect.gen(function* () {
+      const { api, actors, prefix, deploy, connection } = yield* harness;
+      const name = `Google ${key} ${randomUUID().slice(0, 8)}`;
+      const { path, app } = yield* deploy(
+        name,
+        endpointsApp(name, ["www.googleapis.com"], google, scopes),
+      );
+      const id = yield* connection(path, "mail");
+      const started = yield* api.request(
+        actors.owner,
+        "POST",
+        `${prefix}/connections/${id}/oauth/start`,
+        { method: "oauth", label: "Google" },
+      );
+      const provider = app.requirements.accounts.mail!.provider;
+      const answered = yield* api.request(
+        actors.owner,
+        "GET",
+        `${prefix}/providers/${provider}/oauth/oauth/setup`,
+      );
+      return { started, setup: yield* body(Setup, answered) };
+    });
+
   it.effect(scenarios.credentialManagedGoogle.title, (context) =>
     withHostedCase(
       context,
       Effect.gen(function* () {
-        const { api, actors, prefix, deploy, connection } = yield* harness;
         const clientId = "synthetic-google-client.apps.googleusercontent.com";
-        const google = {
-          authorizationUrl: "https://accounts.google.com/o/oauth2/v2/auth",
-          tokenUrl: "https://oauth2.googleapis.com/token",
-        };
-        const calendar = "https://www.googleapis.com/auth/calendar";
-        /** Deploy a Google service asking for `scopes`, then start signing in and read setup. */
-        const signIn = (key: string, scopes: readonly string[]) =>
-          Effect.gen(function* () {
-            const name = `Google ${key} ${randomUUID().slice(0, 8)}`;
-            const { path, app } = yield* deploy(
-              name,
-              endpointsApp(name, ["www.googleapis.com"], google, scopes),
-            );
-            const id = yield* connection(path, "mail");
-            const started = yield* api.request(
-              actors.owner,
-              "POST",
-              `${prefix}/connections/${id}/oauth/start`,
-              { method: "oauth", label: "Google" },
-            );
-            const provider = app.requirements.accounts.mail!.provider;
-            const answered = yield* api.request(
-              actors.owner,
-              "GET",
-              `${prefix}/providers/${provider}/oauth/oauth/setup`,
-            );
-            return { started, setup: yield* body(Setup, answered) };
-          });
+        const signIn = signInGoogle;
         const cleared = {
           EXECUTOR_OAUTH_GOOGLE_CLIENT_ID: "",
           EXECUTOR_OAUTH_GOOGLE_CLIENT_SECRET: "",
         };
         yield* Effect.addFinalizer(() => restartWith(cleared).pipe(Effect.orDie));
 
-        // Without its credentials the operator has no Google client to offer.
         yield* restartWith(cleared);
         const unset = yield* signIn("unset", [calendar]);
         expect(unset.setup.firstParty).toBeUndefined();
 
-        // Its credentials turn on the reviewed client.
         yield* restartWith({
           EXECUTOR_OAUTH_GOOGLE_CLIENT_ID: clientId,
           EXECUTOR_OAUTH_GOOGLE_CLIENT_SECRET: "synthetic-google-secret",
         });
-        const [allowed, defaults, wider] = yield* Effect.all(
+        const [allowed, defaults, wider, modify, fullGmail, mixed] = yield* Effect.all(
           [
             signIn("calendar", [calendar]),
-            // Google still requests the identity scopes when the app declares none.
             signIn("defaults", []),
-            // A scope outside the client's allowed scopes.
-            signIn("wider", [calendar, "https://www.googleapis.com/auth/cloud-platform"]),
+            signIn("wider", [calendar, cloudPlatform]),
+            signIn("modify", [gmailModify, drive, calendar]),
+            signIn("gmail", [gmail, drive, calendar]),
+            signIn("mixed", [gmailModify, cloudPlatform]),
           ],
           { concurrency: "unbounded" },
         );
@@ -1079,7 +1017,6 @@ layer(HostedLive, { excludeTestServices: true })("Credential placement", (it) =>
           scopes: [calendar, "openid", "email"],
         });
         expect(allowed.started.status, JSON.stringify(allowed.started.body)).toBe(200);
-        // Signing in goes to Google with the operator's client, asking for a refresh token.
         const sent = new URL((yield* body(Redirect, allowed.started)).authorizationUrl);
         expect(`${sent.origin}${sent.pathname}`).toBe(google.authorizationUrl);
         expect(sent.searchParams.get("client_id")).toBe(clientId);
@@ -1094,7 +1031,6 @@ layer(HostedLive, { excludeTestServices: true })("Credential placement", (it) =>
         expect(defaults.started.status, JSON.stringify(defaults.started.body)).toBe(200);
         const defaultsUrl = new URL((yield* body(Redirect, defaults.started)).authorizationUrl);
         expect(defaultsUrl.searchParams.get("scope")).toBe("openid email");
-        // Each approved product must offer the shared client and forward its exact scopes.
         for (const [key, scopes] of [
           ["youtube", ["youtube", "youtube.force-ssl"]],
           ["ads", ["adwords"]],
@@ -1116,13 +1052,46 @@ layer(HostedLive, { excludeTestServices: true })("Credential placement", (it) =>
             "email",
           ]);
         }
+        expect(fullGmail.setup.firstParty).toEqual({ label: "Executor for Google" });
+        expect(fullGmail.started.status, JSON.stringify(fullGmail.started.body)).toBe(200);
+        const approved = new URL((yield* body(Redirect, fullGmail.started)).authorizationUrl);
+        expect(approved.searchParams.get("client_id")).toBe(clientId);
+        expect(approved.searchParams.get("scope")?.split(" ")).toEqual([
+          gmail,
+          drive,
+          calendar,
+          "openid",
+          "email",
+        ]);
+
+        expect(modify.setup.operatorScopeRefusal).toBeUndefined();
+        expect(modify.setup).toMatchObject({
+          mode: "automatic",
+          firstParty: { label: "Executor for Google" },
+          scopes: [gmailModify, drive, calendar, "openid", "email"],
+        });
+        expect(modify.started.status, JSON.stringify(modify.started.body)).toBe(200);
+        const modifySent = new URL((yield* body(Redirect, modify.started)).authorizationUrl);
+        expect(`${modifySent.origin}${modifySent.pathname}`).toBe(google.authorizationUrl);
+        expect(modifySent.searchParams.get("client_id")).toBe(clientId);
+        expect(modifySent.searchParams.get("scope")?.split(" ")).toEqual([
+          gmailModify,
+          drive,
+          calendar,
+          "openid",
+          "email",
+        ]);
+        expect(mixed.setup.firstParty).toBeUndefined();
+        expect(mixed.setup.operatorScopeRefusal).toBeUndefined();
+        expect(mixed.started.body).toMatchObject({ _tag: "OAuthClientUnavailable" });
+
         expect(wider.setup.firstParty).toBeUndefined();
+        expect(wider.setup.operatorScopeRefusal).toBeUndefined();
         expect(wider.started.body).toMatchObject({ _tag: "OAuthClientUnavailable" });
       }),
     ),
   );
 
-  /** An app on the operator client's issuer, and an account connected through its client. */
   const managedAccount = (rawToken: boolean, configured = operator) =>
     Effect.gen(function* () {
       const { api, actors, prefix, deploy, connection, consent } = yield* harness;
@@ -1162,7 +1131,6 @@ layer(HostedLive, { excludeTestServices: true })("Credential placement", (it) =>
       yield* Effect.addFinalizer(() =>
         api.request(actors.owner, "DELETE", `${prefix}/accounts/${account}`).pipe(Effect.orDie),
       );
-      // The operator's secret authenticated the exchange; the app never saw it.
       expect((yield* issuer.metrics).tokenChecks).toMatchObject({ authSecret: true });
       return { name, options, path, app, account, store, issuer, issuerHost, storeHost };
     });
@@ -1172,11 +1140,9 @@ layer(HostedLive, { excludeTestServices: true })("Credential placement", (it) =>
       context,
       Effect.gen(function* () {
         const { api, actors, prefix, call, callWith } = yield* harness;
-        // The provider marks the token raw(); a managed account is sealed anyway.
         const { path, app, account, store, issuer, issuerHost, storeHost } =
           yield* managedAccount(true);
 
-        // Tool calls, discovery, workflow steps and account checks all read handles.
         const [fields, listed, stepped, health] = yield* Effect.all(
           [
             call(path, Schema.Struct({ access_token: Schema.String }), "fields"),
@@ -1220,13 +1186,9 @@ layer(HostedLive, { excludeTestServices: true })("Credential placement", (it) =>
         });
 
         const probe = yield* call(path, Probe, "probe");
-        // The operator's header reaches the service with the real token. The service echoed it;
-        // app code read the handle instead.
         expect(probe.resource.status).toBe(200);
         expect((yield* issuer.metrics).resourceAuthorizations.at(-1)).toBe(realBearer);
         expect(probe.resource.body.authorization).toMatch(/^Bearer exsec2_[0-9a-f]+_$/);
-        // The handle anywhere but the operator's header is refused: other headers, the query,
-        // bodies, and altered handles.
         expect(probe.leak.refusal).toEqual({
           reason: "credential_placement",
           location: "x-leak header",
@@ -1236,20 +1198,14 @@ layer(HostedLive, { excludeTestServices: true })("Credential placement", (it) =>
           location: "x-leak header",
         });
         expect(probe.tampered.refusal).toMatchObject({ reason: "credential_app" });
-        // A page title the service would store is refused before it is sent.
         expect(probe.pageTitle.refusal).toEqual({
           reason: "credential_placement",
           location: "request body",
         });
         expect(probe.query.refusal).toEqual({ reason: "credential_placement", location: "URL" });
         expect(probe.undeclared.refusal).toMatchObject({ reason: "credential_host" });
-        // TRACE asks the service to send the request back, so it never carries a credential.
         expect(probe.trace.refusal).toEqual({ reason: "credential_method" });
-        // Whatever the app wrote in the operator's header, and any other credential header it
-        // set, the service receives only the operator's value.
         expect(probe.rewritten).toEqual({ status: 200, refusal: null });
-        // A body the outbound does not read, such as a mail draft, carries only the handle, and
-        // reading it back returns the handle, never the token.
         expect(probe.draft.status).toBe(204);
         expect(probe.stored).toMatch(/exsec2_[0-9a-f]+_$/);
         expect(probe.stored).not.toContain(token);
@@ -1259,16 +1215,12 @@ layer(HostedLive, { excludeTestServices: true })("Credential placement", (it) =>
         expect(at("/rewritten")?.authorization).toBe(realBearer);
         expect(at("/rewritten")?.headers["proxy-authorization"]).toBeUndefined();
         expect(at("/trace")).toBeUndefined();
-        // Only the account check and the rewritten request, in the operator's header, carried
-        // the token.
         expect(at("/check")?.authorization).toBe(realBearer);
         const sent = ["/check", "/rewritten"];
         expect(JSON.stringify(received.filter((entry) => !sent.includes(entry.url)))).not.toContain(
           token,
         );
 
-        // The operator moves the token to another header without a scheme. App code renders it
-        // with the account's headers, and the app's own authorization header is removed.
         yield* restartWith(
           operatorClients(issuer.origin, [issuerHost, storeHost], {
             header: "x-mail-token",
@@ -1283,7 +1235,6 @@ layer(HostedLive, { excludeTestServices: true })("Credential placement", (it) =>
         const movedTo = (yield* store.received).find((entry) => entry.url === "/moved");
         expect(movedTo?.headers["x-mail-token"]).toBe(token);
         expect(movedTo?.authorization).toBeNull();
-        // The handle in `authorization` is now outside the operator's header.
         const elsewhere = yield* callWith(path, Sent, "send", {
           url: `${store.origin}/refused`,
           token: (yield* call(path, Schema.Struct({ access_token: Schema.String }), "fields"))
@@ -1307,7 +1258,6 @@ layer(HostedLive, { excludeTestServices: true })("Credential placement", (it) =>
         const Read = Schema.Struct({ token: Schema.String, status: Schema.Number });
         const [widened, placed, pinned] = yield* Effect.all(
           [
-            // An update of the app that widens its hosts.
             api.request(actors.owner, "POST", `${path}/deploy`, {
               files: [
                 {
@@ -1320,7 +1270,6 @@ layer(HostedLive, { excludeTestServices: true })("Credential placement", (it) =>
                 appsManifest,
               ],
             }),
-            // The provider with placements of its own, one of them a header the operator's is not.
             deploy(
               `${name} placed`,
               mailApp({
@@ -1329,7 +1278,6 @@ layer(HostedLive, { excludeTestServices: true })("Credential placement", (it) =>
                   '({ access_token }) => [bearer(access_token), header("x-leak", access_token)]',
               }),
             ),
-            // The same provider in a build that knows no placements.
             deploy(`${name} protocol 11`, mailApp({ ...options, legacy: true }), {
               path: "package.json",
               content: JSON.stringify({ dependencies: { apps: release.url } }),
@@ -1338,15 +1286,12 @@ layer(HostedLive, { excludeTestServices: true })("Credential placement", (it) =>
           { concurrency: "unbounded" },
         );
 
-        // Widening the app's hosts does not widen where the managed token goes.
         expect(widened.status, JSON.stringify(widened.body)).toBe(200);
         const again = yield* call(path, Probe, "probe");
         expect(again.undeclared.refusal).toMatchObject({ reason: "credential_host" });
         expect(again.resource.status).toBe(200);
         expect((yield* issuer.metrics).resourceAuthorizations.at(-1)).toBe(realBearer);
 
-        // An update that drops the app's hosts leaves the managed token nowhere to go, even though
-        // the account was connected with hosts.
         const unhosted = yield* api.request(actors.owner, "POST", `${path}/deploy`, {
           files: [
             { path: "index.ts", content: mailApp({ ...options, hosts: undefined }) },
@@ -1358,8 +1303,6 @@ layer(HostedLive, { excludeTestServices: true })("Credential placement", (it) =>
         expect(nowhere.token).toMatch(handle);
         expect(nowhere.status).toBe(421);
 
-        // A provider's own placements are ignored for a managed account: signed in through it,
-        // only the operator's header carries the token, and the provider's other header is refused.
         const signedIn = yield* startSignIn(placed.path);
         yield* completeSignIn(issuer, signedIn.connection, yield* body(Redirect, signedIn.started));
         const placedProbe = yield* call(placed.path, Probe, "probe");
@@ -1369,9 +1312,6 @@ layer(HostedLive, { excludeTestServices: true })("Credential placement", (it) =>
           location: "x-leak header",
         });
 
-        // A build that knows no placements reads the managed account sealed. Its hand-written
-        // bearer header is the operator's, so it reaches the service; the handle anywhere else is
-        // refused as for any app.
         const provider = (deployed: { readonly app: typeof App.Type }) =>
           deployed.app.requirements.accounts.mail!.provider;
         expect(provider(pinned)).toBe(provider({ app }));
@@ -1390,8 +1330,6 @@ layer(HostedLive, { excludeTestServices: true })("Credential placement", (it) =>
           location: "request body",
         });
 
-        // The operator unsets its client's credentials: the managed token goes nowhere from the
-        // next invocation on.
         yield* restartWith(noOperatorClients);
         const reads = (yield* issuer.metrics).resourceRequests.GET;
         const removed = yield* call(pinned.path, Read, "resource");
@@ -1402,10 +1340,6 @@ layer(HostedLive, { excludeTestServices: true })("Credential placement", (it) =>
     ),
   );
 
-  /**
-   * Start signing in to `requirement` of the app at `path`. The account it saves is linked to the
-   * app beside any signed in before, so calls choose it by ID.
-   */
   const startSignIn = (path: string, requirement = "mail") =>
     Effect.gen(function* () {
       const { api, actors, prefix, connection } = yield* harness;
@@ -1418,7 +1352,6 @@ layer(HostedLive, { excludeTestServices: true })("Credential placement", (it) =>
       );
       return { connection: id, started };
     });
-  /** Accept the operator's client for `redirect`, finish the started sign-in and answer. */
   const finishSignIn = (
     issuer: Effect.Success<typeof oauthSetupIssuer>,
     connection: string,
@@ -1438,7 +1371,6 @@ layer(HostedLive, { excludeTestServices: true })("Credential placement", (it) =>
         { callbackUrl: yield* consent(started.authorizationUrl) },
       );
     });
-  /** Complete the started sign-in with the operator's client and return its account. */
   const completeSignIn = (
     issuer: Effect.Success<typeof oauthSetupIssuer>,
     connection: string,
@@ -1475,7 +1407,6 @@ layer(HostedLive, { excludeTestServices: true })("Credential placement", (it) =>
           `Mail scoped ${randomUUID().slice(0, 8)}`,
           mailApp({ ...base, scopes: ["mail.read"] }),
         ).pipe(Effect.map(({ path }) => path));
-        /** Sign in through the operator's client and return what completing it answered. */
         const signIn = (path: string) =>
           Effect.gen(function* () {
             const attempt = yield* startSignIn(path);
@@ -1485,7 +1416,6 @@ layer(HostedLive, { excludeTestServices: true })("Credential placement", (it) =>
               "first-party-client",
             );
             const completed = yield* finishSignIn(issuer, attempt.connection, redirect);
-            // Each sign-in from the app replaces the earlier one's link, so calls use this account.
             if (completed.status === 200) {
               const account = (yield* body(Resource, completed)).id;
               yield* Effect.addFinalizer(() =>
@@ -1496,7 +1426,6 @@ layer(HostedLive, { excludeTestServices: true })("Credential placement", (it) =>
             }
             return { ...attempt, redirect, completed };
           });
-        /** The refresh-token revocations the operator's server has received, waiting for `count`. */
         const revoked = (count: number) =>
           issuer.metrics.pipe(
             Effect.flatMap((metrics) =>
@@ -1513,8 +1442,6 @@ layer(HostedLive, { excludeTestServices: true })("Credential placement", (it) =>
           clientAuthenticated: true,
         };
 
-        // A server that grants a scope outside `allowedScopes` is refused: nothing is saved, and
-        // the tokens are revoked at the operator's server.
         yield* issuer.configure({ scopeGrant: { defaults: [], exchange: ["mail.delete"] } });
         const broader = yield* signIn(scoped);
         expect((yield* issuer.metrics).authorizationScope).toBe("mail.read");
@@ -1526,13 +1453,10 @@ layer(HostedLive, { excludeTestServices: true })("Credential placement", (it) =>
         expect(refusal).toContain("Executor rejected the sign-in and saved nothing");
         expect(refusal).not.toMatch(claimsRevoked);
 
-        // One within `allowedScopes`, though not asked for, is kept.
         yield* issuer.configure({ scopeGrant: { defaults: [], exchange: ["mail.compose"] } });
         const allowed = yield* signIn(scoped);
         expect(allowed.completed.status, JSON.stringify(allowed.completed.body)).toBe(200);
 
-        // GitHub reports granted scopes separated by commas. Read with the request's separator,
-        // `mail.read,mail.compose` is one scope the operator does not allow, and is refused.
         yield* issuer.configure({
           scopeGrant: { defaults: [], exchange: ["mail.compose"], separator: "," },
         });
@@ -1540,26 +1464,20 @@ layer(HostedLive, { excludeTestServices: true })("Credential placement", (it) =>
         expect(commas.completed.status, JSON.stringify(commas.completed.body)).toBe(400);
         expect(commas.completed.body).toMatchObject(exceeded);
         expect(yield* revoked(2)).toEqual([refreshRevoked, refreshRevoked]);
-        // With the server's `grantedScopeSeparator`, it reads as the two scopes it is.
         yield* restartWith(
           operatorClients(issuer.origin, hosts, { revocation: true, grantedScopeSeparator: "," }),
         );
         const github = yield* signIn(scoped);
         expect(github.completed.status, JSON.stringify(github.completed.body)).toBe(200);
-        // The request still joins scopes with a space.
         expect((yield* issuer.metrics).authorizationScope).toBe("mail.read");
         yield* restartWith(operatorClients(issuer.origin, hosts, { revocation: true }));
 
-        // So is a renewal that widens the grant: the account must reconnect, the widened token
-        // is never used, and the grant is revoked. The service refuses the current token, so the
-        // call renews it.
         yield* issuer.configure({
           scopeGrant: { defaults: [], refresh: ["mail.delete"] },
           expiresIn: 3600,
         });
         const renewing = yield* signIn(scoped);
         expect(renewing.completed.status, JSON.stringify(renewing.completed.body)).toBe(200);
-        // The app's listing confirms `resource` only reads, so the renewal's refusal is the call's.
         yield* list(scoped);
         yield* issuer.expireAccessTokens;
         const read = yield* api.request(actors.owner, "POST", `${scoped}/tools/call`, {
@@ -1580,9 +1498,6 @@ layer(HostedLive, { excludeTestServices: true })("Credential placement", (it) =>
         const authorizations = (yield* issuer.metrics).resourceAuthorizations;
         expect(authorizations.filter((value) => value?.includes("refreshed"))).toEqual([]);
 
-        // A reconnect can replace the grant while a widening renewal is still waiting for its
-        // answer. The widened tokens are revoked all the same, and only they are: the reconnected
-        // grant's refresh token, issued at its sign-in, is never revoked and keeps working.
         yield* issuer.configure({
           scopeGrant: { defaults: [] },
           rotateRefreshTokens: true,
@@ -1628,27 +1543,21 @@ layer(HostedLive, { excludeTestServices: true })("Credential placement", (it) =>
         );
         expect(reconnected.status, JSON.stringify(reconnected.body)).toBe(200);
         yield* issuer.release;
-        // The call that lost its renewal reads the reconnected grant. Its renewal attempt's span,
-        // under its resolve, records that the service had issued tokens for a claim the reconnect
-        // replaced, on the grant it renewed: the account's first credential generation, which the
-        // sign-in stored with the grant and the reconnect ended, claimed while the call ran.
         const lost = yield* Fiber.join(running);
         expect(lost.status, JSON.stringify(lost.body)).toBe(200);
         const telemetry = yield* Telemetry;
-        const lostClaims = yield* telemetry
-          .search("oauth.renewal", { "executor.account.id": raced })
-          .pipe(
-            Effect.map((found) =>
-              found.data.filter(
-                ({ span }) => span.tags["oauth.renewal.lost_claim_result"] !== undefined,
-              ),
+        const lostClaims = yield* telemetry.search("oauth.renewal", { account: raced }).pipe(
+          Effect.map((found) =>
+            found.data.filter(
+              ({ span }) => span.tags["oauth.renewal.lost_claim_result"] !== undefined,
             ),
-            Effect.filterOrFail(
-              (found) => found.length > 0,
-              () => new Error("The lost renewal's span has not arrived"),
-            ),
-            Effect.retry({ schedule: Schedule.spaced("250 millis"), times: 40 }),
-          );
+          ),
+          Effect.filterOrFail(
+            (found) => found.length > 0,
+            () => new Error("The lost renewal's span has not arrived"),
+          ),
+          Effect.retry({ schedule: Schedule.spaced("250 millis"), times: 40 }),
+        );
         expect(lostClaims.map(({ span }) => span.tags)).toEqual([
           expect.objectContaining({
             "executor.account.credential_generation": "0",
@@ -1694,6 +1603,201 @@ layer(HostedLive, { excludeTestServices: true })("Credential placement", (it) =>
     ),
   );
 
+  it.effect(scenarios.credentialManagedHeld.title, (context) =>
+    withHostedCase(
+      context,
+      Effect.gen(function* () {
+        const { api, actors, prefix, deploy, list, connection, consent } = yield* harness;
+        const { issuer, store, issuerHost, storeHost } = yield* operatorWith({
+          allowedScopes: ["mail.read", "mail.compose", "mail.full"],
+        });
+        const hosts = [issuerHost, storeHost];
+        yield* issuer.configure({ scopeGrant: { defaults: [] }, expiresIn: 3600 });
+        const base = {
+          name: "Synthetic Mail",
+          discover: `${issuer.origin}/mcp`,
+          hosts,
+          resource: `${issuer.origin}/resource`,
+          store: store.origin,
+          undeclared: store.undeclaredOrigin,
+        };
+        const asking = mailApp({ ...base, scopes: ["mail.read", "mail.compose"] });
+        const [operatorApp, ownApp, approvedApp] = yield* Effect.all(
+          [
+            deploy(`Mail operator ${randomUUID().slice(0, 8)}`, asking),
+            deploy(`Mail own ${randomUUID().slice(0, 8)}`, asking),
+            deploy(
+              `Mail approved ${randomUUID().slice(0, 8)}`,
+              mailApp({ ...base, scopes: ["mail.read", "mail.full"] }),
+            ),
+          ],
+          { concurrency: "unbounded" },
+        );
+        const removed = (account: string) =>
+          Effect.addFinalizer(() =>
+            api
+              .request(actors.owner, "DELETE", `${prefix}/accounts/${account}`)
+              .pipe(Effect.ignore),
+          );
+        const reconnect = (path: string, account: string) =>
+          Effect.gen(function* () {
+            const replacing = yield* body(
+              Resource,
+              yield* api.request(actors.owner, "POST", connectionsPath(path, "user", "mail"), {
+                account,
+              }),
+            );
+            return yield* api.request(
+              actors.owner,
+              "POST",
+              `${prefix}/connections/${replacing.id}/oauth/start`,
+              { method: "oauth", label: "Mail" },
+            );
+          });
+        const Read = Schema.Struct({ token: Schema.String, status: Schema.Number });
+        const renewedRead = (path: string) =>
+          Effect.gen(function* () {
+            const before = (yield* issuer.metrics).refreshes;
+            yield* issuer.expireAccessTokens;
+            const read = yield* api.request(actors.owner, "POST", `${path}/tools/call`, {
+              tool: "resource",
+              kind: "query",
+              input: {},
+            });
+            expect(read.status, JSON.stringify(read.body)).toBe(200);
+            expect((yield* body(Read, read)).status).toBe(200);
+            expect((yield* issuer.metrics).refreshes).toBeGreaterThan(before);
+          });
+
+        const first = yield* startSignIn(operatorApp.path);
+        expect(first.started.status, JSON.stringify(first.started.body)).toBe(200);
+        const firstRedirect = yield* body(Redirect, first.started);
+        expect(new URL(firstRedirect.authorizationUrl).searchParams.get("client_id")).toBe(
+          "first-party-client",
+        );
+        const firstCompleted = yield* finishSignIn(issuer, first.connection, firstRedirect);
+        expect(firstCompleted.status, JSON.stringify(firstCompleted.body)).toBe(200);
+        const operatorAccount = (yield* body(Resource, firstCompleted)).id;
+        yield* removed(operatorAccount);
+
+        const own = { clientId: "own-mail-client", clientSecret: "own-mail-secret" };
+        const ownConnection = yield* connection(ownApp.path, "mail");
+        const ownStarted = yield* api.request(
+          actors.owner,
+          "POST",
+          `${prefix}/connections/${ownConnection}/oauth/start`,
+          { method: "oauth", label: "Mail", client: own },
+        );
+        expect(ownStarted.status, JSON.stringify(ownStarted.body)).toBe(200);
+        const ownRedirect = yield* body(Redirect, ownStarted);
+        expect(new URL(ownRedirect.authorizationUrl).searchParams.get("client_id")).toBe(
+          own.clientId,
+        );
+        yield* issuer.allowClient({ ...own, redirect: ownRedirect.redirectUri });
+        const ownCompleted = yield* api.request(
+          actors.owner,
+          "POST",
+          `${prefix}/connections/${ownConnection}/oauth/complete`,
+          { callbackUrl: yield* consent(ownRedirect.authorizationUrl) },
+        );
+        expect(ownCompleted.status, JSON.stringify(ownCompleted.body)).toBe(200);
+        const ownAccount = (yield* body(Resource, ownCompleted)).id;
+        yield* removed(ownAccount);
+
+        yield* restartWith(
+          operatorClients(issuer.origin, hosts, {
+            allowedScopes: ["mail.read", "mail.full"],
+            heldScopes: [{ scope: "mail.compose", instead: ["mail.full"] }],
+          }),
+        );
+
+        yield* list(operatorApp.path);
+        yield* renewedRead(operatorApp.path);
+
+        const provider = operatorApp.app.requirements.accounts.mail!.provider;
+        const setup = yield* body(
+          Setup,
+          yield* api.request(
+            actors.owner,
+            "GET",
+            `${prefix}/providers/${provider}/oauth/oauth/setup`,
+          ),
+        );
+        expect(setup.firstParty).toBeUndefined();
+        expect(setup).toMatchObject({
+          mode: "client-required",
+          operatorScopeRefusal: {
+            client: "Executor for Synthetic Mail",
+            scopes: ["mail.compose"],
+            instead: [{ scope: "mail.compose", scopes: ["mail.full"] }],
+          },
+        });
+        const fresh = yield* startSignIn(operatorApp.path);
+        expect(fresh.started.status, JSON.stringify(fresh.started.body)).toBe(422);
+        expect(fresh.started.body).not.toHaveProperty("authorizationUrl");
+        const refused = yield* body(ScopeRefused, fresh.started);
+        expect(refused.message).toContain("mail.compose");
+        expect(refused.recovery.action).toBe(
+          "Enter your own OAuth client for this service. Or, if broader access is acceptable, change the app to ask for mail.full instead, which grants more than mail.compose.",
+        );
+        const browser = yield* Browser;
+        yield* browser.login(actors.owner);
+        yield* browser.use("Open the new connection", (page) =>
+          page.goto(`/org/${actors.organization.slug}/connections/${fresh.connection}`),
+        );
+        yield* browser.use("The form explains why Executor's client is not offered", (page) =>
+          page
+            .getByRole("heading", {
+              name: "Executor for Synthetic Mail can’t ask for this permission",
+            })
+            .waitFor({ state: "visible" })
+            .then(() =>
+              page
+                .getByText("This app asks for mail.compose", { exact: false })
+                .waitFor({ state: "visible" }),
+            )
+            .then(() =>
+              page
+                .getByText(
+                  "Enter your own OAuth client for this service. Or, if broader access is acceptable, change the app to ask for mail.full instead, which grants more than mail.compose.",
+                  { exact: false },
+                )
+                .waitFor({ state: "visible" }),
+            ),
+        );
+        yield* browser.checkpoint("Operator client refused for a held scope");
+
+        const operatorReconnect = yield* reconnect(operatorApp.path, operatorAccount);
+        expect(operatorReconnect.status, JSON.stringify(operatorReconnect.body)).toBe(422);
+        expect(operatorReconnect.body).not.toHaveProperty("authorizationUrl");
+        expect((yield* body(ScopeRefused, operatorReconnect)).message).toContain("mail.compose");
+        yield* renewedRead(operatorApp.path);
+
+        const ownReconnect = yield* reconnect(ownApp.path, ownAccount);
+        expect(ownReconnect.status, JSON.stringify(ownReconnect.body)).toBe(200);
+        expect(
+          new URL((yield* body(Redirect, ownReconnect)).authorizationUrl).searchParams.get(
+            "client_id",
+          ),
+        ).toBe(own.clientId);
+
+        const approved = yield* startSignIn(approvedApp.path);
+        expect(approved.started.status, JSON.stringify(approved.started.body)).toBe(200);
+        const approvedRedirect = yield* body(Redirect, approved.started);
+        const approvedUrl = new URL(approvedRedirect.authorizationUrl);
+        expect(approvedUrl.searchParams.get("client_id")).toBe("first-party-client");
+        expect(approvedUrl.searchParams.get("scope")).toBe("mail.read mail.full");
+        const approvedCompleted = yield* finishSignIn(
+          issuer,
+          approved.connection,
+          approvedRedirect,
+        );
+        expect(approvedCompleted.status, JSON.stringify(approvedCompleted.body)).toBe(200);
+        yield* removed((yield* body(Resource, approvedCompleted)).id);
+      }),
+    ),
+  );
+
   it.effect(scenarios.credentialManagedSettingsInvalid.title, (context) =>
     withHostedCase(
       context,
@@ -1703,7 +1807,6 @@ layer(HostedLive, { excludeTestServices: true })("Credential placement", (it) =>
         const log = `${target.directory}/server.log`;
         const clientId = `synthetic-operator-client-${randomUUID()}`;
         const secret = `synthetic-operator-secret-${randomUUID()}`;
-        /** Start the product with `settings` and return what it logged; it must not start. */
         const refused = (settings: typeof OperatorSettings.Type) =>
           Effect.gen(function* () {
             const before = (yield* fs.readFileString(log)).length;
@@ -1711,7 +1814,6 @@ layer(HostedLive, { excludeTestServices: true })("Credential placement", (it) =>
             yield* serverControl("environment", 200, settings);
             yield* serverControl("start", 500);
             const output = (yield* fs.readFileString(log)).slice(before);
-            // No credential reaches the output, whatever is wrong.
             expect(output).not.toContain(secret);
             expect(output).not.toContain(clientId);
             return output;
@@ -1722,11 +1824,8 @@ layer(HostedLive, { excludeTestServices: true })("Credential placement", (it) =>
           EXECUTOR_OAUTH_GOOGLE_CLIENT_ID: "",
           EXECUTOR_OAUTH_GOOGLE_CLIENT_SECRET: "",
         };
-        // Whatever happens, the next scenario finds the product running.
         yield* Effect.addFinalizer(() => restartWith(cleared).pipe(Effect.orDie));
 
-        // A reviewed client's secret without its ID, and its ID without its secret, each name the
-        // missing setting.
         const secretOnly = yield* refused({
           ...cleared,
           EXECUTOR_OAUTH_GOOGLE_CLIENT_SECRET: secret,
@@ -1739,7 +1838,6 @@ layer(HostedLive, { excludeTestServices: true })("Credential placement", (it) =>
           "EXECUTOR_OAUTH_GOOGLE_CLIENT_ID is set without EXECUTOR_OAUTH_GOOGLE_CLIENT_SECRET",
         );
 
-        // Every client's problem is listed, and a client with both values is not mentioned.
         const synthetic = operatorClients("https://auth.example.test", ["mail.example.test"]);
         const several = yield* refused({
           ...synthetic,
@@ -1761,7 +1859,6 @@ layer(HostedLive, { excludeTestServices: true })("Credential placement", (it) =>
         });
         expect(oneProblem).not.toContain("SYNTHETIC_MAIL");
 
-        // A test client cannot replace a reviewed one by taking its ID.
         const replaced = yield* refused({
           ...cleared,
           EXECUTOR_TEST_OAUTH_CLIENT_DEFINITIONS: JSON.stringify([
@@ -1776,6 +1873,73 @@ layer(HostedLive, { excludeTestServices: true })("Credential placement", (it) =>
     ),
   );
 
+  it.effect(scenarios.credentialManagedGoogleCloud.title, (context) =>
+    withHostedCase(
+      context,
+      Effect.gen(function* () {
+        const { clientId } = syntheticCloudGoogle;
+        const [fullGmail, modify, mixed, wider] = yield* Effect.all(
+          [
+            signInGoogle("gmail", [gmail, drive, calendar]),
+            signInGoogle("modify", [gmailModify, drive, calendar]),
+            signInGoogle("mixed", [gmailModify, cloudPlatform]),
+            signInGoogle("wider", [calendar, cloudPlatform]),
+          ],
+          { concurrency: "unbounded" },
+        );
+
+        expect(fullGmail.setup.firstParty).toEqual({ label: "Executor for Google" });
+        expect(fullGmail.started.status, JSON.stringify(fullGmail.started.body)).toBe(200);
+        const approved = new URL((yield* body(Redirect, fullGmail.started)).authorizationUrl);
+        expect(`${approved.origin}${approved.pathname}`).toBe(google.authorizationUrl);
+        expect(approved.searchParams.get("client_id")).toBe(clientId);
+        expect(approved.searchParams.get("scope")?.split(" ")).toEqual([gmail, drive, calendar]);
+
+        expect(modify.setup).toMatchObject({
+          mode: "client-required",
+          operatorScopeRefusal: {
+            client: "Executor for Google",
+            scopes: [gmailModify],
+            instead: [{ scope: gmailModify, scopes: [gmail] }],
+          },
+        });
+        expect(modify.setup.firstParty).toBeUndefined();
+        expect(modify.started.status, JSON.stringify(modify.started.body)).toBe(422);
+        expect(modify.started.body).not.toHaveProperty("authorizationUrl");
+        const refused = yield* body(ScopeRefused, modify.started);
+        expect(refused.message).toContain(gmailModify);
+        expect(refused.message).toContain("Executor for Google");
+        expect(refused.recovery.action).toMatch(/^Enter your own OAuth client for this service\./u);
+        expect(refused.recovery.action).toContain(
+          `if broader access is acceptable, change the app to ask for ${gmail} instead, which grants more than ${gmailModify}.`,
+        );
+        expect(refused.recovery.instructions).toMatch(/First choice: Create an OAuth client/u);
+        expect(refused.recovery.instructions).toContain(
+          `Second choice, only if the person accepts broader access: change the provider's declared scopes to ask for ${gmail} instead of ${gmailModify}.`,
+        );
+        expect(refused.recovery.instructions.indexOf("First choice")).toBeLessThan(
+          refused.recovery.instructions.indexOf(gmail),
+        );
+        expect(JSON.stringify(modify.started.body)).not.toContain(clientId);
+
+        expect(mixed.setup.operatorScopeRefusal).toEqual({
+          client: "Executor for Google",
+          scopes: [gmailModify, cloudPlatform],
+          instead: [{ scope: gmailModify, scopes: [gmail] }],
+        });
+        expect(mixed.started.status, JSON.stringify(mixed.started.body)).toBe(422);
+        const unreplaced = yield* body(ScopeRefused, mixed.started);
+        expect(unreplaced.message).toContain(cloudPlatform);
+        expect(unreplaced.recovery.action).toMatch(/^Enter your own OAuth client/u);
+        expect(unreplaced.recovery.action).not.toContain(gmail);
+
+        expect(wider.setup.firstParty).toBeUndefined();
+        expect(wider.setup.operatorScopeRefusal).toBeUndefined();
+        expect(wider.started.body).toMatchObject({ _tag: "OAuthClientUnavailable" });
+      }),
+    ),
+  );
+
   it.effect(scenarios.credentialManagedCloud.title, (context) =>
     withHostedCase(
       context,
@@ -1783,8 +1947,6 @@ layer(HostedLive, { excludeTestServices: true })("Credential placement", (it) =>
         const { api, actors, prefix, deploy, call, callWith } = yield* harness;
         const target = yield* Target;
         const fs = yield* FileSystem.FileSystem;
-        // This local Cloud started with an operator client whose server is a loopback issuer on
-        // a port it reserved; start that issuer there.
         const operator = yield* fs
           .readFileString(`${target.directory}/${operatorOAuthFile}`)
           .pipe(
@@ -1834,17 +1996,13 @@ layer(HostedLive, { excludeTestServices: true })("Credential placement", (it) =>
         yield* Effect.addFinalizer(() =>
           api.request(actors.owner, "DELETE", `${prefix}/accounts/${account}`).pipe(Effect.ignore),
         );
-        // The operator's secret authenticated the exchange.
         expect((yield* issuer.metrics).tokenChecks).toMatchObject({ authSecret: true });
         const authorized = Effect.map(issuer.metrics, (metrics) =>
           metrics.resourceAuthorizations.at(-1),
         );
 
-        // App code reads a handle, and Cloud's outbound sends the real token in the operator's
-        // placement: the service, which accepts only tokens it issued, answers.
         const fields = yield* call(path, Schema.Struct({ access_token: Schema.String }), "fields");
         expect(fields.access_token).toMatch(handle);
-        // Sent as written, a refusal would say why.
         expect(
           yield* callWith(path, Sent, "send", {
             url: options.resource,
@@ -1857,14 +2015,12 @@ layer(HostedLive, { excludeTestServices: true })("Credential placement", (it) =>
         expect(read.token).toMatch(handle);
         expect(read.status).toBe(200);
         expect(yield* authorized).toBe(realBearer);
-        // A handle app code kept is sent as long as it lives.
         const replay = yield* callWith(path, Sent, "send", {
           url: options.resource,
           token: read.token,
         });
         expect(replay.status).toBe(200);
         expect(yield* authorized).toBe(realBearer);
-        // The operator's header and hosts bind it on Cloud too.
         const probe = yield* call(path, Probe, "probe");
         expect(probe.resource.status).toBe(200);
         expect(probe.leak.refusal).toEqual({
@@ -1890,7 +2046,6 @@ layer(HostedLive, { excludeTestServices: true })("Credential placement", (it) =>
         const { api, actors, prefix, deploy } = yield* harness;
         const { issuer, issuerHost, storeHost } = yield* operatorWith({ revocation: true });
         yield* issuer.configure({ revocation: "recorded" });
-        // A server the app controls, which would accept the operator's client if sent it.
         const attacker = yield* oauthSetupIssuer;
         yield* attacker.configure({ registration: false, revocation: "recorded" });
         yield* attacker.allowClient({
@@ -1904,13 +2059,11 @@ layer(HostedLive, { excludeTestServices: true })("Credential placement", (it) =>
             `Mail ${key} ${randomUUID().slice(0, 8)}`,
             endpointsApp("Synthetic Mail", hosts, endpoints),
           ).pipe(Effect.flatMap(({ path }) => startSignIn(path)));
-        // The operator's issuer, claimed by a provider whose endpoints are the app's own.
         const forged = yield* declaring("forged", {
           issuer: issuer.origin,
           authorizationUrl: `${attacker.origin}/authorize`,
           tokenUrl: `${attacker.origin}/token`,
         });
-        // The operator's issuer and authorization endpoint with the app's token endpoint.
         const tokenElsewhere = yield* declaring("token", {
           issuer: issuer.origin,
           authorizationUrl: `${issuer.origin}/authorize`,
@@ -1922,8 +2075,6 @@ layer(HostedLive, { excludeTestServices: true })("Credential placement", (it) =>
         ] as const)
           expect(attempt.started.body, key).toMatchObject({ _tag: "OAuthClientUnavailable" });
 
-        // The operator's own endpoints with the app's revocation endpoint: the client is
-        // offered, but revocation goes where the operator says.
         const revoking = yield* declaring("revocation", {
           issuer: issuer.origin,
           authorizationUrl: `${issuer.origin}/authorize`,
@@ -1949,11 +2100,260 @@ layer(HostedLive, { excludeTestServices: true })("Credential placement", (it) =>
         expect(revoked).toEqual([
           { token: "refresh", hint: "refresh_token", clientAuthenticated: true },
         ]);
-        // The app's server never received the operator's secret or a user's token.
         const seen = yield* attacker.metrics;
         expect(seen.tokenExchanges).toBe(0);
         expect(seen.refreshes).toBe(0);
         expect(seen.revocations).toEqual([]);
+      }),
+    ),
+  );
+
+  it.effect(scenarios.credentialManagedTelemetry.title, (context) =>
+    withHostedCase(
+      context,
+      Effect.gen(function* () {
+        const { api, actors, prefix, deploy, connection, consent, call } = yield* harness;
+        const evidence = yield* Evidence,
+          telemetry = yield* Telemetry;
+        const { issuer, issuerHost, storeHost } = yield* operatorWith({ revocation: true });
+        yield* issuer.configure({ revocation: "recorded", expiresIn: 20 });
+        const { path } = yield* deploy(
+          `Mail telemetry ${randomUUID().slice(0, 8)}`,
+          endpointsApp("Synthetic Mail", [issuerHost, storeHost], {
+            issuer: issuer.origin,
+            authorizationUrl: `${issuer.origin}/authorize`,
+            tokenUrl: `${issuer.origin}/token`,
+          }),
+        );
+        const id = yield* connection(path, "mail");
+        const started = yield* body(
+          Redirect,
+          yield* api.request(actors.owner, "POST", `${prefix}/connections/${id}/oauth/start`, {
+            method: "oauth",
+            label: "Mail",
+          }),
+        );
+        yield* issuer.allowClient({
+          clientId: "first-party-client",
+          clientSecret: "first-party-secret",
+          redirect: started.redirectUri,
+        });
+        const callback = new URL(yield* consent(started.authorizationUrl));
+        const completed = yield* api.request(
+          actors.owner,
+          "POST",
+          `${prefix}/connections/${id}/oauth/complete`,
+          { callbackUrl: callback.href },
+        );
+        expect(completed.status, JSON.stringify(completed.body)).toBe(200);
+        const account = (yield* body(Resource, completed)).id;
+        yield* call(path, Schema.Struct({ access_token: Schema.String }), "fields");
+        expect((yield* issuer.metrics).refreshes).toBeGreaterThan(0);
+        const removed = yield* api.request(actors.owner, "DELETE", `${prefix}/accounts/${account}`);
+        expect(removed.status, JSON.stringify(removed.body)).toBe(200);
+
+        const requested = yield* telemetry.settled(
+          evidence.requests.pipe(Effect.map((requests) => requests.map((sent) => sent.traceId))),
+          (delivered) =>
+            ["oauth.exchange", "oauth.revoke"].every((operation) =>
+              delivered.some((span) => span.operationName === operation),
+            ),
+        );
+        const renewals = yield* telemetry.search("oauth.renewal", { account }).pipe(
+          Effect.filterOrFail(
+            (found) => found.data.length > 0,
+            () => new Error("The renewal's span has not arrived"),
+          ),
+          Effect.retry({ schedule: Schedule.spaced("250 millis"), times: 40 }),
+        );
+        const renewed = yield* telemetry.settled(
+          [...new Set(renewals.data.map(({ traceId }) => traceId))],
+          (delivered) => delivered.some((span) => span.operationName === "oauth.refresh"),
+        );
+        const spans = [...requested, ...renewed];
+        const tagsOf = (operation: string) =>
+          spans.filter((span) => span.operationName === operation).map((span) => span.tags);
+        const client = {
+          "oauth.client.kind": "first_party",
+          "oauth.first_party.id": "synthetic-mail",
+          "oauth.client.auth_method": "client_secret_basic",
+        };
+        const host = new URL(issuer.origin).hostname;
+        for (const operation of [
+          "oauth.exchange",
+          "oauth.refresh",
+          "oauth.renewal",
+          "oauth.revoke",
+        ])
+          expect(tagsOf(operation).length, operation).toBeGreaterThan(0);
+        for (const operation of ["oauth.exchange", "oauth.refresh", "oauth.renewal"])
+          for (const tags of tagsOf(operation))
+            expect(tags, operation).toMatchObject({
+              ...client,
+              "oauth.token_endpoint.host": host,
+            });
+        for (const tags of tagsOf("oauth.revoke"))
+          expect(tags, "oauth.revoke").toMatchObject({
+            ...client,
+            "oauth.revocation_endpoint.host": host,
+          });
+
+        const sent = [
+          callback.searchParams.get("code"),
+          callback.searchParams.get("state"),
+          new URL(started.authorizationUrl).searchParams.get("code_challenge"),
+        ];
+        expect(sent).not.toContain(null);
+        const delivered = JSON.stringify(spans);
+        for (const secret of [
+          "first-party-secret",
+          "first-party-client",
+          Buffer.from("first-party-client:first-party-secret").toString("base64"),
+          token,
+          "synthetic-refreshed-token",
+          "synthetic-refresh-",
+          ...sent,
+        ])
+          expect(delivered, `telemetry contains ${secret}`).not.toContain(secret);
+        for (const span of spans)
+          for (const [key, value] of Object.entries(span.tags))
+            if (key.startsWith("oauth."))
+              expect(value, `${span.operationName} ${key}`).not.toMatch(/:\/\/|[?@]/u);
+      }),
+    ),
+  );
+
+  it.effect(scenarios.credentialManagedServiceWords.title, (context) =>
+    withHostedCase(
+      context,
+      Effect.gen(function* () {
+        const { api, actors, prefix, deploy } = yield* harness;
+        const { issuer, issuerHost, storeHost } = yield* operatorWith();
+        const secret = "first-party-secret";
+        const encoded = Buffer.from(secret).toString("base64");
+        const hex = Buffer.from(secret).toString("hex");
+        const minted = "ya29.synthetic-minted-token-7c41e09b";
+        const { path } = yield* deploy(
+          `Mail service words ${randomUUID().slice(0, 8)}`,
+          endpointsApp("Synthetic Mail", [issuerHost, storeHost], {
+            issuer: issuer.origin,
+            authorizationUrl: `${issuer.origin}/authorize`,
+            tokenUrl: `${issuer.origin}/token`,
+          }),
+        );
+        const cases: ReadonlyArray<{
+          readonly name: string;
+          readonly configure: Parameters<typeof issuer.configure>[0];
+          readonly markers: readonly string[];
+          readonly failure: object;
+        }> = [
+          {
+            name: "callback description",
+            configure: {
+              authorizeError: {
+                error: "access_denied",
+                description: `Refused for the client whose secret is ${secret}`,
+              },
+            },
+            markers: [secret],
+            failure: { reason: "denied", cause: { stage: "authorize" } },
+          },
+          {
+            // A prefix of the secret in an RFC 6749 error's description.
+            name: "secret prefix",
+            configure: {
+              tokenError: {
+                status: 401,
+                body: {
+                  error: "invalid_client",
+                  error_description: `The secret beginning ${secret.slice(0, 16)} is not this client's`,
+                },
+              },
+            },
+            markers: [secret.slice(0, 16)],
+            failure: {
+              reason: "invalid_client",
+              cause: { stage: "exchange", status: 401, providerError: "invalid_client" },
+            },
+          },
+          {
+            // The secret base64- and hex-encoded, in a code outside RFC 6749 and in a body that is
+            // not an OAuth error.
+            name: "alternate encodings",
+            configure: {
+              tokenError: {
+                status: 400,
+                body: { error: `bad_client_${hex}`, error_description: `Expected ${encoded}` },
+              },
+            },
+            markers: [encoded, hex],
+            failure: { reason: "exchange_failed", cause: { stage: "exchange", status: 400 } },
+          },
+          {
+            name: "minted token",
+            configure: {
+              tokenError: { status: 502, body: { detail: `Upstream answered with ${minted}` } },
+            },
+            markers: [minted],
+            failure: { reason: "service_unavailable", cause: { stage: "exchange", status: 502 } },
+          },
+          {
+            name: "rate limit",
+            configure: {
+              tokenError: {
+                status: 429,
+                body: {
+                  error: "temporarily_unavailable",
+                  error_description: `Slow down ${encoded}`,
+                },
+                retryAfter: "120",
+              },
+            },
+            markers: [encoded],
+            failure: {
+              reason: "rate_limited",
+              cause: { stage: "exchange", status: 429, providerError: "temporarily_unavailable" },
+            },
+          },
+        ];
+        for (const check of cases) {
+          yield* issuer.configure({ tokenError: null, authorizeError: null, ...check.configure });
+          const attempt = yield* startSignIn(path);
+          expect(attempt.started.status, JSON.stringify(attempt.started.body)).toBe(200);
+          const completed = yield* finishSignIn(
+            issuer,
+            attempt.connection,
+            yield* body(Redirect, attempt.started),
+          );
+          expect(completed.status, `${check.name}: ${JSON.stringify(completed.body)}`).toBe(400);
+          const answered = yield* body(SignInFailure, completed);
+          const read = yield* api.request(
+            actors.owner,
+            "GET",
+            `${prefix}/connections/${attempt.connection}`,
+          );
+          expect(read.status, JSON.stringify(read.body)).toBe(200);
+          const kept = (yield* body(FailedConnection, read)).state.failure?.error;
+          // The failure keeps only its reason, status, an RFC 6749 code and Retry-After.
+          for (const [where, failure] of [
+            ["answer", answered],
+            ["connection", kept],
+          ] as const) {
+            expect(failure, `${check.name} ${where}`).toMatchObject({
+              _tag: "OAuthCompletionFailed",
+              ...check.failure,
+            });
+            expect(failure?.serviceError, `${check.name} ${where}`).toBeUndefined();
+            if (check.name === "rate limit")
+              expect(failure?.retryAfter, `${check.name} ${where}`).toBeDefined();
+          }
+          for (const marker of check.markers)
+            for (const [where, response] of [
+              ["answer", completed.body],
+              ["connection", read.body],
+            ] as const)
+              expect(JSON.stringify(response), `${check.name} ${where}`).not.toContain(marker);
+        }
       }),
     ),
   );
@@ -1963,7 +2363,6 @@ layer(HostedLive, { excludeTestServices: true })("Credential placement", (it) =>
       context,
       Effect.gen(function* () {
         const { deploy, call, callWith } = yield* harness;
-        // The operator allows every loopback name on the issuer's and the store's ports.
         const { issuer, store, issuerHost, storeHost } = yield* operatorWith({
           hosts: ({ issuerHost, storeHost }) => [
             `*.0.0.1:${new URL(`http://${issuerHost}`).port}`,
@@ -1991,8 +2390,6 @@ layer(HostedLive, { excludeTestServices: true })("Credential placement", (it) =>
             );
             return { path };
           });
-        // Exact hosts within the operator's wildcards stay exact: the token reaches them and no
-        // other name.
         const exact = yield* signedIn("exact", [issuerHost, storeHost]);
         const probe = yield* call(exact.path, Probe, "probe");
         expect(probe.resource.status).toBe(200);
@@ -2001,8 +2398,6 @@ layer(HostedLive, { excludeTestServices: true })("Credential placement", (it) =>
           reason: "credential_host",
           allowedHosts: [issuerHost, storeHost].toSorted(),
         });
-        // A wildcard on a shorter suffix shares none: one label before `.1` is never three labels
-        // before `.0.0.1`. The token then goes nowhere.
         const deeper = yield* signedIn("deeper", [`*.1:${new URL(issuer.origin).port}`]);
         const kept = yield* call(
           deeper.path,
@@ -2027,8 +2422,6 @@ layer(HostedLive, { excludeTestServices: true })("Credential placement", (it) =>
         const store = yield* credentialUpstream;
         const hosts = [new URL(issuer.origin).host, `127.0.0.1:${store.port}`];
         const twoHours = 2 * 60 * 60 * 1000;
-        // The operator has no client yet, so these accounts sign in with a client the product
-        // registers for the owner. It expires in ten minutes.
         yield* issuer.configure({
           registration: true,
           refreshTokens: true,
@@ -2038,7 +2431,6 @@ layer(HostedLive, { excludeTestServices: true })("Credential placement", (it) =>
           resourceTokens: "issued",
         });
         yield* restartWith(noOperatorClients);
-        // The provider marks the token raw(): app code reads the user's own token as it is.
         const source = mailApp({
           name: "Synthetic Mail",
           discover: `${issuer.origin}/mcp`,
@@ -2048,7 +2440,6 @@ layer(HostedLive, { excludeTestServices: true })("Credential placement", (it) =>
           undeclared: store.undeclaredOrigin,
           rawToken: true,
         });
-        /** Sign in through the connection and return the account. */
         const signIn = (connection: string, operatorClient: boolean) =>
           Effect.gen(function* () {
             const started = yield* api.request(
@@ -2077,10 +2468,6 @@ layer(HostedLive, { excludeTestServices: true })("Credential placement", (it) =>
           readonly path: string;
           readonly account: string;
         }
-        /**
-         * A new account the user's own registered client signed in, linked to an app of its own,
-         * so completing another account's sign-in never resolves it.
-         */
         const ownAccount = Effect.gen(function* () {
           const { path } = yield* deploy(`Synthetic Mail ${randomUUID().slice(0, 8)}`, source);
           const { connection } = yield* startSignIn(path);
@@ -2090,7 +2477,6 @@ layer(HostedLive, { excludeTestServices: true })("Credential placement", (it) =>
           );
           return { path, account } satisfies Selected;
         });
-        /** Replace the account's credential with one the operator's client signs in. */
         const reconnect = ({ path, ...selected }: Selected) =>
           Effect.gen(function* () {
             const connection = yield* body(
@@ -2101,7 +2487,6 @@ layer(HostedLive, { excludeTestServices: true })("Credential placement", (it) =>
             );
             expect(yield* signIn(connection.id, true)).toBe(selected.account);
           });
-        // Two accounts whose tokens will have expired, and one whose token stays valid.
         const renewing = yield* ownAccount;
         const checked = yield* ownAccount;
         yield* issuer.configure({ expiresIn: 36_000 });
@@ -2111,13 +2496,7 @@ layer(HostedLive, { excludeTestServices: true })("Credential placement", (it) =>
           "synthetic-access-token",
         );
 
-        // Two hours later the operator adds its client. The registered client has expired, so
-        // reconnecting now signs in with the operator's client.
         yield* restartWith(operatorClients(issuer.origin, hosts), twoHours);
-        /**
-         * Run `work` until it is renewing its account's grant, which the issuer holds; replace the
-         * account's credential with the operator's meanwhile; then let the renewal answer.
-         */
         const interleaved = <A, E, R>(selected: Selected, work: Effect.Effect<A, E, R>) =>
           Effect.gen(function* () {
             yield* issuer.configure({ hold: "refresh-issued" });
@@ -2130,7 +2509,6 @@ layer(HostedLive, { excludeTestServices: true })("Credential placement", (it) =>
                   : Effect.fail(new Error("The renewal has not reached the issuer")),
               ),
               Effect.retry({ schedule: Schedule.spaced("100 millis"), times: 300 }),
-              // Work that ends before renewing never interleaves; report how it ended.
               Effect.raceFirst(
                 Fiber.await(running).pipe(
                   Effect.flatMap((exit) =>
@@ -2154,19 +2532,14 @@ layer(HostedLive, { excludeTestServices: true })("Credential placement", (it) =>
               ),
             );
             yield* reconnect(selected);
-            // This issuer gives every sign-in the same token, so a retry may find the operator's
-            // credential equal to the refused one and renew it as well; let that answer at once.
             yield* issuer.configure({ hold: null });
             yield* issuer.release;
             return yield* Fiber.join(running);
           });
 
-        // A tool call that read the account before the reconnect reads the credential it
-        // received, which is now managed: sealed, though the provider marks it raw().
         const read = yield* interleaved(renewing, call(renewing.path, Fields, "fields"));
         expect(read.access_token).toMatch(handle);
 
-        // So does an account check that read the account before the reconnect.
         const health = yield* interleaved(
           checked,
           api
@@ -2175,9 +2548,6 @@ layer(HostedLive, { excludeTestServices: true })("Credential placement", (it) =>
         );
         expect(health.apps.map((entry) => entry.check?.status)).toEqual(["healthy"]);
 
-        // And a retry after the service refused the user's token: the renewal it waited for
-        // returned the operator's credential, which the retry reads sealed and sends placed. The
-        // app's listing, kept since the restart, confirms `resource` only reads, so it is retried.
         yield* list(refused.path);
         yield* issuer.expireAccessTokens;
         const retried = yield* interleaved(
@@ -2190,7 +2560,6 @@ layer(HostedLive, { excludeTestServices: true })("Credential placement", (it) =>
         );
         expect(retried.token).toMatch(handle);
         expect(retried.status).toBe(200);
-        // The service received a token it issued, never the handle.
         expect((yield* issuer.metrics).resourceAuthorizations.at(-1)).toMatch(
           /^Bearer synthetic-(?:access|refreshed)-token/,
         );
@@ -2204,8 +2573,6 @@ layer(HostedLive, { excludeTestServices: true })("Credential placement", (it) =>
       Effect.gen(function* () {
         const { api, actors, prefix, deploy, call } = yield* harness;
         const twoHours = 2 * 60 * 60 * 1000;
-        // Executor for Slack's shape: the operator's client sends its own resource, and the
-        // service answers with the user's grant under `authed_user`, its scopes comma-separated.
         const slack = {
           resourcePath: "/operator-resource",
           tokenResponse: { path: "authed_user" },
@@ -2222,15 +2589,12 @@ layer(HostedLive, { excludeTestServices: true })("Credential placement", (it) =>
           authed_user: { id: "U0SYNTHETIC", ...tokens, token_type: "user" },
           team: { id: "T0SYNTHETIC" },
         });
-        // Like Slack's MCP server, the resource advertises a scope the operator's client does not
-        // allow, and its challenge names none. Refresh tokens rotate, as Slack's do.
         yield* issuer.configure({
           scopes: ["mail.read", "mail.compose", "mail.delete"],
           tokenShape: slackEnvelope,
           scopeGrant: { defaults: [], separator: "," },
           rotateRefreshTokens: true,
         });
-        // The provider declares no scopes, so sign-in reads the ones the resource advertises.
         const source = mailApp({
           name: "Synthetic Mail",
           discover: `${issuer.origin}/mcp`,
@@ -2241,7 +2605,6 @@ layer(HostedLive, { excludeTestServices: true })("Credential placement", (it) =>
           undeclared: store.undeclaredOrigin,
         });
         const Called = Schema.Struct({ token: Schema.String, status: Schema.Number });
-        /** Deploy the app and read setup for its provider. */
         const deployed = Effect.gen(function* () {
           const app = yield* deploy(`Synthetic Mail ${randomUUID().slice(0, 8)}`, source);
           const provider = app.app.requirements.accounts.mail!.provider;
@@ -2255,21 +2618,18 @@ layer(HostedLive, { excludeTestServices: true })("Credential placement", (it) =>
           );
           return { ...app, setup };
         });
-        /** The authorization request a started sign-in sends the browser to. */
         const sent = (started: { readonly status: number; readonly body: unknown }) =>
           Effect.gen(function* () {
             expect(started.status, JSON.stringify(started.body)).toBe(200);
             const redirect = yield* body(Redirect, started);
             return { redirect, url: new URL(redirect.authorizationUrl) };
           });
-        /** The operator's client asks for the allowed scopes the resource advertises, and sends its resource. */
         const expectOperatorRequest = (url: URL) => {
           expect(url.searchParams.get("client_id")).toBe("first-party-client");
           expect(url.searchParams.get("scope")).toBe("mail.read mail.compose");
           expect(url.searchParams.get("resource")).toBe(resource);
         };
 
-        // While the client is listed, a new account signs in with it.
         const first = yield* deployed;
         expect(first.setup).toMatchObject({
           mode: "automatic",
@@ -2279,38 +2639,47 @@ layer(HostedLive, { excludeTestServices: true })("Credential placement", (it) =>
         const signIn = yield* startSignIn(first.path);
         const firstSent = yield* sent(signIn.started);
         expectOperatorRequest(firstSent.url);
+        const originalRedirectUri = firstSent.redirect.redirectUri;
         const account = yield* completeSignIn(issuer, signIn.connection, firstSent.redirect);
-        // The exchange sent the operator's resource, and the account holds the nested user token:
-        // the service accepts only tokens it issued.
+        yield* issuer.configure({ requireRefreshRedirectUri: originalRedirectUri });
         expect((yield* issuer.metrics).exchangeResource).toBe(resource);
         const used = yield* call(first.path, Called, "resource");
         expect(used.token).toMatch(handle);
         expect(used.status).toBe(200);
         expect((yield* issuer.metrics).resourceAuthorizations.at(-1)).toBe(realBearer);
 
-        // The operator unlists the client. Two hours later its account's token has expired, and the
-        // grant renews with the operator's client: the refresh sends its resource, and the account
-        // reads the nested token the renewal returned.
         const refreshed = (yield* issuer.metrics).refreshesIssued;
         yield* restartWith(
           operatorClients(issuer.origin, hosts, { ...slack, unlisted: true }),
           twoHours,
         );
-        const renewed = yield* call(first.path, Called, "resource");
-        expect(renewed.status).toBe(200);
+        const renewalResponse = yield* api.request(
+          actors.owner,
+          "POST",
+          `${first.path}/tools/call`,
+          { tool: "resource", kind: "query", input: {} },
+        );
         const metrics = yield* issuer.metrics;
+        expect(metrics.refreshRedirectUri, "refresh request redirect_uri").toBe(
+          originalRedirectUri,
+        );
+        expect(renewalResponse.status, "managed account renewal failed").toBe(200);
+        const renewed = yield* body(Called, renewalResponse);
+        expect(renewed.status).toBe(200);
         expect(metrics.refreshesIssued).toBeGreaterThan(refreshed);
-        expect(metrics.refreshChecks).toMatchObject({ issued: true, authSecret: true });
+        expect(metrics.refreshChecks).toMatchObject({
+          issued: true,
+          authSecret: true,
+          redirect: true,
+        });
         expect(metrics.refreshResource).toBe(resource);
         expect(metrics.resourceAuthorizations.at(-1)).toMatch(/^Bearer synthetic-refreshed-token-/);
 
-        // It signs in no new account: setup does not offer it, and nothing else can sign in.
         const second = yield* deployed;
         expect(second.setup.firstParty).toBeUndefined();
         const refused = yield* startSignIn(second.path);
         expect(refused.started.body).toMatchObject({ _tag: "OAuthClientUnavailable" });
 
-        // It still reconnects the account it holds.
         const reconnecting = yield* body(
           Resource,
           yield* api.request(actors.owner, "POST", connectionsPath(first.path, "user", "mail"), {
@@ -2329,8 +2698,6 @@ layer(HostedLive, { excludeTestServices: true })("Credential placement", (it) =>
         expect(yield* completeSignIn(issuer, reconnecting.id, again.redirect)).toBe(account);
         expect((yield* issuer.metrics).exchangeResource).toBe(resource);
 
-        // The reviewed Executor for Slack is unlisted as well: with its credentials set, a provider
-        // on Slack's user-token endpoints is not offered it.
         yield* Effect.addFinalizer(() =>
           restartWith({
             EXECUTOR_OAUTH_SLACK_CLIENT_ID: "",

@@ -1,4 +1,3 @@
-/** The browser proposes visible targets; each host creates and authorizes its own saved request. */
 import type {
   AccountId,
   AccountScope,

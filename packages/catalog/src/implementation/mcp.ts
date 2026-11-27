@@ -1,4 +1,3 @@
-/** Remote MCP imports retain ordinary source. Catalogs stay live and account-specific. */
 import { Effect, Match, Schema } from "effect";
 import { generateMcpSource, type McpSourceAccess } from "@executor-js/app-templates";
 import { parseDestination, type UrlPolicy } from "@executor-js/utils/url-policy";
@@ -21,7 +20,6 @@ const mcpUrl = (value: string | undefined, policy: UrlPolicy) =>
       url.password ||
       url.hash ||
       /[{}]/.test(url.href) ||
-      // Stored endpoints must satisfy the importing host's destination policy.
       parseDestination(url.href, policy) === undefined
     ) {
       return yield* fail(
@@ -34,11 +32,9 @@ const mcpUrl = (value: string | undefined, policy: UrlPolicy) =>
 
 const agent = "Copy the setup prompt and add it with your agent.";
 
-/** The request that decided the outcome: tools/list when it ran, otherwise initialize. */
 const decidingRequest = (signals: ReadonlyArray<McpSignal>) =>
   signals.filter(Schema.is(McpRequestSignal)).at(-1);
 
-/** Why advertised OAuth could not be used, from the last metadata lookup. */
 const oauthProblem = (signals: ReadonlyArray<McpSignal>) => {
   const blocked = "an address in its OAuth settings is not allowed by this Executor instance";
   const last = signals.filter((signal) => !Schema.is(McpRequestSignal)(signal)).at(-1);
@@ -65,13 +61,11 @@ const oauthProblem = (signals: ReadonlyArray<McpSignal>) => {
       });
 };
 
-/** Status text for the request that decided an outcome. */
 const statusOf = (signals: ReadonlyArray<McpSignal>, fallback: string) => {
   const request = decidingRequest(signals);
   return request === undefined ? fallback : `HTTP ${request.status}`;
 };
 
-/** A server that rejected anonymous use and advertises no OAuth needs other credentials. */
 const credentialsRequired = ({
   scheme,
   signals,
@@ -90,7 +84,6 @@ const credentialsRequired = ({
   };
 };
 
-/** Why nothing could be decided. Transient causes can be retried; the rest need an agent. */
 const undetermined = ({ reason, signals }: typeof McpDetection.cases.Undetermined.Type) => {
   const request = decidingRequest(signals);
   const status = statusOf(signals, "no answer");
@@ -135,11 +128,6 @@ const undetermined = ({ reason, signals }: typeof McpDetection.cases.Undetermine
   );
 };
 
-/**
- * Generate source for a server whose connection was confirmed; never embed credentials. Public
- * servers and servers whose OAuth an account connection can complete are added directly. Every
- * other outcome fails with a reason naming the signals that decided it, and the detection itself.
- */
 export const generateMcpApp = (
   input: {
     readonly name: string;

@@ -1,4 +1,3 @@
-/** Group only verified identities already visible in the product's authorized inventory. */
 import type { AccountSummary, Inventory } from "./dashboard.ts";
 
 export interface AccountGroup {
@@ -21,7 +20,6 @@ export const accountGroups = (accounts: readonly AccountSummary[]): readonly Acc
   });
 };
 
-/** App labels come from the visible inventory, never an identity-wide unfiltered count. */
 export const bindingApps = (inventory: Inventory, bindings: readonly AccountSummary[]) => {
   const ids = new Set(bindings.map((account) => account.id));
   return inventory.apps.filter((app) =>

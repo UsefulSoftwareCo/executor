@@ -1,4 +1,3 @@
-/** Run the perf emulator on loopback, or bundle and upload it as a workers.dev Worker. */
 import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
 import { Config, Console, Effect, FileSystem, Layer, Path, Redacted, Schema } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
@@ -10,7 +9,6 @@ export class EmulatorFailed extends Schema.TaggedError<EmulatorFailed>()("Emulat
   message: Schema.String,
 }) {}
 
-/** Scoped loopback emulator for self-host and local targets; returns its origin. */
 export const serveEmulator = (port: number, host = "127.0.0.1") =>
   Effect.gen(function* () {
     const services = yield* Layer.build(
@@ -28,10 +26,6 @@ const CloudflareResult = Schema.Struct({
   result: Schema.optional(Schema.Unknown),
 });
 
-/**
- * Bundle the Worker entry with Bun and upload it through the Cloudflare API, then enable its
- * workers.dev route. Needs CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN (the staging launcher).
- */
 export const deployEmulator = (name: string) =>
   Effect.gen(function* () {
     if (!/^perf-[a-z0-9-]*-0925$/.test(name))

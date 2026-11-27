@@ -1,4 +1,3 @@
-/** Retained sign-ins are verified in bounded batches; an unavailable proof leaves them independent. */
 import { useState, type ComponentType } from "react";
 import { Exit, Option, type Cause } from "effect";
 import type { Account, AccountId } from "@executor-js/sdk";

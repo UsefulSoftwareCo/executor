@@ -2,12 +2,10 @@ import { Button } from "@executor-js/ui/components/button";
 import { Skeleton } from "@executor-js/ui/components/skeleton";
 import { PageFrame, PageHeader } from "@executor-js/ui/dashboard/page";
 
-/** The page heading and copy are the same on every visit. */
 export const tokensTitle = "Tokens";
 export const tokensDescription =
   "Personal access tokens for scripts and agents. They belong to you, not to an organization.";
 
-/** Static token guidance stays visible independently of account and token requests. */
 export function TokensIntro() {
   return (
     <p className="mb-5 max-w-2xl text-sm text-muted-foreground">
@@ -18,7 +16,6 @@ export function TokensIntro() {
   );
 }
 
-/** Only token values are unknown; the table headings remain real text. */
 export function TokenListPending() {
   return (
     <div role="status" aria-label="Loading tokens" className="overflow-x-auto">
@@ -57,7 +54,6 @@ export function TokenListPending() {
   );
 }
 
-/** Lazy route loading keeps the token page identity and its static controls. */
 export function TokensPending() {
   return (
     <PageFrame>

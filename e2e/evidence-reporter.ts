@@ -1,4 +1,3 @@
-/** Explicit report rendering consumes retained case artifacts without rerunning tests. */
 import { Clock, Effect, FileSystem, Path, Schema } from "effect";
 import { type EvidenceReport } from "./report-model.ts";
 import { readEvidence } from "./evidence-results.ts";
@@ -8,7 +7,6 @@ import { renderRecordingFilmstrip } from "./support/recording-previews.ts";
 import { renderStateEvidence } from "./support/state-evidence.ts";
 import { renderTerminalRecording, terminalCaptureType } from "./support/terminal-recording.ts";
 
-/** Render the React evidence UI and its portable machine-readable manifest. */
 export const writeEvidenceReport = (directory: string, report: EvidenceReport) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem,
@@ -31,7 +29,6 @@ export const writeEvidenceReport = (directory: string, report: EvidenceReport) =
       JSON.stringify(report, null, 2),
     );
   });
-/** Convert raw recordings and build the evidence manifest without a parallel test lifecycle. */
 export const collectEvidence = (directory: string) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem,

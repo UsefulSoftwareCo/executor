@@ -1,4 +1,3 @@
-/** Read persistent PostHog stack outputs and bind only ingestion settings into the app. */
 import { AlchemyContext } from "alchemy/AlchemyContext";
 import * as Output from "alchemy/Output";
 import { Stage } from "alchemy/Stage";
@@ -7,7 +6,6 @@ import type { PostHogOutput } from "./posthog-output.ts";
 import { productionSiteTelemetry } from "../contracts/edge-paths.ts";
 import { pinnedInProduction } from "./site-telemetry.ts";
 
-/** The browser and server use the same project and deployment identity. */
 export const postHogBindings = Effect.gen(function* () {
   const dev = (yield* AlchemyContext).dev;
   const localPort = dev

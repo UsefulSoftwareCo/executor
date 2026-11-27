@@ -10,7 +10,6 @@ import {
 } from "@executor-js/ui/components/card";
 import type { ReactNode } from "react";
 
-/** The billing card keeps its copy and dimensions while organization access loads. */
 export function BillingSettingsPending() {
   return (
     <BillingSettingsCard>
@@ -35,7 +34,6 @@ function BillingSettingsCard({ children }: { readonly children: ReactNode }) {
   );
 }
 
-/** Billing navigation uses the current route and verified organization role. */
 export function BillingSettings() {
   const organization = useOrganizationRoute();
   return (

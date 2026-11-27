@@ -1,4 +1,3 @@
-/** Local browser commands preserve app scopes and reuse the existing OAuth return path. */
 import { Effect } from "effect";
 import type { AccountScope, AppId, OAuthClientSelection } from "@executor-js/sdk";
 import type { IdentityConsentSelection } from "@executor-js/ui/contracts/identity-consent";

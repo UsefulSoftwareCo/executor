@@ -9,7 +9,6 @@ import { App } from "../support/contracts.ts";
 import { withApps } from "../support/apps-release.ts";
 import { strictTypeProblems } from "../support/apps-package.ts";
 
-/** The tools.md example: `resolve` returns a `query()` with no cast. */
 const files = [
   {
     path: "index.ts",
@@ -29,10 +28,6 @@ export default defineApp({}, {
   },
 ];
 
-/**
- * App source strict mode must reject: `resolve` returns `operation`, which a dynamic router cannot
- * serve to this app. `repo` needs a GitHub account the app does not declare.
- */
 const rejectedFiles = (operation: string) => [
   {
     path: "index.ts",
@@ -58,9 +53,7 @@ layer(HostedLive, { excludeTestServices: true })("App caching", (it) => {
       Effect.gen(function* () {
         const api = yield* Api;
         const actors = yield* Actors;
-        // deploy.md's local check passes before the app deploys.
         expect(yield* strictTypeProblems(files)).toEqual([]);
-        // The router keeps the resolved handler's context, so defineApp sees the missing account.
         expect(yield* strictTypeProblems(rejectedFiles("repo"))).toEqual([
           {
             file: "index.ts",
@@ -71,7 +64,6 @@ layer(HostedLive, { excludeTestServices: true })("App caching", (it) => {
             ),
           },
         ]);
-        // `resolve` returns one operation, not a router.
         expect(yield* strictTypeProblems(rejectedFiles("router({ ping })"))).toEqual([
           {
             file: "index.ts",

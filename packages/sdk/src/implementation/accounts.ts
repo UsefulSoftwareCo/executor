@@ -1,7 +1,7 @@
 import { AccountWorkflowsActive } from "../contracts/account.ts";
 import { AccountWebhookDependent, AccountWebhooksActive } from "../contracts/account.ts";
-/** Reusable account operations. Owners remain lookup predicates, not authorization. */
-import { Clock, type Crypto, Effect, Option, Redacted, Schema } from "effect";
+import { Clock, Effect, Option, Redacted, Schema } from "effect";
+import type { HostCrypto } from "./host-crypto.ts";
 import {
   Account,
   AccountNotFound,
@@ -24,7 +24,6 @@ import { accountGrantId, accountIdentity } from "./account-identities.ts";
 import { releaseAccountGrant } from "./oauth-grant-bindings.ts";
 import { canonical, validateFields } from "./provider.ts";
 
-/** A stable digest of stored ciphertext; any credential write changes it. */
 const fingerprint = (bytes: Uint8Array) =>
   Effect.promise(async () =>
     Array.from(
@@ -38,7 +37,6 @@ const fingerprint = (bytes: Uint8Array) =>
     ).join(""),
   );
 
-/** Load private account data without exposing it through public account responses. */
 export const storedAccount = (db: Query, account: AccountId, owner?: OwnerId) =>
   Effect.gen(function* () {
     const row = yield* query(() =>
@@ -53,13 +51,6 @@ export const storedAccount = (db: Query, account: AccountId, owner?: OwnerId) =>
     );
   });
 
-/**
- * New credentials for an account end the wait of the webhook sources that failed on it: each
- * checks its accounts again at the next tick, without waiting out its retry delay. A source whose
- * attempt is in progress keeps its lease. A source waiting on another of its accounts keeps
- * waiting until that account's own change or its next delay. Run in the credential write's
- * transaction.
- */
 export const resumeWaitingSources = (tx: Query, account: AccountId) =>
   query(() =>
     tx.updateMany("webhookSources", {
@@ -69,13 +60,6 @@ export const resumeWaitingSources = (tx: Query, account: AccountId) =>
     }),
   );
 
-/**
- * The subscriptions that still use an account, oldest ID first. A live one uses its source and
- * every account its registration ran with, which removing it at the provider needs. A disabled
- * one waits for a person to remove it at the provider, which runs no app code, so it keeps only its
- * source: confirming the removal in the dashboard needs access to that account. A stopped one uses
- * none, and neither does a dependency row whose subscription has gone.
- */
 const webhookDependents = (tx: Query, account: AccountId) =>
   Effect.gen(function* () {
     const links = yield* query(() =>
@@ -107,10 +91,6 @@ const webhookDependents = (tx: Query, account: AccountId) =>
     ).pipe(Effect.mapError(() => new StorageError()));
   });
 
-/**
- * An account created without a name starts with the owner's first free "Default" label for its
- * provider, so it can be named once its identity is known. Read inside the creating transaction.
- */
 export const defaultLabel = (tx: Query, owner: OwnerId, provider: ProviderId) =>
   Effect.gen(function* () {
     const rows = yield* query(() =>
@@ -125,24 +105,33 @@ export const defaultLabel = (tx: Query, owner: OwnerId, provider: ProviderId) =>
     return label;
   });
 
-/** Apply the caller's owner filter before reading or mutating a saved account. */
 export const ownedAccount = (db: Query, input: Parameters<Executor["accounts"]["get"]>[0]) =>
   storedAccount(db, input.account, input.owner);
 
-/** An encrypted OAuth grant whose account deletion has committed. */
+export const lockedAccount = (tx: Query, input: Parameters<Executor["accounts"]["get"]>[0]) =>
+  Effect.gen(function* () {
+    const found = yield* ownedAccount(tx, input);
+    yield* query(() =>
+      tx.updateMany("accounts", {
+        where: (b) => b("id", "=", found.id),
+        set: { createdAt: found.createdAt },
+      }),
+    );
+    return yield* ownedAccount(tx, input);
+  });
+
 export interface RemovedGrant {
   readonly account: AccountId;
+  readonly owner: OwnerId;
   readonly provider: string;
   readonly encrypted: Uint8Array;
 }
 
-/** Bind account operations to caller-owned storage and credentials. */
 export const makeAccounts = (
   db: Query,
   credentials: Credentials,
-  crypto: Crypto.Crypto,
+  crypto: HostCrypto,
   lifecycle?: ResourceLifecycle,
-  /** Best-effort provider-side revocation; it never fails and runs only after the delete commits. */
   revokeRemoved?: (removed: RemovedGrant) => Effect.Effect<void>,
 ) => ({
   add: (input: typeof ManagedAccountInputs.add.Type) =>
@@ -162,9 +151,7 @@ export const makeAccounts = (
         input.fields,
       );
       const identity = {
-        id: AccountId.make(
-          `acc_${yield* crypto.randomUUIDv4.pipe(Effect.mapError(() => new StorageError()))}`,
-        ),
+        id: AccountId.make(`acc_${yield* crypto.random.uuidV4()}`),
         owner: input.owner,
         provider: provider.id,
         method: input.method,
@@ -223,7 +210,7 @@ export const makeAccounts = (
   replaceCredentials: (input: typeof ManagedAccountInputs.replaceCredentials.Type) =>
     transaction(db, (tx) =>
       Effect.gen(function* () {
-        const account = yield* ownedAccount(tx, input);
+        const account = yield* lockedAccount(tx, input);
         const row = yield* query(() =>
           tx.findFirst("providers", { where: (b) => b("id", "=", account.provider) }),
         );
@@ -270,7 +257,6 @@ export const makeAccounts = (
                 set: { createdAt: row.createdAt },
               }),
             );
-            // Every holder refuses the deletion; products narrow only which ones the refusal names.
             const dependents = yield* webhookDependents(tx, row.id);
             if (dependents.length > 0)
               return yield* new AccountWebhooksActive({
@@ -287,8 +273,6 @@ export const makeAccounts = (
               );
               yield* lifecycle.accountRemoving(account);
             }
-            // A source whose subscriptions have all stopped goes with its account, as do the
-            // dependency rows of subscriptions that no longer use it.
             yield* query(() =>
               tx.deleteMany("webhookSources", { where: (b) => b("account", "=", input.account) }),
             );
@@ -307,9 +291,7 @@ export const makeAccounts = (
           return undefined;
         }),
       );
-      // Revoke only after the deletion is durable; the outcome cannot change the result.
       if (removed !== undefined && revokeRemoved !== undefined) yield* revokeRemoved(removed);
-      // Saved choices keep the ID as an unresolved reference. An app must never silently switch accounts or run a partial collection.
       return { account: input.account };
     }).pipe(Effect.withSpan("sdk.accounts.remove")),
   list: (input: Parameters<Executor["accounts"]["list"]>[0]) =>
@@ -391,8 +373,6 @@ export const makeAccounts = (
       if (grant !== null) credentialsFingerprint = yield* fingerprint(grant.encrypted);
       if (grant === null || grant.status === "reconnect")
         return { state: "reconnect", credentialsFingerprint } satisfies AccountSignIn;
-      // A grant claimed by a renewal, including one a stopped process abandoned, still carries
-      // the grant it started from; the next live resolve settles it.
       const decoded = yield* credentials
         .decrypt(accountGrantId(account), Redacted.make(grant.encrypted))
         .pipe(
@@ -414,11 +394,6 @@ export const makeAccounts = (
     }).pipe(Effect.withSpan("sdk.accounts.signIn")),
 });
 
-/**
- * Whether an account's stored credentials decrypt with this deployment's key, and, when its
- * method signs in with OAuth, whether its grant exists and decrypts as a grant. Reads only and
- * returns no value. A missing account is unreadable.
- */
 export const credentialsReadable = (db: Query, credentials: Credentials) => (account: AccountId) =>
   Effect.gen(function* () {
     const stored = yield* storedAccount(db, account).pipe(
@@ -453,13 +428,6 @@ export const credentialsReadable = (db: Query, credentials: Credentials) => (acc
     return Option.isSome(decoded);
   }).pipe(Effect.withSpan("sdk.accounts.credentialsReadable"));
 
-/**
- * Move an imported account to another provider, under `method`, when that method's definition is
- * the one the account's method has in its own provider, so its credentials fit it unchanged. A
- * provider is one definition of all its methods, so an app generated again with a method more or
- * less, or another name, declares a new provider that its accounts no longer fit. Returns whether
- * the account moved; one changed meanwhile is left as it is.
- */
 export const moveImportedAccount =
   (db: Query) =>
   (input: {

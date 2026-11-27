@@ -1,4 +1,3 @@
-/** Start from the verified account row, then use the product's existing app connection form. */
 import { useState, type ReactNode } from "react";
 import type { AccountId, AccountRequirement, App } from "@executor-js/sdk";
 import type { AccountSummary, Inventory } from "../../contracts/dashboard.ts";

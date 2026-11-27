@@ -1,4 +1,3 @@
-/** Typed resource URLs reject malformed identifiers before any page brands or reads them. */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Redacted, Schema } from "effect";
 import { Actors } from "../support/actors.ts";
@@ -7,8 +6,8 @@ import { Browser } from "../support/browser.ts";
 import { HostedLive, TestLive, withCase, withHostedCase } from "../support/case.ts";
 import { Target } from "../support/platform.ts";
 import { scenarios } from "../test-plan.ts";
+import { noPageErrors } from "../support/page-errors.ts";
 
-/** A plain word, as typed or pasted, carries none of the typed identifier prefixes. */
 const malformed = "notes";
 
 const expectNotFound = (path: string) =>
@@ -48,7 +47,6 @@ layer(HostedLive, { excludeTestServices: true })("Hosted malformed resource link
         const org = `/org/${actors.organization.slug}`;
         for (const path of [
           `${org}/apps/${malformed}`,
-          // The app launch route is gone; an old launch link is a missing page too.
           `${org}/apps/${malformed}/open`,
           `${org}/apps/${malformed}/setup`,
           `${org}/connections/${malformed}`,
@@ -56,7 +54,7 @@ layer(HostedLive, { excludeTestServices: true })("Hosted malformed resource link
         ])
           yield* expectNotFound(path);
         yield* browser.checkpoint("Malformed app link shows the missing-page state");
-        expect(pageErrors).toEqual([]);
+        yield* noPageErrors(pageErrors);
       }),
     ),
   );
@@ -91,7 +89,7 @@ layer(TestLive, { excludeTestServices: true })("Local malformed resource links",
           `/webhooks/${malformed}/${malformed}`,
         ])
           yield* expectNotFound(path);
-        expect(pageErrors).toEqual([]);
+        yield* noPageErrors(pageErrors);
       }),
     ),
   );

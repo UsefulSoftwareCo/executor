@@ -1,21 +1,10 @@
-/**
- * A synthetic document shaped like the Graph document v1 stored for its Microsoft presets, which
- * the presets share: block YAML with two-space indents, thousands of path items in areas whose
- * schemas, responses and parameters reference each other across component sections, quoted path
- * keys, block scalars, a list at its parent key's indent and comments. All of it is generated; no
- * part of any real API's document is used.
- */
-
-/** v1's tool for an operation, as v1 stored its row: name, method and path. */
 export type GraphOperation = readonly [string, string, string];
 
-/** The operations of an area, and the components they reach, by section. */
 export interface GraphArea {
   readonly operations: readonly GraphOperation[];
   readonly components: Readonly<Record<string, readonly string[]>>;
 }
 
-/** Components every operation reaches through its error response and its parameters. */
 const sharedComponents = {
   schemas: [
     "ODataErrors.ErrorDetails",
@@ -267,7 +256,6 @@ ${idParameter}
   };
 };
 
-/** The components of several areas, each section's names sorted. */
 export const graphComponents = (areas: readonly GraphArea[]) => {
   const sections: Record<string, string[]> = {};
   for (const { components } of areas)
@@ -276,10 +264,6 @@ export const graphComponents = (areas: readonly GraphArea[]) => {
   return sections;
 };
 
-/**
- * A Graph-shaped document of `count` areas whose operations call `origin`, and each area's
- * operations and the components they reach.
- */
 export const graphDocument = (origin: string, count: number) => {
   const areas = Array.from({ length: count }, (_, index) => area(index));
   const text = `# A synthetic graph API, shaped like a large generated document.

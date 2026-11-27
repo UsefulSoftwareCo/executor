@@ -17,7 +17,6 @@ import { DashboardSchedules } from "./schedules.ts";
 import { DashboardMcpConnections } from "./mcp-connections.ts";
 import { AccountWebhooksActive } from "@executor-js/sdk/core";
 import { AppWebhooksActive } from "@executor-js/sdk/core";
-/** Browser-safe read contracts for inspecting the local Executor instance. */
 import {
   AccountConnection,
   AccountConnectionId,
@@ -38,6 +37,7 @@ import {
   AccountNotFound,
   AccountRequired,
   AccountSelectionInvalid,
+  MarkdownUnavailable,
   App,
   AppNotDeployed,
   AppEvaluationFailed,
@@ -97,7 +97,7 @@ import {
   type ProviderDefinition,
 } from "@executor-js/sdk";
 import {
-  CatalogEntry,
+  CatalogListing,
   CatalogImportFailed,
   CatalogUnavailable,
   CatalogImport,
@@ -123,27 +123,22 @@ import {
   OpenApi,
 } from "effect/http-api";
 
-/** Why the last start did not move other owners' records to `local`; see data step 7. */
 export { blockedRecovery, LocalOwnerMigration };
 
-/** Same callback path as Executor local, cloud and self-host; the host supplies its origin. */
 export const OAuthCallbackPath = "/api/oauth/callback";
 
-/** The browser has no active local session. */
 export const DashboardUnauthorized = UserFacingError.define({
   tag: "DashboardUnauthorized",
   status: 401,
   title: "Browser pairing required",
   description: "This browser is not paired with this Executor instance.",
   recovery: {
-    action: "Run executor pair and open the new link, then return to account setup.",
+    action: "Run executor service pair and open the new link, then return to account setup.",
     instructions:
-      "Restore local browser pairing with executor pair and guide the user through the new pairing link. Then reopen the intended app’s account setup. Keep pairing credentials private and preserve pairing authorization.",
+      "Restore local browser pairing with executor service pair and guide the user through the new pairing link. Then reopen the intended app’s account setup. Keep pairing credentials private and preserve pairing authorization.",
   },
 });
-/** Parsed DashboardUnauthorized failure. */
 export type DashboardUnauthorized = typeof DashboardUnauthorized.Type;
-/** Browser calls must originate from this exact loopback server. */
 export const DashboardForbidden = UserFacingError.define({
   tag: "DashboardForbidden",
   status: 403,
@@ -155,9 +150,7 @@ export const DashboardForbidden = UserFacingError.define({
       "Check the local Executor dashboard origin and open its supported address directly. Correct a stale or unsupported browser origin. Preserve host and origin validation; do not loosen dashboard access checks.",
   },
 });
-/** Parsed DashboardForbidden failure. */
 export type DashboardForbidden = typeof DashboardForbidden.Type;
-/** Live app inspection exceeded the host's discovery timeout. */
 export class ToolDiscoveryTimedOut extends Schema.TaggedError<ToolDiscoveryTimedOut>()(
   "ToolDiscoveryTimedOut",
   { app: AppId },
@@ -166,7 +159,6 @@ export class ToolDiscoveryTimedOut extends Schema.TaggedError<ToolDiscoveryTimed
     description: "The app took too long to list its tools. Try refreshing the catalog.",
   },
 ) {}
-/** The local management app is installed and maintained by this server. */
 export class AppDeletionBlocked extends Schema.TaggedError<AppDeletionBlocked>()(
   "AppDeletionBlocked",
   { app: AppId },
@@ -175,7 +167,6 @@ export class AppDeletionBlocked extends Schema.TaggedError<AppDeletionBlocked>()
     description: "This app is managed by the local server and cannot be deleted.",
   },
 ) {}
-/** The server maintains the bundled app's name across restarts. */
 export class AppRenameBlocked extends Schema.TaggedError<AppRenameBlocked>()(
   "AppRenameBlocked",
   { app: AppId },
@@ -184,10 +175,6 @@ export class AppRenameBlocked extends Schema.TaggedError<AppRenameBlocked>()(
     description: "This app is managed by the local server and cannot be renamed.",
   },
 ) {}
-/**
- * The server links its own Executor app to the account it manages each time it starts, and that
- * app's tools need the link. Nothing else links, unlinks, replaces or connects its accounts.
- */
 export const AppAccountLinksBlocked = UserFacingError.define({
   tag: "AppAccountLinksBlocked",
   status: 409,
@@ -201,9 +188,7 @@ export const AppAccountLinksBlocked = UserFacingError.define({
       "Do not link, unlink, replace or connect accounts for the local Executor app. The server keeps its own account linked; use the Executor tools as they are.",
   },
 });
-/** Parsed AppAccountLinksBlocked failure. */
 export type AppAccountLinksBlocked = typeof AppAccountLinksBlocked.Type;
-/** The server's own API connection is managed at the host boundary. */
 export class AccountManagementBlocked extends Schema.TaggedError<AccountManagementBlocked>()(
   "AccountManagementBlocked",
   { account: AccountId },
@@ -213,7 +198,6 @@ export class AccountManagementBlocked extends Schema.TaggedError<AccountManageme
   },
 ) {}
 
-/** The account is linked to apps for every call; it cannot be deleted until it is unlinked. */
 export const AccountLinkedToApp = UserFacingError.define({
   tag: "AccountLinkedToApp",
   status: 409,
@@ -226,10 +210,8 @@ export const AccountLinkedToApp = UserFacingError.define({
       "Read the app accounts of each named app and unlink this account from them. Link a replacement first if the app still needs one. Then delete the account.",
   },
 });
-/** Parsed AccountLinkedToApp failure. */
 export type AccountLinkedToApp = typeof AccountLinkedToApp.Type;
 
-/** One account linked to one of the app's requirements, with its checks by this app. */
 export const AppAccountLink = Schema.Struct({
   requirement: Schema.NonEmptyString,
   account: Account,
@@ -238,13 +220,8 @@ export const AppAccountLink = Schema.Struct({
 });
 export type AppAccountLink = typeof AppAccountLink.Type;
 
-/** One account a requirement lists: linked to it, or one that could be linked. */
 export const RequirementAccount = Schema.Struct({ account: Account, linked: Schema.Boolean });
 export type RequirementAccount = typeof RequirementAccount.Type;
-/**
- * One requirement of the app in one scope: its linked accounts, oldest first, then the app owner's
- * other accounts of its provider, which could be linked.
- */
 export const AppAccountRequirement = Schema.Struct({
   requirement: Schema.NonEmptyString,
   scope: AccountScope,
@@ -256,10 +233,6 @@ export type AppAccountRequirement = typeof AppAccountRequirement.Type;
 const linkErrors = [StorageError, AppNotFound, AccountNotFound, RequirementMismatch] as const;
 const linkChangeErrors = [...linkErrors, AppAccountLinksBlocked] as const;
 
-/**
- * A dashboard sign-in for the requirement its route names. `account` replaces that account's
- * credentials instead of adding one; the app page is the only place credentials are entered.
- */
 export const AppAccountTarget = Schema.Struct({
   account: Schema.optional(AccountId),
 });
@@ -280,11 +253,6 @@ const appConnectionErrors = [
   RequirementMismatch,
 ] as const;
 
-/**
- * The account routes of one scope under `/dashboard/api/apps/:app/accounts/<scope>`: list, read one
- * requirement, link, unlink, and connect a new account by entering its fields or starting OAuth.
- * `app` routes link for every call; `user` routes link for the local user.
- */
 const scopeEndpoints = <const S extends AccountScope>(scope: S) => {
   const path = `/dashboard/api/apps/:app/accounts/${scope}` as const;
   const params = { app: AppId };
@@ -349,6 +317,7 @@ const scopeEndpoints = <const S extends AccountScope>(scope: S) => {
         method: AuthMethodName,
         label: Schema.optional(Schema.NonEmptyString),
         client: Schema.optional(OAuthClientSelection),
+        chooseAgain: Schema.optional(Schema.Literal(true)),
       }),
       success: ConnectionSignIn,
       error: [
@@ -368,7 +337,6 @@ const [appList, appGet, appLink, appUnlink, appConnect, appConnectOAuth] = scope
 const [userList, userGet, userLink, userUnlink, userConnect, userConnectOAuth] =
   scopeEndpoints("user");
 
-/** Local session authentication, with explicit failures carried through AtomHttpApi. */
 export class DashboardAccess extends HttpApiMiddleware.Service<DashboardAccess>()(
   "DashboardAccess",
   {
@@ -376,41 +344,33 @@ export class DashboardAccess extends HttpApiMiddleware.Service<DashboardAccess>(
   },
 ) {}
 
-/** Install details for a trusted local dashboard session; never part of inventory responses. */
 export const McpInstallation = Schema.Struct({
   endpoint: HttpUrl,
 });
 export type McpInstallation = typeof McpInstallation.Type;
 
-/** Saved credentials are not proof that an upstream service is reachable. */
 export const AccountSignIn = Schema.Union([
   Schema.Struct({ state: Schema.Literal("saved"), reconnectAt: Schema.NullOr(Schema.Date) }),
   Schema.Struct({ state: Schema.Literals(["reconnect", "unavailable"]) }),
 ]);
 export type AccountSignIn = typeof AccountSignIn.Type;
-/** Display metadata only; saved credential fields are never part of this projection. */
 export const DashboardAccount = Schema.Struct({
   ...Account.fields,
   providerName: Schema.String,
   providerUrl: Schema.NullOr(HttpUrl),
   signIn: AccountSignIn,
-  /** Checks by the apps that select the account; absent from single-account reads. */
   health: Schema.optionalKey(AccountHealth),
 });
 export type DashboardAccount = typeof DashboardAccount.Type;
-/** Credential management uses the retained provider even when no installed app selects it. */
 export const DashboardAccountDetail = Schema.Struct({
   account: DashboardAccount,
   provider: Provider,
   apps: Schema.Array(App),
-  /** The latest check by each app in `apps`; reading it never runs a check. */
   health: AccountHealth,
-  /** Whether deleting the account also asks its service to revoke access. */
   revocation: AccountRevocation.fields.revocation,
   canManage: Schema.Boolean,
 });
 export type DashboardAccountDetail = typeof DashboardAccountDetail.Type;
-/** Public provider endpoints supply a logo domain when no catalog metadata is available. */
 export const providerDisplayUrl = (
   definition: ProviderDefinition | undefined,
 ): typeof HttpUrl.Type | null => {
@@ -427,15 +387,21 @@ export const providerDisplayUrl = (
   }
   return null;
 };
-/** A cheap inventory read, without evaluating app code or fetching live tool catalogs. */
 export const DashboardOverview = Schema.Struct({
   apps: Schema.Array(App),
-  /** The accounts linked to each app, oldest first. */
   links: Schema.Array(Schema.Struct({ app: AppId, account: AccountId })),
+  appLinks: Schema.Array(
+    Schema.Struct({
+      app: AppId,
+      requirement: Schema.String,
+      account: AccountId,
+      provider: ProviderId,
+      label: Schema.String,
+    }),
+  ),
   accounts: Schema.Array(DashboardAccount),
 });
 export type DashboardOverview = typeof DashboardOverview.Type;
-/** Retained versions without loading every source file into the browser's list view. */
 export const VersionSummary = Schema.Struct({
   id: VersionId,
   owner: OwnerId,
@@ -443,27 +409,22 @@ export const VersionSummary = Schema.Struct({
   fileCount: Schema.Int.check(Schema.isGreaterThan(0)),
 });
 export type VersionSummary = typeof VersionSummary.Type;
-/** Current configuration plus retained versions in the same code lineage, newest first. */
 export const DashboardApp = Schema.Struct({
   app: App,
   versions: Schema.Array(VersionSummary),
   canDelete: Schema.Boolean,
   uiUrl: Schema.NullOr(HttpUrl),
+  uiIcon: Schema.Boolean,
+  uiMenuBar: Schema.Boolean,
 });
 export type DashboardApp = typeof DashboardApp.Type;
 
-/**
- * Complete account-dependent catalog, without schemas, and the routers that group it. A selected
- * tool's schemas are read with `tool`: with every tool's schemas, a catalog such as Stripe's,
- * whose tools each reach most of its definitions, is hundreds of millions of characters.
- */
 export const DashboardTools = Schema.Struct({
   tools: Schema.Array(ToolSummary),
   routers: Schema.Array(ToolRouter),
 });
 export type DashboardTools = typeof DashboardTools.Type;
 
-/** Query results include a connection-local revision; heartbeats carry no product data. */
 export const LiveSnapshot = <S extends Schema.Top, E extends Schema.Top>(value: S, error: E) =>
   Schema.Union([
     Schema.Struct({
@@ -498,7 +459,6 @@ const toolErrors = [
   OAuthRenewalFailed,
 ] as const;
 
-/** Product operations share typed session protection; programmatic SDK routes remain separate. */
 const dashboardApi = HttpApi.make("local-dashboard").add(
   HttpApiGroup.make("dashboard")
     .add(
@@ -548,7 +508,6 @@ const dashboardApi = HttpApi.make("local-dashboard").add(
       }),
     )
     .add(
-      // Set once at startup, by data step 7, only while other owners' records have not moved.
       HttpApiEndpoint.get("ownerMigration", "/dashboard/api/owner-migration", {
         success: Schema.NullOr(LocalOwnerMigration),
       }),
@@ -615,6 +574,13 @@ const dashboardApi = HttpApi.make("local-dashboard").add(
           error: appConnectionErrors,
         },
       ),
+    )
+    .add(
+      HttpApiEndpoint.get("appIcon", "/dashboard/api/apps/:app/icon", {
+        params: { app: AppId },
+        success: Schema.Uint8Array.pipe(HttpApiSchema.asUint8Array()),
+        error: [StorageError, AppNotFound],
+      }),
     )
     .add(appList)
     .add(appGet)
@@ -686,7 +652,6 @@ const dashboardApi = HttpApi.make("local-dashboard").add(
         params: { app: AppId },
         payload: Schema.Struct({
           tool: ToolName,
-          /** "query" for tools the catalog marks readOnly, otherwise "mutation". Omitted, it is read from the catalog. */
           kind: Schema.optional(ToolKind),
           input: Json,
           version: Schema.optional(VersionId),
@@ -754,12 +719,7 @@ const dashboardApi = HttpApi.make("local-dashboard").add(
         },
       ),
     )
-    .add(
-      HttpApiEndpoint.get("catalog", "/dashboard/api/catalog", {
-        success: Schema.Array(CatalogEntry),
-        error: CatalogUnavailable,
-      }),
-    )
+    .add(HttpApiEndpoint.get("catalog", "/dashboard/api/catalog", { success: CatalogListing }))
     .add(
       HttpApiEndpoint.post("importApp", "/dashboard/api/catalog/import", {
         payload: Schema.Struct({ ...CatalogImport.fields, name: Schema.NonEmptyString }),
@@ -771,6 +731,7 @@ const dashboardApi = HttpApi.make("local-dashboard").add(
           ...sourceErrors,
           VersionBuildFailed,
           BuildMemoryExceeded,
+          MarkdownUnavailable,
           SkillDefinitionInvalid,
           AppNameTaken,
           AppSlugTaken,
@@ -791,6 +752,7 @@ const dashboardApi = HttpApi.make("local-dashboard").add(
           ...sourceErrors,
           VersionBuildFailed,
           BuildMemoryExceeded,
+          MarkdownUnavailable,
           SkillDefinitionInvalid,
           AppNameTaken,
           AppSlugTaken,
@@ -830,7 +792,6 @@ const dashboardApi = HttpApi.make("local-dashboard").add(
     .add(
       HttpApiEndpoint.patch("updateAccount", "/dashboard/api/accounts/:account", {
         params: { account: AccountId },
-        /** Only supplied fields change; a null description removes it. */
         payload: Schema.Struct({
           label: Schema.optional(Schema.NonEmptyString),
           description: Schema.optional(
@@ -868,7 +829,6 @@ const dashboardApi = HttpApi.make("local-dashboard").add(
       }),
     )
     .add(
-      // The callback's state finds its sign-in, so any tab of this dashboard can finish it.
       HttpApiEndpoint.post("completeOAuth", "/dashboard/api/accounts/oauth/complete", {
         payload: Schema.Struct({ callbackUrl: Schema.RedactedFromValue(HttpUrl) }),
         success: Account,
@@ -900,5 +860,4 @@ const dashboardApi = HttpApi.make("local-dashboard").add(
   DashboardWebhooks.middleware(DashboardAccess),
   DashboardMcpConnections.middleware(DashboardAccess),
 );
-/** Every endpoint answers a request its schema rejects with `RequestInvalid`. */
 export const DashboardApi = dashboardApi.middleware(RequestRejection);

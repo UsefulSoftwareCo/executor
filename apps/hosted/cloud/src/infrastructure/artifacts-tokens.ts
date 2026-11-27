@@ -1,4 +1,3 @@
-/** Repository credentials and history for Git callers; the ArtifactsCredentials Worker hosts the coordinator. */
 import { AppCodeId, GitCommit, SourceError, aesGcmCredentials } from "@executor-js/sdk/core";
 import type { ArtifactsTokens } from "@executor-js/app-source/cloudflare";
 import { currentTraceContext, type TraceContext } from "@executor-js/telemetry";
@@ -8,6 +7,7 @@ import { Stage } from "alchemy/Stage";
 import { Config, Effect, Option, Redacted, Schema } from "effect";
 import { ArtifactsCredentials } from "./artifacts-credentials-worker.ts";
 import { cloudEncryptionKey } from "./secrets.ts";
+import { sourceNamespace } from "../contracts/artifacts-namespace.ts";
 import { providerFailureCode } from "../implementation/provider-failure.ts";
 
 export const creation = Schema.Struct({
@@ -20,28 +20,24 @@ export const credential = Schema.Struct({
   generation: Schema.NonEmptyString,
   expiresAt: Schema.Number.check(Schema.isFinite()),
 });
-/** Credentials cross the RPC boundary only encrypted with the stage's credential key. */
 export const envelope = Schema.Struct({ version: Schema.Literal(1), encrypted: Schema.Uint8Array });
 export const unavailable = () => new SourceError({ reason: "git" });
 
-/** Both the Git adapter and token coordinator use the stage's existing repository namespace. */
 export const cloudSourceNamespace = Effect.gen(function* () {
   const stage = yield* Effect.serviceOption(Stage).pipe(
     Effect.flatMap(
       Option.match({ onSome: Effect.succeed, onNone: () => Config.String("ALCHEMY_STAGE") }),
     ),
   );
-  return `executor-${stage}-apps`;
+  return sourceNamespace(stage);
 });
 
 interface Coordinator {
-  /** Reuse the stored token unless it is near expiry or its generation was rejected. */
   readonly acquire: (
     id: string,
     rejectedGeneration: string | null,
     trace: TraceContext | undefined,
   ) => Effect.Effect<typeof envelope.Type, SourceError, RuntimeContext>;
-  /** List up to `limit` commits of main, newest first, without fetching their files. */
   readonly history: (
     id: string,
     limit: number,
@@ -51,13 +47,11 @@ interface Coordinator {
     SourceError,
     RuntimeContext
   >;
-  /** A branch head or commit and its root tree, or null when there is none. */
   readonly resolve: (
     id: string,
     ref: string,
     trace: TraceContext | undefined,
   ) => Effect.Effect<{ commit: string; tree: string } | null, SourceError, RuntimeContext>;
-  /** Every non-tree entry below a tree, by full path. */
   readonly tree: (
     id: string,
     tree: string,
@@ -67,7 +61,6 @@ interface Coordinator {
     SourceError,
     RuntimeContext
   >;
-  /** Blob sizes, with their bytes in `bytes` mode while the running total is within `budget`. */
   readonly blobs: (
     id: string,
     objects: ReadonlyArray<string>,
@@ -79,14 +72,12 @@ interface Coordinator {
     SourceError,
     RuntimeContext
   >;
-  /** One file of a commit by path, or null. */
   readonly file: (
     id: string,
     commit: string,
     path: string,
     trace: TraceContext | undefined,
   ) => Effect.Effect<Uint8Array | null, SourceError, RuntimeContext>;
-  /** Create the repository; null means it already existed. */
   readonly create: (
     id: string,
     trace: TraceContext | undefined,
@@ -94,24 +85,17 @@ interface Coordinator {
   readonly alarm: () => Effect.Effect<void, never, RuntimeContext>;
 }
 
-/**
- * A private object per app code serializes refreshes across all Worker instances and callers.
- * The namespace, with every stored credential, moved here from the API Worker.
- */
 export class ArtifactsTokenCoordinator extends Cloudflare.DurableObject<
   ArtifactsTokenCoordinator,
   Coordinator
 >()("ArtifactsTokenCoordinator", { transferredFrom: "Api" }) {}
 
-/** Decode encrypted internal RPC results back into redacted credentials inside the Git adapter. */
 export const cloudArtifactsTokens = (
   coordinator: Cloudflare.DurableObject<ArtifactsTokenCoordinator>,
 ) =>
   Effect.gen(function* () {
     const namespace = yield* cloudSourceNamespace;
     const encryptionKey = yield* cloudEncryptionKey;
-    // Git retries run in a Promise callback with telemetry only. Bind the host environment here
-    // so decrypting the RPC envelope does not depend on the callback's ambient services.
     const environment = yield* Cloudflare.WorkerEnvironment;
     const encryption = () =>
       encryptionKey.pipe(
@@ -217,7 +201,6 @@ export const cloudArtifactsTokens = (
     } satisfies ArtifactsTokens;
   }).pipe(Effect.orDie);
 
-/** Every source caller binds the single coordinator namespace across scripts. */
 export const cloudArtifactsTokensLive = ArtifactsTokenCoordinator.from(ArtifactsCredentials).pipe(
   Effect.flatMap(cloudArtifactsTokens),
 );

@@ -16,7 +16,6 @@ import { accountGroups, bindingApps } from "../../contracts/account-identities.t
 import { Button } from "../components/button.tsx";
 import { Popover, PopoverContent, PopoverTrigger } from "../components/popover.tsx";
 
-/** Saved account metadata is shared across app references, without exposing credential values. */
 export function AccountsPage<E>({
   query,
   Failure,
@@ -24,7 +23,6 @@ export function AccountsPage<E>({
   ...props
 }: QueryProps<Inventory, E> & {
   readonly filters?: ReactNode;
-  /** A page action beside the title, such as managing OAuth clients; hidden while there are none. */
   readonly action?: ReactNode;
   readonly empty?: ReactNode;
   readonly accountActions?: (account: AccountSummary) => ReactNode;
@@ -32,8 +30,6 @@ export function AccountsPage<E>({
     bindings: readonly AccountSummary[],
     inventory: Inventory,
   ) => ReactNode;
-  readonly accountMeta?: (account: AccountSummary) => ReactNode;
-  /** A linked account is scrolled into view and marked, since accounts have no page of their own. */
   readonly highlight?: AccountId | undefined;
 }) {
   const { result, data, refresh } = useQuery(query);
@@ -82,7 +78,6 @@ function AccountsList({
   search,
   accountActions,
   identityActions,
-  accountMeta,
   highlight,
   empty,
   clearSearch,
@@ -96,7 +91,6 @@ function AccountsList({
     bindings: readonly AccountSummary[],
     inventory: Inventory,
   ) => ReactNode;
-  readonly accountMeta?: (account: AccountSummary) => ReactNode;
   readonly highlight?: AccountId | undefined;
 }) {
   const { AppLink } = useDashboard();
@@ -183,7 +177,6 @@ function AccountsList({
                           <AccountIdentity info={account.health.info} />
                         </>
                       )}
-                      {accountMeta?.(account)}
                       {accountNeedsSignIn(account) && (
                         <span className="sign-in-status text-sign-in-warning text-[11px] font-medium whitespace-nowrap [.app-account-setup_h2_&]:ml-2">
                           Needs sign-in

@@ -1,4 +1,3 @@
-/** App cache lifetimes past the retention are shortened, and a size failure names its limit. */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Schema } from "effect";
 import { randomUUID } from "node:crypto";
@@ -59,13 +58,10 @@ layer(HostedLive, { excludeTestServices: true })("App caching", (it) => {
             return yield* body(Schema.Json, response);
           });
 
-        // A lifetime past the retention is shortened and stored: the second read is the first
-        // load's value.
         const first = yield* value("longLived");
         expect(yield* value("longLived")).toBe(first);
         expect(yield* value("longWrite")).toBe(true);
 
-        // A value past the entry size fails with the limit named, and without the value.
         const failed = yield* call("oversized");
         expect(failed.status, JSON.stringify(failed.body).slice(0, 500)).toBe(502);
         expect(JSON.stringify(failed.body)).not.toContain(privateMarker);

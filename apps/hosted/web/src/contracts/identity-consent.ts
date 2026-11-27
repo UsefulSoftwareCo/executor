@@ -1,4 +1,3 @@
-/** Hosted commands keep each request's product authorization and reviewed account destination. */
 import { Effect } from "effect";
 import type { AccountScope, AppId, OAuthClientSelection } from "@executor-js/sdk";
 import type { OrganizationReference } from "@executor-js/hosted-server/organization";

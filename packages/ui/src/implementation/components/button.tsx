@@ -6,7 +6,6 @@ import { cn } from "../lib/utils.ts";
 import { DisabledTooltip } from "./disabled-tooltip.tsx";
 import { Spinner } from "./spinner.tsx";
 
-/** Shared appearance and size classes, also usable for link composition. */
 const buttonVariants = cva(
   "max-[740px]:min-h-11 max-[740px]:data-[size^=icon]:min-w-11 inline-flex shrink-0 items-center justify-center gap-2 rounded-md text-sm font-medium whitespace-nowrap transition-all outline-none focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50 disabled:pointer-events-none disabled:opacity-50 aria-disabled:opacity-50 aria-disabled:cursor-not-allowed aria-invalid:border-destructive aria-invalid:ring-destructive/20 dark:aria-invalid:ring-destructive/40 [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4",
   {
@@ -39,7 +38,6 @@ const buttonVariants = cva(
   },
 );
 
-/** Button primitive; accepts native props and composes caller styles. */
 function Button({
   className,
   variant = "default",
@@ -68,8 +66,6 @@ function Button({
     >
       {showLoading ? (
         <>
-          {/* Reserve the label's width so the box stays the same size; overlay
-              the spinner centered on top. */}
           <span className="invisible">{children}</span>
           <span className="absolute inset-0 flex items-center justify-center">
             <Spinner className="size-3.5" />

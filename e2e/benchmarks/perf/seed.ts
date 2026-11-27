@@ -1,10 +1,3 @@
-/**
- * Production-shaped synthetic organizations on a perf stage, through public product APIs only.
- *
- * A seed fixes every generated choice (app kinds, tool counts, upstream latencies, accounts), so two
- * stages seeded with the same seed and emulator origin hold equivalent data. Organization identities
- * are derived from the seed as fixture scenario ids; re-running resumes from the private receipt.
- */
 import { Clock, Console, Effect, FileSystem, Schema } from "effect";
 import { createHash } from "node:crypto";
 import { cookieHeader, productClient, PerfRequestFailed, type ProductClient } from "./client.ts";
@@ -23,7 +16,6 @@ export const AppReceipt = Schema.Struct({
   tools: Schema.Number,
   auth: Schema.Boolean,
   url: Schema.String,
-  /** The owner's accounts linked to the app, in link order. */
   accounts: Schema.Array(Schema.String),
 });
 export type AppReceipt = typeof AppReceipt.Type;
@@ -49,10 +41,6 @@ export type Receipt = typeof Receipt.Type;
 
 interface AppPlan {
   readonly name: string;
-  /**
-   * `authored` deploys an app whose factory lists an MCP server that answers 404. `refresh`
-   * deploys an app whose cached read starts a background refresh that outlasts the call.
-   */
   readonly kind: "mcp" | "openapi" | "authored" | "refresh";
   readonly spec: EmulatorSpec;
   readonly accounts: number;
@@ -74,7 +62,6 @@ const slow = (rng: Random) => {
   };
 };
 
-/** Deterministic plan: catalog-size organizations with fast and production-latency upstreams. */
 export const plan = (seed: number): readonly OrgPlan[] => {
   const rng = random(seed);
   const tag = seed.toString(36);
@@ -142,9 +129,7 @@ export const plan = (seed: number): readonly OrgPlan[] => {
       purpose: "Execute failure classes: timeouts, apps without accounts, refused MCP servers",
       apps: [
         failing("Perf err fast", "mcp", 0, {}),
-        // Every call outlasts the 5 minute execution budget.
         failing("Perf err slow", "mcp", 1, { latencyMs: 315_000 }),
-        // Requires an API key, and no account is linked to it.
         failing("Perf err keyed", "mcp", 2, { auth: true }),
         failing("Perf err moved", "authored", 3, {}),
         failing("Perf err refresh", "refresh", 4, {}),
@@ -170,7 +155,6 @@ export const plan = (seed: number): readonly OrgPlan[] => {
   ];
 };
 
-/** Fixture scenario ids are 32 hex characters derived from the seed and organization key. */
 export const fixtureId = (seed: number, key: string) =>
   createHash("sha256").update(`perf-0925:${seed}:${key}`).digest("hex").slice(0, 32);
 
@@ -218,7 +202,6 @@ const expectOk = (operation: string, response: { status: number; body: unknown }
         }),
       );
 
-// `seed` caches a value that is stale at once; `stale` serves it and refreshes it for up to 30 s.
 const refreshSource = `import { defineApp, query, mutation, object, string, router } from "apps";
 import { always } from "apps/operations/approval";
 const slowRefresh = (signal) => new Promise((resolve) => {
@@ -239,7 +222,6 @@ export default defineApp({}, async (ctx) => ({ tools: router({
    approved: mutation({ input: object({}), approval: always() }, async () => ({ ran: true })),
  }) }));`;
 
-/** Source an agent would author for an emulator app; keyed apps read an `x-api-key` token. */
 const authoredFiles = (kind: "mcp" | "openapi", url: string, keyed: boolean) => {
   const operations =
     kind === "mcp"
@@ -342,7 +324,6 @@ export default defineApp({}, async () => ({ tools: await mcpRouter({ url: ${JSON
         );
       return receiptFor(app, emulator, deployed, []);
     }
-    // Quick add covers public MCP servers; keyed servers and OpenAPI apps are authored source.
     const imported = yield* (
       app.kind === "mcp" && !app.spec.auth
         ? client.request("POST", `${root}/apps/import`, {
@@ -357,13 +338,10 @@ export default defineApp({}, async () => ({ tools: await mcpRouter({ url: ${JSON
       Effect.flatMap(Schema.decodeUnknownEffect(Created)),
     );
     const appPath = `${root}/apps/${imported.id}`;
-    // Connecting from the app links each new account to it for the owner; `.many()` uses them all.
     const accounts: string[] = [];
     for (let account = 0; account < app.accounts; account++) {
       const connection = yield* client
-        .request("POST", `${appPath}/accounts/user/service/connections`, {
-          destination: { kind: "shared", audience: { kind: "everyone" } },
-        })
+        .request("POST", `${appPath}/accounts/user/service/connections`, {})
         .pipe(
           Effect.flatMap((response) => expectOk(`connection ${app.name}`, response)),
           Effect.flatMap(Schema.decodeUnknownEffect(Id)),
@@ -383,7 +361,6 @@ export default defineApp({}, async () => ({ tools: await mcpRouter({ url: ${JSON
     return receiptFor(app, emulator, imported, accounts);
   });
 
-/** Seed (or resume seeding) every planned organization; writes the receipt after each app. */
 export const seedStage = (input: {
   readonly control: StageControl;
   readonly receipt: string;
@@ -456,7 +433,6 @@ export const seedStage = (input: {
         }) satisfies OrgReceipt;
       receipt.orgs[org.key] = entry();
       yield* save;
-      // Recover apps an interrupted run created before its receipt was written.
       const inventory = yield* client.request("GET", `${root}/inventory`).pipe(
         Effect.flatMap((response) => expectOk("inventory", response)),
         Effect.flatMap(Schema.decodeUnknownEffect(Inventory)),

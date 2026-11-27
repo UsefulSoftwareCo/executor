@@ -1,8 +1,3 @@
-/**
- * One Mail app with any number of saved Gmail selections. Executor configures
- * the mailbox IDs on the app; no sign-in UI lives here.
- * The host and OAuth flow remain unimplemented. Credentials stay server-side.
- */
 import {
   query,
   type AccountOf,
@@ -16,7 +11,6 @@ import {
   router,
 } from "apps";
 
-/** Gmail OAuth declaration; the host supplies its approved client configuration. */
 export const gmail = defineProvider({
   name: "Gmail",
   auth: {
@@ -28,7 +22,6 @@ export const gmail = defineProvider({
   },
 });
 
-// Gmail's list endpoint returns references. Message content needs messages.get.
 const MessagePage = object({
   messages: array(
     object({
@@ -53,8 +46,6 @@ class MailboxNotSelected extends Error {
   }
 }
 
-// An ordinary app helper, called only when a tool runs. `me` is the account
-// authenticated by this token; Gmail does not receive the Executor account ID.
 async function listGmailMessages(account: AccountOf<typeof gmail>, pageToken?: string) {
   const url = new URL("https://gmail.googleapis.com/gmail/v1/users/me/messages");
   url.searchParams.set("labelIds", "INBOX");
@@ -69,7 +60,6 @@ async function listGmailMessages(account: AccountOf<typeof gmail>, pageToken?: s
   return {
     accountId: account.id,
     ...page,
-    // Gmail may omit messages when there are no results.
     messages: page.messages ?? [],
   };
 }
@@ -100,7 +90,6 @@ export default defineApp(
         },
         async ({ user: { accounts } }) => {
           const inboxes: Array<Awaited<ReturnType<typeof listGmailMessages>>> = [];
-          // Account count is user-selected; avoid unbounded request fan-out.
           for (const account of accounts.mailboxes) {
             inboxes.push(await listGmailMessages(account));
           }

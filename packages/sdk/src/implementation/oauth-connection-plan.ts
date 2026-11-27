@@ -1,4 +1,3 @@
-/** A plan compares real grants and saved connection destinations without creating credentials or links. */
 import { Effect, Redacted, Schema } from "effect";
 import type { ResourceLifecycle } from "../contracts/executor.ts";
 import {
@@ -83,7 +82,6 @@ const readSource = (
     };
   });
 
-/** Hosts without policies use the owner's placement; policy hosts must resolve their reviewed intent. */
 const connectionPlacement = (
   connection: Pick<ConnectionRow, "id" | "owner">,
   lifecycle: ResourceLifecycle | undefined,
@@ -217,6 +215,8 @@ export const inspectOAuthConnection = (
     if (source.proof.issuer !== primary.method.identity?.issuer) return incompatible("identity");
     if (source.proof.placement !== primary.placement) return incompatible("placement");
     const grant = source.grant;
+    if (!isFirstPartyGrant(grant) && grant.connectionClient !== undefined)
+      return incompatible("client");
     const operator = isFirstPartyGrant(grant)
       ? options.firstPartyClients?.find((client) => client.id === grant.firstParty)
       : undefined;

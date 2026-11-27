@@ -1,9 +1,3 @@
-/**
- * One trusted backend, two users, two configured copies of the same code.
- * Owner-constrained lookups implement this product's permission rule.
- * The SDK stores owners but does not enforce per-user visibility.
- * Typechecked only; no live credentials or runtime.
- */
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { Effect, FileSystem } from "effect";
 import { createRemoteExecutor, OwnerId, ToolName } from "@executor-js/sdk";
@@ -13,7 +7,6 @@ const acme = OwnerId.make("app-org-acme");
 const alice = OwnerId.make("app-user-alice");
 const bob = OwnerId.make("app-user-bob");
 
-/** Happy-path walkthrough of the two users' separate requests. */
 export async function program() {
   const executor = await createRemoteExecutor({
     baseUrl: "https://executor.example.com",
@@ -38,11 +31,9 @@ export async function program() {
   const vercel = published.requirements.accounts.vercel;
   if (vercel === undefined) throw new Error("This app must declare a vercel account");
 
-  // These owner IDs come from product auth, never end-user request fields.
   const aliceOwnedApp = await executor.apps.get({ app: aliceApp.id, owner: alice });
   const bobOwnedApp = await executor.apps.get({ app: bobApp.id, owner: bob });
 
-  // Each user connects their own account for their copy of the app.
   const aliceConnection = await executor.accountConnections.create({
     owner: alice,
     target: { app: aliceOwnedApp.id, requirement: "vercel" },

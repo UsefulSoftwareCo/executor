@@ -1,4 +1,3 @@
-/** Host-authorized, bounded OTLP ingestion. Authentication/origin policy stays with the product. */
 import { ByteSize, Clock, Effect, Option } from "effect";
 import {
   HttpEffect,
@@ -14,12 +13,6 @@ export {
   recordRequestRejections,
 } from "./request-rejection.ts";
 
-/**
- * Expose handler-to-response timing and correlation IDs to the caller.
- * The duration excludes runtime initialization, body streaming and cleanup.
- * Cloudflare advances this clock on I/O; native invocation CPU/wall measurements
- * remain necessary to account for CPU-only work.
- */
 export const requestTiming = <E, R>(
   handler: Effect.Effect<HttpServerResponse.HttpServerResponse, E, R>,
 ) =>
@@ -38,7 +31,6 @@ export const requestTiming = <E, R>(
     if (ray !== undefined)
       yield* Effect.annotateCurrentSpan("cloudflare.ray_id", ray.replace(/-[A-Z]{3}$/i, ""));
     const start = yield* Clock.currentTimeMillis;
-    // The native hook also sees failure responses produced outside the handler.
     yield* HttpEffect.appendPreResponseHandler((_request, response) =>
       Effect.gen(function* () {
         const elapsed = (yield* Clock.currentTimeMillis) - start;
@@ -62,7 +54,6 @@ export const requestTiming = <E, R>(
     return yield* handler;
   });
 
-/** Forward browser events to the host's private destination. Call only after authorizing the origin. */
 export const receiveBrowserTelemetry = (signal: "traces" | "logs", build?: string) =>
   Effect.gen(function* () {
     const request = yield* HttpServerRequest.HttpServerRequest;
@@ -89,3 +80,5 @@ export const receiveBrowserTelemetry = (signal: "traces" | "logs", build?: strin
       TimeoutError: () => Effect.succeed(HttpServerResponse.empty({ status: 504 })),
     }),
   );
+export { annotateRequestSpan, currentRequestSpan } from "./request-span.ts";
+export { toRequestHttpEffect } from "./request-router.ts";

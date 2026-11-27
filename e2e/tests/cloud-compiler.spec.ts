@@ -1,4 +1,3 @@
-/** Exercise dependency installation and failure recovery through the real Cloud compiler. */
 import { expect, layer } from "@effect/vitest";
 import { Duration, Effect, Schema } from "effect";
 import { randomUUID } from "node:crypto";
@@ -45,8 +44,6 @@ export default defineApp({}, {tools: router({
           api.request(actors.owner, "DELETE", path).pipe(Effect.orDie),
         );
 
-        // Installation and bundling exceed the hosted compiler's memory, not the API's.
-        // These are synthetic source files; no production app is used as a fixture.
         const exhausted = yield* saveAndDeploy(actors.owner, path, {
           files: [
             {
@@ -141,8 +138,6 @@ export default defineApp({}, {tools: router({
         const api = yield* Api,
           actors = yield* Actors;
         const prefix = `/api/organizations/${actors.organization.id}/apps`;
-        // Synthetic static files, larger than a typical UI. Embedded in the server entry, they
-        // exhausted the compiler's memory; the host serves them as UI assets instead.
         const publicFiles = Array.from({ length: 10 }, (_, chunk) => ({
           path: `ui/public/vendor/chunk-${chunk}.js`,
           content: Array.from(
@@ -210,8 +205,6 @@ export default defineApp({}, async (ctx) => ({tools: router({
             actors = yield* Actors,
             evidence = yield* Evidence;
           const prefix = `/api/organizations/${actors.organization.id}/apps`;
-          // The registry starts this package's metadata and never finishes it, so the compiler
-          // Worker stays busy and never answers, as a lost compiler isolate does.
           const [duration, stalled] = yield* api
             .request(actors.owner, "POST", `${prefix}/deploy`, {
               name: `Compiler deadline ${randomUUID().slice(0, 8)}`,
@@ -253,7 +246,6 @@ export default defineApp({}, {tools: router({
           expect(JSON.stringify(listed.body)).not.toContain("Compiler deadline");
         }),
       ),
-    // The deadline itself takes 50 seconds before the response is checked.
     { timeout: 120_000 },
   );
   it.effect(scenarios.cloudCatalogInstall.title, (context) =>
@@ -275,7 +267,6 @@ export default defineApp({}, {tools: router({
           yield* browser.use("Add the Axiom catalog entry", (page) =>
             page.getByRole("button", { name: "Add Axiom", exact: true }).click(),
           );
-          // The page stays on the listing and the row offers Open for the committed installation.
           const open = yield* browser.use("Wait for the installed app's Open link", (page) => {
             const link = page
               .locator(".catalog-row", { hasText: /Axiom.*MCP/ })
@@ -331,7 +322,6 @@ export default defineApp({}, {tools: router({
             ),
           );
           yield* evidence.json(`catalog-install-${iteration}.json`, timings);
-          // Removing the app makes the next visit offer Add again.
           yield* remove;
         }
         yield* browser.checkpoint("Axiom reached account setup after real catalog installs");
@@ -405,7 +395,6 @@ export default defineApp({},{tools: router({
           withApps({ "@executor-fixture/unused-package": "0.0.0-synthetic" }),
         );
 
-        // A source that declares no apps release is refused before compiling, naming this host's.
         const undeclared = yield* api.request(actors.owner, "POST", `${prefix}/deploy`, {
           name: `Undeclared ${randomUUID().slice(0, 8)}`,
           files: [
@@ -438,9 +427,6 @@ export default defineApp({}, async () => ({ tools: router({}) }));`,
             actors = yield* Actors,
             evidence = yield* Evidence;
           const prefix = `/api/organizations/${actors.organization.id}/apps`;
-          // Every build installs and bundles React, the heaviest common browser dependency. Builds
-          // that arrive together share one compiler isolate's memory; when they ran unbounded,
-          // the isolate exceeded its limit and failed every build in flight.
           const deploy = (index: number) =>
             Effect.gen(function* () {
               const response = yield* api.request(actors.owner, "POST", `${prefix}/deploy`, {
@@ -486,7 +472,6 @@ createRoot(document.getElementById("root")).render(<main>Build ${index}</main>);
               }
               return { index, status: response.status, body: response.body };
             });
-          // Several bursts, since Cloudflare can spread a burst over fresh isolates.
           const results = [];
           for (let burst = 0; burst < 4; burst++)
             results.push(
@@ -499,7 +484,6 @@ createRoot(document.getElementById("root")).render(<main>Build ${index}</main>);
           expect(results.filter((result) => result.status !== 200)).toEqual([]);
         }),
       ),
-    // Four bursts of builds, each of which may wait up to the compiler's 50 second deadline.
     { timeout: 240_000 },
   );
 });

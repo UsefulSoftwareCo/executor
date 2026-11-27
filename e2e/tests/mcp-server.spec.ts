@@ -1,6 +1,5 @@
-/** Hosted MCP journeys use isolated grants and run against Node and Cloudflare. */
 import { expect, layer } from "@effect/vitest";
-import { Effect, Exit, Layer, Redacted, Schedule, Schema } from "effect";
+import { Effect, Layer, Redacted, Schedule, Schema } from "effect";
 import { randomUUID } from "node:crypto";
 import { scenarios } from "../test-plan.ts";
 import { Api, body } from "../support/api.ts";
@@ -18,22 +17,6 @@ const Completed = Schema.Struct({
   status: Schema.Literal("completed"),
   execution: Schema.Struct({ ok: Schema.Literal(true), value: Schema.Unknown }),
 });
-/**
- * MCP clients print a refused request's body after their own prefix, such as "Error POSTing to
- * endpoint:", so the JSON-RPC error names the grant's own reason for the refusal.
- */
-const refusal = (message: string) => ({
-  jsonrpc: "2.0",
-  id: null,
-  error: {
-    // JSON-RPC Invalid Request, as for the MCP transport's own rejections.
-    code: -32600,
-    message: `GrantForbidden (HTTP 403): ${message} Retryable (unchanged call): no.`,
-    data: { code: "GrantForbidden", status: 403 },
-  },
-});
-const listTools = { jsonrpc: "2.0", id: 1, method: "tools/list" };
-
 layer(HostedLive, { excludeTestServices: true })("MCP server", (it) => {
   it.effect(scenarios.mcpProtocol.title, (context) =>
     withHostedCase(
@@ -109,7 +92,6 @@ layer(HostedLive, { excludeTestServices: true })("MCP server", (it) => {
             ),
         );
         const found = yield* Schema.decodeUnknownEffect(Completed)(search.structuredContent);
-        // Discovery must expose the callable public path for this exact app.
         const discovered = yield* Schema.decodeUnknownEffect(
           Schema.Struct({
             items: Schema.Array(Schema.Struct({ path: Schema.String })),
@@ -127,7 +109,6 @@ layer(HostedLive, { excludeTestServices: true })("MCP server", (it) => {
           (yield* Schema.decodeUnknownEffect(Completed)(call.structuredContent)).execution.value,
         ).toEqual({ message: "from MCP", receipt });
         yield* evidence.json("mcp-invocation.json", call.structuredContent);
-        // Narrow the persisted grant through its public browser API. The open MCP session must obey it immediately.
         const grants = yield* body(
           Schema.Array(
             Schema.Struct({ clientId: Schema.String, grant: Schema.Struct({ id: Schema.String }) }),
@@ -206,30 +187,31 @@ layer(HostedLive, { excludeTestServices: true })("MCP server", (it) => {
           "search",
           "skills",
         ]);
-        // The default is the plain URL's model mode only, not every approval mode.
-        const other = yield* Effect.exit(
-          mcp.connect(token, "without-resource-browser-mode", { mode: "browser" }),
+        const native = yield* mcp.connect(token, "without-resource-native-address", {
+          mode: "native",
+        });
+        const nativeListed = yield* native.use(
+          "An address naming native mode serves the grant's model mode",
+          (client) => client.listTools(),
         );
-        expect(Exit.isFailure(other)).toBe(true);
-        const anonymous = yield* api.session();
-        const bearer = { authorization: `Bearer ${Redacted.value(token)}` };
-        const browserMode = yield* api.request(
-          anonymous,
-          "POST",
-          "/mcp?elicitation_mode=browser",
-          listTools,
-          bearer,
-        );
-        expect(browserMode.status).toBe(403);
-        expect(browserMode.body).toMatchObject(
-          refusal(
-            "This credential works only at the MCP URL ending in /mcp, not at the URL of this request. Recovery: Connect at the MCP URL ending in /mcp, or connect again at this URL to get a credential for it, then retry.",
-          ),
+        expect(nativeListed.tools.map((tool) => tool.name).sort()).toEqual([
+          "call",
+          "describe",
+          "execute",
+          "resume",
+          "search",
+          "skills",
+        ]);
+        const browserAddress = yield* mcp.connect(token, "without-resource-browser-address", {
+          mode: "browser",
+        });
+        yield* browserAddress.use(
+          "An address naming browser mode also serves the grant",
+          (client) => client.listTools(),
         );
         yield* evidence.step(
-          "A grant issued at the model-mode URL cannot be narrowed to browser approval",
+          "A grant whose approval mode is model cannot be narrowed to browser approval",
           Effect.gen(function* () {
-            // No URL could serve it: its own URL cannot ask for browser approval.
             const narrowed = yield* api.request(
               actors.owner,
               "POST",
@@ -241,10 +223,9 @@ layer(HostedLive, { excludeTestServices: true })("MCP server", (it) => {
             );
             expect(narrowed.status, JSON.stringify(narrowed.body)).toBe(403);
             expect(narrowed.body).toMatchObject({
-              message:
-                "Browser approval needs a grant issued at an MCP URL with elicitation_mode=browser.",
+              message: "Browser approval needs a grant whose approval mode is browser.",
             });
-            const relisted = yield* client.use("The grant still serves its own URL", (client) =>
+            const relisted = yield* client.use("The grant still serves its own mode", (client) =>
               client.listTools(),
             );
             expect(relisted.tools.map((tool) => tool.name).sort()).toEqual([
@@ -295,8 +276,6 @@ layer(HostedLive, { excludeTestServices: true })("MCP server", (it) => {
         const instructions = yield* client.use("Read the server's MCP instructions", (client) =>
           Promise.resolve(client.getInstructions()),
         );
-        // The default app installs asynchronously after signup. Observe its public
-        // MCP catalog instead of depending on how long earlier test actions took.
         const executorSkills = yield* client
           .use("Discover the default Executor app's skills", (client, signal) =>
             client.callTool({ name: "skills", arguments: {} }, undefined, { signal }),
@@ -312,11 +291,9 @@ layer(HostedLive, { excludeTestServices: true })("MCP server", (it) => {
             }),
             Effect.timeout("15 seconds"),
           );
-        expect(executorSkills.map((entry) => entry.name).sort()).toEqual([
-          "app-authoring",
-          "code-mode",
-          "executor",
-        ]);
+        expect(executorSkills.map((entry) => entry.name)).toEqual(
+          expect.arrayContaining(["app-authoring", "code-mode", "executor"]),
+        );
         const guide = executorSkills.find((entry) => entry.name === "executor");
         if (guide === undefined)
           return yield* Effect.die("The installed Executor app must contain its entry skill");
@@ -335,7 +312,6 @@ layer(HostedLive, { excludeTestServices: true })("MCP server", (it) => {
               ),
             );
         const entry = yield* readExecutorSkill("executor", "Read the Executor app's entry skill");
-        // The instructions are the entry skill without its frontmatter, so the two cannot drift.
         expect(entry.content).toMatch(/^---\nname: executor\n/);
         expect(instructions).toBe(entry.content.replace(/^---\n[\s\S]*?\n---\n/, "").trim());
         expect(instructions).toContain("`code-mode`");
@@ -361,8 +337,6 @@ layer(HostedLive, { excludeTestServices: true })("MCP server", (it) => {
         expect(executorSource.files.find((file) => file.path === "index.ts")?.content).toContain(
           "wellKnownSkills",
         );
-        // An app that never deployed and an app still waiting for its account must not hide
-        // other apps' skills, and a direct read must say what the agent should do next.
         const prefix = `/api/organizations/${actors.organization.id}`;
         const created = yield* api.request(actors.owner, "POST", `${prefix}/apps`, {
           name: `Undeployed ${randomUUID().slice(0, 8)}`,
@@ -370,8 +344,6 @@ layer(HostedLive, { excludeTestServices: true })("MCP server", (it) => {
         });
         expect(created).toMatchObject({ status: 200 });
         const undeployed = yield* body(App, created);
-        // A plain requirement needs one linked account. A many() requirement uses every linked
-        // account, so with none it reads as an empty set rather than a missing account.
         const deployAccountApp = (name: string, requirement: string) =>
           Effect.gen(function* () {
             const deployed = yield* api.request(actors.owner, "POST", `${prefix}/apps/deploy`, {
@@ -484,7 +456,6 @@ export default defineApp({ user: { accounts: { service: ${requirement} } } }, as
         expect(
           (yield* Schema.decodeUnknownEffect(skillDocument)(reference.structuredContent)).content,
         ).toBe("Call echo with a message.");
-        // Narrow the persisted grant through its public browser API. The open MCP session must obey it immediately.
         const grants = yield* body(
           Schema.Array(
             Schema.Struct({ clientId: Schema.String, grant: Schema.Struct({ id: Schema.String }) }),

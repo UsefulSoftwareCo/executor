@@ -1,11 +1,3 @@
-/**
- * The self-host product runs every statement through PGlite, 60-125 a second under the soak's
- * background load. PGlite parses each result with the instance's type parsers, 318 of them.
- * Copying that map for every result was 40% of what the product isolate allocated.
- *
- * The probe runs in its own Node process against the PGlite the self-host product installs, so
- * this checks the shipped dependency as a black box.
- */
 import { expect, it } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { Effect, Path, Schema } from "effect";
@@ -63,7 +55,6 @@ it.live("PGlite results parse with the instance's type parsers without copying t
     );
     expect(report.copies, "copies of the type parser map").toBe(0);
     expect(report.row).toEqual({ n: 3, j: { a: 1 }, t: "2026-01-01 00:00:00" });
-    // Parsers given for one query still override the instance's for that query only.
     expect(report.overridden).toEqual({ n: "int:7", m: "int:8" });
     expect(report.after).toEqual({ n: 7 });
   }).pipe(Effect.provide(NodeServices.layer)),

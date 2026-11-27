@@ -1,4 +1,3 @@
-/** The published API document keeps the string patterns that the server enforces on requests. */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Redacted, Schema } from "effect";
 import { scenarios } from "../test-plan.ts";
@@ -18,7 +17,6 @@ layer(TestLive, { excludeTestServices: true })("API document patterns", (it) => 
         const target = yield* Target;
         const local = target.metadata.target === "local";
         const session = yield* api.session();
-        // Local serves the document to programmatic callers: its API key and no browser Origin.
         const response = yield* session.send(
           "GET",
           "/openapi.json",
@@ -29,8 +27,6 @@ layer(TestLive, { excludeTestServices: true })("API document patterns", (it) => 
         const { paths } = yield* body(Document, response);
         const app = local ? "/v1/apps/{app}" : "/api/organizations/{organization}/apps/{app}";
 
-        // App names are one line with a visible character. A caller compiles the published
-        // pattern without JavaScript's `u` flag, as most engines read patterns, and gets the rule.
         const Rename = Schema.Struct({
           patch: Schema.Struct({
             requestBody: Schema.Struct({
@@ -52,7 +48,6 @@ layer(TestLive, { excludeTestServices: true })("API document patterns", (it) => 
           expect(name.test(valid), valid).toBe(true);
         for (const invalid of ["", " ", "Two\nlines", "Zero\u0000Width", "\u200b\u200d"])
           expect(name.test(invalid), JSON.stringify(invalid)).toBe(false);
-        // An expected commit is a full SHA-1.
         const commit = { type: "string", pattern: "^[a-f0-9]{40}$" };
         expect(paths[`${app}/commits`]).toMatchObject({
           post: {
@@ -62,7 +57,6 @@ layer(TestLive, { excludeTestServices: true })("API document patterns", (it) => 
           },
         });
         if (local) return;
-        // Hosted routes accept an organization ID or its slug.
         expect(paths[`${app}/name`]).toMatchObject({
           patch: {
             parameters: expect.arrayContaining([

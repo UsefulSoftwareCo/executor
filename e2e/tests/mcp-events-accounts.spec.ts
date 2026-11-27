@@ -1,9 +1,3 @@
-/**
- * An event carries data from the accounts its invocation used, so a subscriber receives it only
- * if they may use every one of them. Here an app shared with everyone emits from the owner's
- * personal account: the owner's subscription receives it, a member's does not. A grant limited
- * to some accounts also receives only occurrences that used those accounts.
- */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Redacted, Schema } from "effect";
 import { randomUUID } from "node:crypto";
@@ -69,7 +63,6 @@ layer(HostedLive, { excludeTestServices: true })("MCP event accounts", (it) => {
           const app = yield* body(App, deployed);
           created.app = app.id;
           const path = `${prefix}/apps/${app.id}`;
-          // Everyone may use the app; the account stays the owner's own.
           const access = yield* body(
             Schema.Struct({ revision: Schema.String }),
             yield* api.request(actors.owner, "GET", `${path}/access`),
@@ -80,7 +73,6 @@ layer(HostedLive, { excludeTestServices: true })("MCP event accounts", (it) => {
               audience: { kind: "everyone" },
             })).status,
           ).toBe(200);
-          // Connecting the owner's account from the app links it for the owner.
           const connection = yield* api.request(
             actors.owner,
             "POST",
@@ -125,7 +117,6 @@ layer(HostedLive, { excludeTestServices: true })("MCP event accounts", (it) => {
               .request(actors.member, "POST", "/api/auth/api-key/delete", { keyId: memberKey.id })
               .pipe(Effect.ignore),
           );
-          // Both may subscribe: each may use the app.
           const owner = yield* subscribe(ownerKey.key, "owner");
           const member = yield* subscribe(memberKey.key, "member");
 
@@ -136,7 +127,6 @@ layer(HostedLive, { excludeTestServices: true })("MCP event accounts", (it) => {
             input: { id },
           });
           expect(emitted.status, JSON.stringify(emitted.body)).toBe(200);
-          // The owner's delivery marks when the member's would have arrived.
           const delivered = yield* awaitDeliveries((all) =>
             events(all).some(
               (delivery) => delivery.id === id && delivery.subscription === owner.id,
@@ -148,8 +138,6 @@ layer(HostedLive, { excludeTestServices: true })("MCP event accounts", (it) => {
             ),
           ).toHaveLength(0);
 
-          // OAuth grants limited to some of the app's targets: the owner's account receives its
-          // occurrences; the account-free target does not.
           yield* browser.login(actors.owner);
           const limitedTo = (targets: readonly unknown[]) =>
             Effect.gen(function* () {

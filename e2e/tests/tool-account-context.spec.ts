@@ -64,7 +64,6 @@ layer(HostedLive, { excludeTestServices: true })("Tool account context", (it) =>
           });
         const work = yield* add("Work GitHub", "work"),
           personal = yield* add("Personal GitHub", "personal");
-        // Connecting from the app for the many() requirement links each new account to it.
         expect(yield* linkedAccountIds(actors.owner, appPath)).toEqual([work, personal]);
         yield* browser.login(actors.owner);
         yield* checkToolAccountContext({
@@ -74,7 +73,6 @@ layer(HostedLive, { excludeTestServices: true })("Tool account context", (it) =>
           catalogs: [actors.organization.id, actors.organization.slug].map(
             (reference) => `/api/organizations/${reference}/apps/${app.id}/tools/index`,
           ),
-          // The many() requirement uses every linked account, so choosing is linking exactly these.
           select: (ids) =>
             Effect.gen(function* () {
               const linked = yield* linkedAccountIds(actors.owner, appPath);

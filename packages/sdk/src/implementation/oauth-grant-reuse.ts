@@ -1,5 +1,4 @@
-/** Reuse creates exact provider bindings only after one grant covers every saved target. */
-import { type Crypto, Effect } from "effect";
+import { Effect } from "effect";
 import { Base64 } from "effect/encoding";
 import { StorageError } from "../contracts/shared.ts";
 import type { ResourceLifecycle } from "../contracts/executor.ts";
@@ -11,6 +10,7 @@ import type { OAuthOptions } from "../contracts/oauth.ts";
 import type { Credentials } from "../contracts/storage.ts";
 import { accountGrantId } from "./account-identities.ts";
 import { ownedAccount, defaultLabel } from "./accounts.ts";
+import { lockApp } from "./apps.ts";
 import {
   lockConnection,
   readConnection,
@@ -21,12 +21,13 @@ import { requireTargetProvider } from "./connection-target.ts";
 import { query, transaction, type Query } from "./database.ts";
 import { inspectOAuthConnection } from "./oauth-connection-plan.ts";
 import { shareOAuthGrant, createSharedOAuthBinding } from "./oauth-grant-bindings.ts";
+import type { HostCrypto } from "./host-crypto.ts";
 
 export const makeOAuthGrantReuse =
   (
     db: Query,
     credentials: Credentials,
-    crypto: Crypto.Crypto,
+    crypto: HostCrypto,
     options: OAuthOptions | undefined,
     lifecycle: ResourceLifecycle | undefined,
   ) =>
@@ -47,7 +48,6 @@ export const makeOAuthGrantReuse =
         return consent("reason" in plan ? plan.reason : "scopes");
       return yield* transaction(db, (tx) =>
         Effect.gen(function* () {
-          // Every batch takes connection locks in the same order, including overlapping batches.
           for (const entry of [...entries].sort((a, b) => a.row.id.localeCompare(b.row.id))) {
             const locked = yield* lockConnection(
               tx,
@@ -58,6 +58,9 @@ export const makeOAuthGrantReuse =
               return { status: "completed" as const, account: locked.state.account };
             yield* requireOpen({ connection: entry.row.id }, locked);
           }
+          const targets = new Map(entries.map(({ row }) => [row.target.app, row.target]));
+          for (const target of [...targets.values()].sort((a, b) => a.app.localeCompare(b.app)))
+            yield* lockApp(tx, { app: target.app, owner: target.owner });
           const live = yield* ownedAccount(tx, {
             account: source.account.id,
             owner: request.owner,
@@ -159,4 +162,7 @@ export const makeOAuthGrantReuse =
           return { status: "completed" as const, account };
         }),
       );
-    }).pipe(Effect.withSpan("sdk.connections.reuseOAuth"));
+    }).pipe(
+      Effect.catchTag("AppNotFound", () => Effect.fail(new StorageError())),
+      Effect.withSpan("sdk.connections.reuseOAuth"),
+    );

@@ -4,7 +4,6 @@ import { LoaderCircleIcon } from "@hugeicons/core-free-icons";
 
 import { cn } from "../lib/utils.ts";
 
-/** Animated loading icon; forwards SVG props and refs with a numeric stroke width. */
 function Spinner({
   className,
   strokeWidth = 2,

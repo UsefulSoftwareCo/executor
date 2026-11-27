@@ -94,7 +94,6 @@ export const operationDeclaration = <
 /** Accept only framework-created declarations; input is decoded before its erased callback is invoked. */
 export const nativeOperation = (value: unknown): AppOperation | undefined => {
   if (typeof value !== "object" || value === null || !(NativeOperation in value)) return undefined;
-  // SAFETY: only our constructors install this private symbol and retain the paired input decoder.
   return value[NativeOperation] as AppOperation;
 };
 /** Options shared by database and external operations. Output defaults to a JSON-safe host check. */
@@ -132,7 +131,6 @@ export const approvedOperation = <Input, Native extends AppOperation<Input, unkn
   operation: Native,
   approval: Approval<Input>,
 ): Native => {
-  // SAFETY: the copy has every own property of `operation`, with only `approval` replaced below.
   const copy = Object.defineProperties({}, Object.getOwnPropertyDescriptors(operation)) as Native;
   return Object.defineProperty(copy, "approval", {
     enumerable: true,
@@ -146,7 +144,6 @@ export const withApproval = <Input, Output, Kind extends "query" | "mutation", C
   operation: Operation<Input, Output, Kind, Context>,
   approval: Approval<Input>,
 ): Operation<Input, Output, Kind, Context> & Approved =>
-  // SAFETY: `Approved` is a type-only mark; the native operation now carries the approval.
   ({
     ...operation,
     [NativeOperation]: approvedOperation(operation[NativeOperation], approval),
@@ -169,12 +166,9 @@ const make = <Input, Output, Kind extends "query" | "mutation", Context extends 
   operationDeclaration({
     ...operationOptions({ ...options, input: schemaArgument(options.input, `The ${kind} input`) }),
     kind,
-    // The host always validates JSON serialization, even without a stronger output declaration.
     ...(options.output === undefined
       ? {}
       : { output: decoderOf(schemaArgument(options.output, `The ${kind} output`)) }),
-    // SAFETY: defineApp checks the handler context against its requirements.
-    // The host validates account bindings and creates the matching storage facade.
     run: (context, input) => fromPromise(run, "handler")(context as Context, input),
   });
 /** Read operation. External reads are allowed; only database writes are mechanically prohibited. */

@@ -2,7 +2,6 @@ import { revalidated } from "@executor-js/ui/contracts/refresh";
 import { UserPicker } from "./users.tsx";
 import { stopImpersonatingAtom } from "./auth.ts";
 import { LoopbackOrigin } from "@executor-js/utils/url-policy";
-/** Shared floating shell; each development server supplies its own capabilities. */
 import { useAtomRefresh, useAtomSet, useAtomValue } from "@effect/atom-react";
 import { Button } from "@executor-js/ui/components/button";
 import { Effect, Exit, Schema } from "effect";
@@ -175,7 +174,6 @@ function HostedTools({
   );
 }
 
-/** One floating shell for development controls and authorized cloud operations. */
 function DevtoolsShell({
   children,
   subtitle,
@@ -240,7 +238,6 @@ function DevtoolsShell({
   );
 }
 
-/** Hosted environments use one Better Auth flow; local-only hosts keep browser pairing. */
 export function ExecutorDevtools({
   onSessionChange,
   identity,
