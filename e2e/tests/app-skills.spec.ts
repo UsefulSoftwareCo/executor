@@ -1,5 +1,4 @@
 import { saveAndDeploy } from "../support/app-authoring.ts";
-/** Bundled skills are tested through the real hosted API, with no app implementation imports. */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Schema } from "effect";
 import { randomUUID } from "node:crypto";
@@ -194,7 +193,6 @@ layer(HostedLive, { excludeTestServices: true })("App skills", (it) => {
           (yield* body(Document, yield* api.request(actors.member, "GET", read))).content,
         ).toBe(document("v1"));
         expect((yield* api.request(actors.owner, "DELETE", path)).status).toBe(200);
-        // Deletion also removes the member's resource grant, so policy denies the read first.
         expect((yield* api.request(actors.member, "GET", read)).status).toBe(403);
         expect((yield* api.request(actors.member, "GET", `${path}/skill-bundle`)).status).toBe(403);
       }),

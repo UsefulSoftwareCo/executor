@@ -1,4 +1,3 @@
-/** A real interactive account with a linked backend, shared by focused status regressions. */
 import { expect } from "@effect/vitest";
 import { Effect, Schema } from "effect";
 import { Actors } from "./actors.ts";

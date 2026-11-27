@@ -3,12 +3,6 @@ import type { Route } from "playwright";
 import { Browser } from "./browser.ts";
 import { driver } from "./platform.ts";
 
-/**
- * Hold real reads until the scenario observes the UI; a refresh cycle can include concurrent requests.
- * `fail` drops the connection, which the dashboard explains as a lost connection when the read went
- * on its own, but as an unanswered read when it shared a batch. `undeclared` answers with a status
- * no endpoint declares, an unexpected failure either way.
- */
 export const holdQuery = (
   paths: readonly string[] | RegExp,
   outcome: "continue" | "fail" | "undeclared",
@@ -75,7 +69,6 @@ export const holdQuery = (
     };
   });
 
-/** Deliver the browser visibility event consumed by mounted focus-refresh queries. */
 export const refreshVisiblePage = Effect.flatMap(Browser, (browser) =>
   browser.use("Return to the visible page", (page) =>
     page.evaluate(() => {
@@ -85,13 +78,10 @@ export const refreshVisiblePage = Effect.flatMap(Browser, (browser) =>
   ),
 );
 
-/** Hosted pages re-read idle queries every 30 seconds while visible. */
 export const idleReconciliationMillis = 30_000;
-/** Install before navigation so scenarios can reach periodic reconciliation without waiting. */
 export const installBrowserClock = Effect.flatMap(Browser, (browser) =>
   browser.use("Control the browser clock", (page) => page.context().clock.install()),
 );
-/** Deliver the next idle reconciliation to every page in the browser context. */
 export const advanceToReconciliation = Effect.flatMap(Browser, (browser) =>
   browser.use("Advance to the next idle reconciliation", (page) =>
     page.context().clock.runFor(idleReconciliationMillis),

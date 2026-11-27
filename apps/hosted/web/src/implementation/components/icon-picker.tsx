@@ -4,7 +4,6 @@ import { HugeiconsIcon } from "@hugeicons/react";
 import { Upload01Icon, Cancel01Icon } from "@hugeicons/core-free-icons";
 import { Avatar, AvatarFallback, AvatarImage } from "@executor-js/ui/components/avatar";
 
-/** Shared file-picker view; its caller owns validation, draft state, and persistence. */
 export function IconPicker({
   name,
   preview,

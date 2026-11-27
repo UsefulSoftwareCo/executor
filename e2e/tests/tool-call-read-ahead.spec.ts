@@ -1,24 +1,3 @@
-/**
- * An MCP tool call sends its checks and the reads they and the call need together, in one batch,
- * once its per-call recheck of the bearer token can run: the recheck first, then the access
- * check with the caller's links and the call's reads of the app and accounts, with the caller's
- * app recheck, in one snapshot taken after the token recheck. Calls never choose accounts: a call
- * runs with the accounts the caller's links give it when its access check reads them. The accounts
- * read ahead are those the session's last call ran with; a call whose links give it accounts the
- * session has not called with reads them in a second round. Each batch is one database round trip
- * from Cloud's session object.
- *
- * Batching changes no outcome. Nothing read is used until the token recheck passes: a call whose
- * token is revoked while that recheck waits is refused for its token, as before, even when its
- * app was deleted first, so the reads made beside the recheck were refused too. A change saved
- * while any of the call's checks waits takes effect on the call: the only account unlinked
- * refuses it, as no account is linked; an account linked in place of another runs it with the
- * account now linked; an account reconnected runs it with the new credentials. The access check held is the call's own, not
- * discovery's. A batch with a read that fails for storage is discarded: the call reads again on
- * its own, in order, and runs.
- * The self-host test entry point holds those two statements, so the scenario runs its own
- * development server, with its own trace collector.
- */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Fiber, Layer, Schedule, Schema } from "effect";
 import { randomUUID } from "node:crypto";
@@ -48,13 +27,11 @@ export default defineApp({ user: { accounts: { service } } }, async ctx => ({
     token: query({ input: object({}), output: string() }, async () => ctx.user.accounts.service.fields.token),
   }),
 }));`;
-/** An app without accounts, which needs no link. */
 const freeSource = `import { defineApp, object, string, query, router } from "apps";
 export default defineApp({}, { tools: router({
   ping: query({ input: object({}), output: string() }, async () => "pong"),
 }) });`;
 
-/** The self-host test host's statement hold; see `apps/hosted/testing/statement-hold-fixture.ts`. */
 const statementHold = "/api/devtools/statement-hold";
 const Held = Schema.Struct({ held: Schema.Boolean });
 const Users = Schema.Struct({
@@ -71,7 +48,6 @@ const Execution = Schema.Struct({
   }),
 });
 
-/** One statement of the tool call, with the FumaDB operation that ran it and the spans it ran under. */
 interface Statement {
   readonly text: string;
   readonly operation: string | undefined;
@@ -79,16 +55,13 @@ interface Statement {
   readonly start: number;
   readonly end: number;
 }
-/** A `sql.pipeline` span, recorded among the statements: one batch the call sent. */
 const batchMarker = "sql.pipeline";
 const isBatch = (statement: Statement) => statement.text === batchMarker;
 const isPatCheck = (statement: Statement) => statement.text.includes("from apikey where key");
 const isAccessCheck = (statement: Statement) =>
   statement.text.includes("left join hosted_app_access p on p.id =");
-/** The app read made ahead for the call, outside the SDK's tool call. */
 const isSelectionRead = (statement: Statement) =>
   statement.operation === "findFirst" && !statement.under.includes("sdk.tools.call");
-/** The call's own reads of the app and accounts, made when nothing read ahead answered them. */
 const isCallRead = (statement: Statement) => statement.under.includes("sdk.invocation.snapshot");
 
 layer(HostedLive, { excludeTestServices: true })("Tool call read ahead", (it) => {
@@ -99,7 +72,6 @@ layer(HostedLive, { excludeTestServices: true })("Tool call read ahead", (it) =>
         const target = yield* Target,
           evidence = yield* Evidence,
           collector = yield* throttlingCollector;
-        // Only the test entry point mounts the statement hold.
         const origin = yield* startDevelopmentServer(target, {
           OTEL_EXPORTER_OTLP_ENDPOINT: collector.endpoint,
         });
@@ -134,7 +106,6 @@ layer(HostedLive, { excludeTestServices: true })("Tool call read ahead", (it) =>
         ))[0];
         if (!organization) return yield* Effect.die("Development organization is missing");
         const prefix = `/api/organizations/${organization.id}`;
-        // A failed assertion must not leave a statement held.
         yield* Effect.addFinalizer(() => send("DELETE", statementHold).pipe(Effect.orDie));
 
         const deployed = yield* send("POST", `${prefix}/apps/deploy`, {
@@ -145,7 +116,6 @@ layer(HostedLive, { excludeTestServices: true })("Tool call read ahead", (it) =>
         const app = yield* body(App, deployed);
         const path = `${prefix}/apps/${app.id}`;
         yield* Effect.addFinalizer(() => send("DELETE", path).pipe(Effect.orDie));
-        // Connecting an account from the app links it for the caller.
         const connect = (
           account?: string,
           token = account === undefined ? "synthetic-before" : "synthetic-after",
@@ -177,10 +147,6 @@ layer(HostedLive, { excludeTestServices: true })("Tool call read ahead", (it) =>
           linkAccount(owner, appPath, "service", id).pipe(Effect.provideService(Api, api));
         const unlink = (id: string) =>
           unlinkAccount(owner, appPath, "service", id).pipe(Effect.provideService(Api, api));
-        /**
-         * Wait until the caller's links to the app are `expected`, oldest first, before a call whose
-         * batches are counted: a call that reads links its session has not seen sends a second round.
-         */
         const settled = (name: string, expected: ReadonlyArray<string>) =>
           linkedAccountIds(owner, appPath).pipe(
             Effect.provideService(Api, api),
@@ -221,12 +187,10 @@ layer(HostedLive, { excludeTestServices: true })("Tool call read ahead", (it) =>
               ),
               Effect.map(({ execution }) => execution),
             );
-        /** Arm the hold, which releases any statement held before, for the next statement `arm` names. */
         const arm = (statement: unknown) =>
           Effect.gen(function* () {
             expect((yield* send("POST", statementHold, statement)).status).toBe(200);
           });
-        /** Wait until the armed statement is held. */
         const reached = send("GET", statementHold).pipe(
           Effect.flatMap((response) => body(Held, response)),
           Effect.flatMap((state) =>
@@ -234,7 +198,6 @@ layer(HostedLive, { excludeTestServices: true })("Tool call read ahead", (it) =>
           ),
           Effect.retry({ schedule: Schedule.spaced("50 millis"), times: 400 }),
         );
-        /** Hold the statement `statement` names, change saved state meanwhile, then release it. */
         const held = <A, E, R, E2, R2>(
           statement: unknown,
           call: Effect.Effect<A, E, R>,
@@ -248,7 +211,6 @@ layer(HostedLive, { excludeTestServices: true })("Tool call read ahead", (it) =>
             yield* send("DELETE", statementHold);
             return yield* Fiber.join(fiber);
           });
-        /** The SQL statements the last MCP request's last tool call made, in start order. */
         const statements = Effect.gen(function* () {
           const request = (yield* evidence.requests)
             .filter((request) => request.path === "/mcp")
@@ -257,21 +219,20 @@ layer(HostedLive, { excludeTestServices: true })("Tool call read ahead", (it) =>
           return yield* collector.query(request.traceId).pipe(
             Effect.flatMap((result) => {
               const byId = new Map(result.data.map(({ span }) => [span.spanId, span]));
-              // The request's server span ends after every tool call the request ran, so it
-              // leaves in the same export as the last one or a later one. Until it arrives, the
-              // latest tool call here may be an earlier call of the same request.
               const served = result.data.some(
                 ({ span }) =>
                   span.operationName.startsWith("http.server") && span.tags["url.path"] === "/mcp",
               );
               if (!served)
-                return Effect.fail(new Error("The MCP request's server span must reach Motel"));
+                return Effect.fail(
+                  new Error("The MCP request's server span must reach the collector"),
+                );
               const root = result.data
                 .filter(({ span }) => span.operationName === "mcp.tool.call")
                 .toSorted((a, b) => Date.parse(a.span.startTime) - Date.parse(b.span.startTime))
                 .at(-1);
               if (root === undefined)
-                return Effect.fail(new Error("The tool call must reach Motel"));
+                return Effect.fail(new Error("The tool call must reach the collector"));
               const found: Statement[] = [];
               for (const { span } of result.data) {
                 if (span.operationName !== "sql.execute" && span.operationName !== "sql.pipeline")
@@ -307,7 +268,7 @@ layer(HostedLive, { excludeTestServices: true })("Tool call read ahead", (it) =>
               }
               return found.some(isPatCheck)
                 ? Effect.succeed(found.toSorted((a, b) => a.start - b.start))
-                : Effect.fail(new Error("The tool call's statements must reach Motel"));
+                : Effect.fail(new Error("The tool call's statements must reach the collector"));
             }),
             Effect.retry({ schedule: Schedule.spaced("250 millis"), times: 80 }),
           );
@@ -317,8 +278,6 @@ layer(HostedLive, { excludeTestServices: true })("Tool call read ahead", (it) =>
         const client = yield* mcp.connect(key.key, "pat", { organization: organization.id });
         const execute = executeWith(client);
         yield* settled("connected", [account]);
-        // The session's first call has not seen the links, so it reads the accounts in a second
-        // round; the next call reads them in its first.
         expect(yield* execute).toEqual({ ok: true, value: "synthetic-before" });
         expect((yield* statements).filter(isBatch).length, "A cold call's two rounds").toBe(2);
         expect(yield* execute).toEqual({ ok: true, value: "synthetic-before" });
@@ -334,8 +293,6 @@ layer(HostedLive, { excludeTestServices: true })("Tool call read ahead", (it) =>
             const recheck = made.find(isPatCheck);
             const batches = made.filter(isBatch);
             expect(batches.length, "One batch: the session's previous call read the links").toBe(1);
-            // The held recheck's statement starts only once released, after a request from here;
-            // the batch waits for it, so nothing left before the recheck could.
             expect(batches[0]?.start ?? 0).toBeGreaterThanOrEqual(recheck?.start ?? Infinity);
             expect(made.filter(isSelectionRead).length, "The app read").toBe(1);
             expect(made.filter(isAccessCheck).length, "One access check").toBe(1);
@@ -349,9 +306,6 @@ layer(HostedLive, { excludeTestServices: true })("Tool call read ahead", (it) =>
         yield* evidence.step(
           "A token revoked while its recheck waits is refused for its token, though what was read beside it was refused too",
           Effect.gen(function* () {
-            // A second app without accounts, which one execution discovers and then calls after a
-            // first call. It is deleted while that first call's recheck is held, so the second
-            // call's app read, made beside its own held recheck, is refused.
             const freeDeployed = yield* send("POST", `${prefix}/apps/deploy`, {
               name: `Read ahead free ${randomUUID().slice(0, 8)}`,
               files: [{ path: "index.ts", content: freeSource }, appsManifest],
@@ -375,9 +329,7 @@ return [first, await ${freeCall}];`;
               { authentication: "tool-call" },
               executeWith(doomed, both),
               Effect.gen(function* () {
-                // The first call's recheck is held, after discovery: delete the second app.
                 expect((yield* send("DELETE", freePath)).status).toBe(200);
-                // Release the first call and hold the second call's recheck, then revoke.
                 yield* arm({ authentication: "tool-call" });
                 yield* reached;
                 expect(
@@ -411,8 +363,6 @@ return [first, await ${freeCall}];`;
             expect(refused.ok, "The only account unlinked while the access check waits").toBe(
               false,
             );
-            // The access check reads the caller's links after the change: no account is linked
-            // for the plain requirement, so the call is refused for that.
             expect(refused.error).toMatchObject({
               response: { code: "AccountRequired", status: 409 },
             });
@@ -435,15 +385,10 @@ return [first, await ${freeCall}];`;
         const other = yield* evidence.step(
           "Another account linked in place of the call's while its access check waits runs the call, read in a second round",
           Effect.gen(function* () {
-            // The access check reads the caller's links in its own statement, so the links it
-            // reads after the change decide the call: it runs with the account now linked. The
-            // session has not called with that account, so it is read in a second round.
             const other = (yield* connect(undefined, "synthetic-other")).id;
             yield* Effect.addFinalizer(() =>
               send("DELETE", `${prefix}/accounts/${other}`).pipe(Effect.orDie),
             );
-            // Connecting from the app linked it in place of the call's account, which stays
-            // saved; linking that account again replaces it in turn.
             yield* settled("connected-other", [other]);
             yield* link(account);
             yield* settled("before-switch", [account]);
@@ -452,7 +397,6 @@ return [first, await ${freeCall}];`;
               { app: app.id, toolCall: true },
               execute,
               Effect.gen(function* () {
-                // The plain requirement's provider is used by nothing else: the link replaces.
                 yield* link(other);
                 yield* settled("switched", [other]);
               }),
@@ -472,7 +416,6 @@ return [first, await ${freeCall}];`;
               made.filter(isCallRead).length,
               "The call used the second round's reads instead of reading again",
             ).toBe(0);
-            // The next call's discovery lists the account now linked, and the call runs with it.
             expect(yield* execute).toEqual({ ok: true, value: "synthetic-other" });
             return other;
           }),
@@ -481,8 +424,6 @@ return [first, await ${freeCall}];`;
         yield* evidence.step(
           "A read of the accounts made beside the access check that fails for storage is made again in order",
           Effect.gen(function* () {
-            // As a connection dropped between two replies of one write would: the read made ahead
-            // stands in for nothing, and the call reads the accounts itself.
             yield* arm({ fail: "tool-call-accounts" });
             const ran = yield* execute;
             yield* reached;
@@ -505,15 +446,11 @@ return [first, await ${freeCall}];`;
         yield* evidence.step(
           "An account the session has not called with is read in a second round, for the account the live links give it",
           Effect.gen(function* () {
-            // Connecting another account from the app replaces the linked one, which stays saved.
             const third = (yield* connect(undefined, "synthetic-third")).id;
             yield* Effect.addFinalizer(() =>
               send("DELETE", `${prefix}/accounts/${third}`).pipe(Effect.orDie),
             );
             yield* settled("replaced", [third]);
-            // The session has run no call with this account, so the first round reads only the
-            // app and the access check with the links; the second reads the linked account. The
-            // replaced account is deleted while that check waits: the call still resolves.
             const replaced = yield* held(
               { app: app.id, toolCall: true },
               execute,
@@ -535,7 +472,6 @@ return [first, await ${freeCall}];`;
               made.filter(isCallRead).length,
               "The call used the second round's reads instead of reading again",
             ).toBe(0);
-            // The session has now called with the account: the next call reads it in one batch.
             expect(yield* execute).toEqual({ ok: true, value: "synthetic-third" });
             expect((yield* statements).filter(isBatch).length, "A warm call's one batch").toBe(1);
           }),

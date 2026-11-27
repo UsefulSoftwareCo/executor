@@ -7,7 +7,6 @@ import {
 import { dashboardAtoms } from "../../contracts/dashboard-bindings.ts";
 import { Failure } from "./common.tsx";
 
-/** Custom MCP imports open the new app, at its account setup when it needs one. */
 function useAddAppDialogs() {
   const navigate = useNavigate();
   return {
@@ -21,7 +20,6 @@ function useAddAppDialogs() {
   };
 }
 
-/** Apps' Add app menu: make your own app or browse the catalog page. */
 export function AddAppMenu() {
   return (
     <SharedMenu
@@ -31,7 +29,6 @@ export function AddAppMenu() {
   );
 }
 
-/** The catalog page's button and link to making your own app. */
 export function MakeYourOwn({ appearance }: { readonly appearance?: "link" | "button" }) {
   return <SharedMakeYourOwn appearance={appearance} {...useAddAppDialogs()} />;
 }

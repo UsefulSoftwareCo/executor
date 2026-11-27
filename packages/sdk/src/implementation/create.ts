@@ -7,7 +7,6 @@ import { WorkflowHost } from "../contracts/workflow-runtime.ts";
 import { RepositoryHost } from "../contracts/source.ts";
 import { StorageHost } from "../contracts/storage.ts";
 import { PrefetchHost } from "../contracts/tools.ts";
-import { OAuthGrantImport } from "../contracts/oauth.ts";
 import { gitSourceStorage } from "./git-sources.ts";
 import { makeRegistry } from "./registry.ts";
 import { remoteRegistry } from "./remote-registry.ts";
@@ -22,8 +21,9 @@ import {
 } from "./apps.ts";
 import { initializeAppRepository, recoverAppRepositories } from "./initial-source.ts";
 import { makeWorkflowRuns } from "./workflows.ts";
-/** Compose native operations once for in-process and HTTP callers. */
-import { Crypto, Effect } from "effect";
+import { Effect } from "effect";
+import type { Digest, SecureRandom } from "effect/crypto";
+import { hostCrypto } from "./host-crypto.ts";
 import type { Executor, ExecutorOptions, RemoteExecutorOptions } from "../contracts/executor.ts";
 import {
   AppCodeId,
@@ -37,24 +37,19 @@ import { makeAppData } from "./app-storage.ts";
 import { makeInteractiveAccounts } from "./interactive-accounts.ts";
 import { InteractiveHost } from "../contracts/interactive-accounts.ts";
 import { makeAccountConnections } from "./account-connections.ts";
-import {
-  credentialsReadable,
-  makeAccounts,
-  moveImportedAccount,
-  storedAccount,
-} from "./accounts.ts";
+import { makeAccounts, storedAccount } from "./accounts.ts";
 import { makeSavedOAuthClients } from "./saved-oauth-clients.ts";
 import { makeOwnerMoves } from "./owner-moves.ts";
 import { SavedOAuthClientsHost } from "../contracts/oauth-clients.ts";
 import { OwnerMovesHost } from "../contracts/owner.ts";
+import { UnremovableWebhooksHost } from "../contracts/webhooks.ts";
 import { makeAccountHealth } from "./account-health.ts";
 import { makeApps } from "./apps.ts";
 import { makeOwners } from "./owners.ts";
 import { makeSchedules } from "./schedules.ts";
 import { makeTools } from "./tools.ts";
 import { makeSkills } from "./skills.ts";
-import { toEffectRuntime } from "./runtime.ts";
-import { validateFields } from "./provider.ts";
+import { toEffectRuntime, withTracedPuts } from "./runtime.ts";
 import { database } from "./database.ts";
 import { makeOAuth } from "./oauth.ts";
 import { makeDeclarationCache, makeDeclarations } from "./declarations.ts";
@@ -63,15 +58,15 @@ import { makeToolSearch } from "./tool-search.ts";
 import { makeEvents } from "./events.ts";
 import { AppEventSink, RuntimeProtocolFailed, type Runtime } from "../contracts/runtime.ts";
 
-/** Capture host cryptography; caller owns database and platform resource lifetimes. */
 export const createExecutor = (
   options: ExecutorOptions,
-): Effect.Effect<Executor, CredentialsError, Crypto.Crypto> =>
+): Effect.Effect<Executor, CredentialsError, SecureRandom.SecureRandom | Digest.Digest> =>
   Effect.gen(function* () {
-    const crypto = yield* Crypto.Crypto;
+    const crypto = yield* hostCrypto;
     const credentials =
       options.credentials ?? (yield* aesGcmCredentials(options.secret, globalThis.crypto));
     const db = database(options.database);
+    const blobs = withTracedPuts(options.blobs);
     const sources = gitSourceStorage(options.git);
     const origin = options.origin ?? hostedExecutorOrigin;
     const catalog = makeRegistry(
@@ -79,7 +74,7 @@ export const createExecutor = (
       origin,
       db,
       sources,
-      options.blobs,
+      blobs,
     );
     const toolListings = { ...defaultToolListingPolicy, ...options.cache?.toolListings };
     const cache = options.cache?.memory ?? makeDeclarationCache();
@@ -89,7 +84,6 @@ export const createExecutor = (
       options: options.events,
       background: options.background,
     });
-    // Every invocation reports the events it emitted here, whichever operation started it.
     const sink: typeof AppEventSink.Service = {
       emitted: (input) =>
         events
@@ -106,7 +100,6 @@ export const createExecutor = (
       mutate: (input) => base.mutate(input).pipe(Effect.provideService(AppEventSink, sink)),
       webhook: (input) => base.webhook(input).pipe(Effect.provideService(AppEventSink, sink)),
     };
-    // The operator's own OAuth clients, by ID; their tokens are managed.
     const firstPartyClients = new Map(
       (options.oauth?.firstPartyClients ?? []).map((client) => [client.id, client] as const),
     );
@@ -124,6 +117,7 @@ export const createExecutor = (
       background: options.background,
       resolveAccount: oauth.resolveSelected,
       accountsUsable: oauth.usableAll,
+      accountsUsableEach: oauth.usableEach,
       crypto,
       lifecycle: options.hooks,
       hostApi: options.hostApi,
@@ -156,7 +150,8 @@ export const createExecutor = (
         sources,
         options.git,
         catalog.reads,
-        options.blobs,
+        blobs,
+        options.markdown,
         options.hooks,
       ),
       workflows: { list: workflows.definitions },
@@ -205,7 +200,7 @@ export const createExecutor = (
       accountOperations.remove,
       options.hooks,
     );
-    const ownerOperations = makeOwners(db);
+    const ownerOperations = makeOwners(db, oauth.revokeGrant, options.ownerRevocationBudget);
     const { checkCredentials, ...accountHealth } = makeAccountHealth(
       db,
       runtime,
@@ -231,11 +226,6 @@ export const createExecutor = (
       removeManaged: webhooks.removeManaged,
       accountNeedingReconnect: tools.accountNeedingReconnect,
     });
-    // App source defines schedules. Each activation removes saved settings for schedules the new
-    // version no longer declares and retimes those whose timing changed. The activation has
-    // committed, so a version that cannot be evaluated keeps them and the activation still
-    // succeeds. Webhook sources reconcile in the
-    // background.
     const activated = (app: AppId) =>
       schedules
         .activated(app)
@@ -254,28 +244,14 @@ export const createExecutor = (
         request: (input, request) =>
           Effect.gen(function* () {
             const app = yield* storedApp(db, input);
-            yield* initializeAppRepository(db, sources, options.blobs, app);
+            yield* initializeAppRepository(db, sources, blobs, app);
             return yield* options.git.request(app.code, request);
           }),
         recover: recoverAppRepositories({
           database: options.database,
           sources,
-          blobs: options.blobs,
+          blobs,
         }),
-      },
-      [OAuthGrantImport]: {
-        importOAuthGrant: oauth.importGrant,
-        checkOAuthGrant: oauth.checkGrant,
-        checkAccountFields: (input) =>
-          validateFields(input.provider, input.definition, input.method, input.fields).pipe(
-            Effect.asVoid,
-          ),
-        firstPartyClient: oauth.firstPartyClient,
-        credentialsReadable: credentialsReadable(db, credentials),
-        moveImportedAccount: moveImportedAccount(db),
-        refreshImportedGrant: oauth.refreshImportedGrant,
-        // The same removal without the provider-side revocation `accountOperations` makes.
-        removeImportedAccount: makeAccounts(db, credentials, crypto, options.hooks).remove,
       },
       [StorageHost]: {
         transaction: (effect) =>
@@ -286,7 +262,10 @@ export const createExecutor = (
         read: options.database.reactivity.read,
         write: options.database.reactivity.write,
       },
-      [PrefetchHost]: { invocation: tools.prefetchInvocation },
+      [PrefetchHost]: {
+        invocation: tools.prefetchInvocation,
+        searchable: tools.prefetchSearchable,
+      },
       [SavedOAuthClientsHost]: makeSavedOAuthClients(db, credentials, crypto, options.hooks, [
         ...(options.oauth?.savedClientCallbacks ?? []),
         ...(options.oauth?.previousRedirectUris ?? []),
@@ -294,6 +273,7 @@ export const createExecutor = (
       ]),
       [OwnerMovesHost]: makeOwnerMoves(db, credentials),
       [InteractiveHost]: { ...interactive, ...retirement },
+      [UnremovableWebhooksHost]: webhooks.unremovable,
       scheduler: schedules.dispatcher,
       events,
       schedules: schedules.operations,
@@ -370,6 +350,14 @@ export const createExecutor = (
                 app.activeVersion === version.id ? activated(app.id) : Effect.void,
               ),
             ),
+        deployReplacing: (input) =>
+          apps
+            .deployReplacing(input)
+            .pipe(
+              Effect.tap(({ app, version }) =>
+                app.activeVersion === version.id ? activated(app.id) : Effect.void,
+              ),
+            ),
         activate: (input) => apps.activate(input).pipe(Effect.tap((app) => activated(app.id))),
         checkCredentials,
       },
@@ -389,7 +377,7 @@ export const createExecutor = (
       },
       publications: catalog.publications,
       registry: catalog.registry,
-      skills: makeSkills(db, runtime, crypto, declarations, options.blobs),
+      skills: makeSkills(db, runtime, crypto, declarations, blobs),
       webhooks: {
         ...webhooks.webhooks,
         sources: webhookSources.sources,
@@ -409,7 +397,6 @@ export const createExecutor = (
     };
   });
 
-/** Remote transport is not implemented yet; it will expose the same native contract. */
 export const createRemoteExecutor = (
   _options: RemoteExecutorOptions,
 ): Effect.Effect<Executor, NotImplemented> =>

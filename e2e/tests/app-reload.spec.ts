@@ -1,4 +1,3 @@
-/** Deploy and roll back a real hosted app while its original browser tab stays open. */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Schema } from "effect";
 import { randomUUID } from "node:crypto";
@@ -108,20 +107,25 @@ layer(HostedLive, { excludeTestServices: true })("Hosted app reload", (it) => {
         const url = yield* waitForAppUrl(actors.owner, `${path}/ui`);
         const bookmark = `${url}/notes?filter=active#draft`;
         yield* browser.omitNetworkTrace;
-        for (const endpoint of ["version", "watch.js"]) {
-          expect(
-            (yield* browser.use("Unsigned watcher requests stay private", (page) =>
-              page.context().request.get(`${url}/_executor/${endpoint}`),
-            )).status(),
-          ).toBe(401);
-        }
+        expect(
+          (yield* browser.use("Unsigned version watches stay private", (page) =>
+            page.context().request.get(`${url}/_executor/version`),
+          )).status(),
+        ).toBe(401);
         yield* browser.login(actors.owner);
+        const watcherScripts: string[] = [];
+        yield* browser.use("Watch for a watcher script request", (page) => {
+          page.on("request", (request) => {
+            if (new URL(request.url()).pathname === "/_executor/watch.js")
+              watcherScripts.push(request.url());
+          });
+          return Promise.resolve();
+        });
         yield* openPrivateApp(bookmark);
         yield* browser.use("A page without app queries is ready", (page) =>
           page.getByRole("heading", { name: "Static version", exact: true }).waitFor(),
         );
-        // The initial page's watcher stays open. Disable only the next document's
-        // version connection, so its query stream must recover a missed notification.
+        expect(watcherScripts).toEqual([]);
         let blockedVersions = 0;
         yield* browser.use("Drop the next version connection", (page) =>
           page.route("**/_executor/version", (route) => {
@@ -129,8 +133,6 @@ layer(HostedLive, { excludeTestServices: true })("Hosted app reload", (it) => {
             return route.abort();
           }),
         );
-        // Register before the next document's host watcher. Hold the public signal
-        // before navigation freezes its renderer, then forward it after inspection.
         yield* browser.use("Hold the next page's version reload notification", (page) =>
           page.addInitScript(() => {
             const hold = (event: Event) => {

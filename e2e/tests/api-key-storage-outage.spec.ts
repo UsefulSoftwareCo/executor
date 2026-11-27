@@ -1,9 +1,3 @@
-/**
- * A database failure while verifying an API key is an outage, not a bad key. MCP and the API
- * answer 503 so agents retry instead of discarding a working key; a refused key still gets 401.
- * Requests that verify one key together contend for its row: all succeed, and the key's use is
- * recorded once.
- */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Redacted, Schema } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
@@ -22,7 +16,6 @@ const Fault = Schema.Struct({
   writes: Schema.optional(Schema.Number),
 });
 
-/** Fail, slow or restore PostgreSQL writes to one key's row in the local database. */
 const storageFault = (key: string, fault: "install" | "slow" | "remove") =>
   Effect.gen(function* () {
     const target = yield* Target,
@@ -77,9 +70,7 @@ layer(HostedLive, { excludeTestServices: true })("API key storage outage", (it) 
             .request(actors.owner, "POST", "/api/auth/api-key/delete", { keyId: key.id })
             .pipe(Effect.orDie),
         );
-        // Well formed, but no such key exists.
         const refused = Redacted.make(`exp_${"0".repeat(64)}`);
-        // Programmatic MCP clients send no Origin; the status and challenge are the outcome.
         const mcp = (token: Redacted.Redacted<string>) =>
           Effect.scoped(
             Effect.gen(function* () {
@@ -125,13 +116,11 @@ layer(HostedLive, { excludeTestServices: true })("API key storage outage", (it) 
         expect(apiUnavailable.status, "The API reports the outage").toBe(503);
         expect(apiUnavailable.body).toMatchObject({ _tag: "AuthenticationUnavailable" });
 
-        // During the same outage, a key Better Auth refuses is still a credential failure.
         const invalid = yield* mcp(refused);
         expect(invalid.status, "MCP refuses an unknown key").toBe(401);
         expect(invalid.challenge).toContain("resource_metadata=");
         expect((yield* inventory(refused)).status, "The API refuses an unknown key").toBe(401);
 
-        // The outage never invalidated the key.
         yield* storageFault(key.id, "remove");
         expect((yield* mcp(key.key)).status, "The key opens MCP again").toBe(200);
         expect((yield* inventory(key.key)).status, "The key reads the API again").toBe(200);
@@ -166,8 +155,6 @@ layer(HostedLive, { excludeTestServices: true })("API key storage outage", (it) 
           { authorization: `Bearer ${Redacted.value(key.key)}` },
         );
 
-        // The key's use is unrecorded and its first write holds the row, so every request
-        // below reads the key before that write commits.
         yield* storageFault(key.id, "slow");
         yield* Effect.addFinalizer(() => storageFault(key.id, "remove").pipe(Effect.orDie));
         const statuses = yield* Effect.all(

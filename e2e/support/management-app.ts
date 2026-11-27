@@ -1,4 +1,3 @@
-/** Wait for the product's background provisioning through its public reads. */
 import { Effect, Schedule } from "effect";
 import { Actors } from "./actors.ts";
 import { Api, SessionClients, body, type RequestFailed, type Session } from "./api.ts";
@@ -14,7 +13,6 @@ export const managementApp = (actor: Session, organizationId?: string) =>
     );
   });
 
-/** Await a synthetic actor's linked Executor key inside the native setup deadline. */
 export const prepareManagementApp = (actor: Session, organizationId: string) =>
   Effect.gen(function* () {
     const clients = yield* SessionClients;

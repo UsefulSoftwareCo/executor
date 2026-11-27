@@ -1,4 +1,3 @@
-/** Remote skill catalogs kept in the app cache, through the real app compiler, runtime and HTTP. */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Schema } from "effect";
 import { randomUUID } from "node:crypto";
@@ -74,13 +73,10 @@ export default defineApp({}, async (ctx) => ({
         const loaded = (yield* upstream.requests).length;
         expect(loaded).toBeGreaterThan(0);
 
-        // A loader that reads through the app cache has its catalog kept, so the next read
-        // contacts neither source.
         const second = yield* read;
         expect(second).toEqual(first);
         expect((yield* upstream.requests).length).toBe(loaded);
 
-        // Within freshFor, a new publication is not fetched; the kept catalog stays current.
         yield* upstream.publish(2);
         const third = yield* read;
         expect(third.revision).toBe(first.revision);
@@ -131,7 +127,6 @@ export default defineApp({}, async (ctx) => ({
         yield* Effect.addFinalizer(() =>
           api.request(actors.owner, "DELETE", `${prefix}/${app.id}`).pipe(Effect.orDie),
         );
-        /** The reference file of the catalog the tool read, as the tool call returned it. */
         const reference = Effect.gen(function* () {
           const called = yield* api.request(
             actors.owner,
@@ -151,15 +146,12 @@ export default defineApp({}, async (ctx) => ({
         expect(yield* reference).toBe(1);
         const loaded = (yield* upstream.requests).length;
 
-        // Past freshFor, one request for the index, with the author's fetch, confirms the kept
-        // catalog; its files are not fetched again.
         yield* Effect.sleep("1500 millis");
         expect(yield* reference).toBe(1);
         expect((yield* upstream.requests).slice(loaded)).toEqual([
           "/.well-known/agent-skills/index.json",
         ]);
 
-        // A new publication is loaded before the call answers, never after it.
         yield* upstream.publish(2);
         yield* Effect.sleep("1500 millis");
         expect(yield* reference, JSON.stringify(yield* upstream.requests)).toBe(2);
@@ -216,9 +208,6 @@ export default defineApp({}, async (ctx) => ({
           "# Reference 1",
         );
 
-        // A docs deploy. Once the host's kept catalog (10 s) and the app cache's (1 s) are stale,
-        // a read without a revision checks the publisher before it answers, so it returns the new
-        // revision now rather than the old one followed by a background refresh.
         yield* upstream.publish(2);
         yield* Effect.sleep("10500 millis");
         const second = yield* read;
@@ -227,7 +216,6 @@ export default defineApp({}, async (ctx) => ({
           "# Reference 2",
         );
 
-        // Pinned reads keep their strict revision: the replaced one is refused, the new one served.
         const replaced = yield* reference(first.revision);
         expect(replaced.status).toBe(409);
         expect(replaced.body).toMatchObject({
@@ -241,8 +229,6 @@ export default defineApp({}, async (ctx) => ({
           "# Reference 2",
         );
 
-        // Nothing replaces that revision later: after the app cache is stale again, the pinned
-        // read is still served and an unpinned read returns the same revision.
         yield* Effect.sleep("1500 millis");
         expect((yield* reference(second.revision)).status).toBe(200);
         expect((yield* read).revision).toBe(second.revision);
@@ -258,9 +244,6 @@ export default defineApp({}, async (ctx) => ({
           actors = yield* Actors;
         const upstream = yield* skillUpstream;
         const prefix = `/api/organizations/${actors.organization.id}/apps`;
-        // The app's own cache runs each load itself under a signal it owns. Once the repository's
-        // tree download starts, the cache gives up on that load, as a cache with its own timeout
-        // would. The download answers only when its request is aborted, or after 10 seconds.
         const response = yield* api.request(actors.owner, "POST", `${prefix}/deploy`, {
           name: `Abandoned skills ${randomUUID().slice(0, 8)}`,
           files: [
@@ -315,8 +298,6 @@ export default defineApp({}, async (ctx) => ({
           input: {},
         });
         expect(call.status, JSON.stringify(call.body)).toBe(200);
-        // Two loads: the skill catalog, then the repository's directories inside it. Abandoning the
-        // directories' load aborts its download and fails the read, instead of leaving it waiting.
         expect(
           yield* body(
             Schema.Struct({

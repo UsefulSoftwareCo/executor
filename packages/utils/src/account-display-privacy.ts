@@ -1,4 +1,3 @@
-/** Fail closed when bounded public display text contains a credential or a standard encoding. */
 import { Predicate } from "effect";
 import { Base64, Base64Url, Hex } from "effect/encoding";
 
@@ -7,10 +6,8 @@ const maxDisplayStrings = 128;
 const maxCredentialNodes = 16_384;
 const maxCredentialStrings = 1_024;
 const maxDepth = 32;
-/** A match this long is a leak. Shorter ones may be chance, so only the colliding item is hidden. */
 const leakLength = 8;
 
-/** Field names the account's method declares with `plain()`; those are public, not secrets. */
 const plainFields = (account: unknown): ReadonlySet<string> => {
   if (!Predicate.hasProperty(account, "provider") || !Predicate.hasProperty(account, "method"))
     return new Set();
@@ -23,7 +20,6 @@ const plainFields = (account: unknown): ReadonlySet<string> => {
   return new Set(Array.isArray(plain) ? plain.filter(Predicate.isString) : []);
 };
 
-/** Bound work independently of credential size. Oversized secrets cannot fit in these strings. */
 const displaySecrets = (accounts: unknown, maximum: number, ref?: string) => {
   const found = new Set<string>();
   let visited = 0,
@@ -93,7 +89,6 @@ const displaySecrets = (accounts: unknown, maximum: number, ref?: string) => {
 };
 
 const lenientUtf8 = new TextDecoder();
-/** Invalid bytes become U+FFFD, so one bad escape can't hide the valid ones beside it. */
 const percentDecoded = (text: string) =>
   text.replace(/(?:%[0-9a-f]{2})+/gi, (part) =>
     lenientUtf8.decode(Uint8Array.from(part.slice(1).split("%"), (byte) => parseInt(byte, 16))),
@@ -101,7 +96,6 @@ const percentDecoded = (text: string) =>
 
 type Exposure = "leak" | "collision" | undefined;
 
-/** Checks UTF-8 base64/base64url, percent escapes and case-insensitive hex, plus raw values. */
 const exposures = (
   strings: readonly string[],
   accounts: unknown,
@@ -154,7 +148,6 @@ const exposures = (
   return result;
 };
 
-/** Public account identity and status, as a provider or app-owned check returns it. */
 export interface AccountDisplay {
   readonly accountInfo?: { readonly [field: string]: string | undefined };
   readonly status?: {
@@ -168,11 +161,6 @@ export interface AccountDisplay {
   };
 }
 
-/**
- * The display with every item that collides with a short credential removed, or undefined when
- * any string carries a credential or the input exceeds the bounds. Removing a colliding item keeps
- * the rest of the result, since "a" in "Available" or "61" for hex "a" is usually chance.
- */
 export const privateAccountDisplay = <A extends AccountDisplay>(
   value: A,
   accounts: unknown,
@@ -194,7 +182,6 @@ export const privateAccountDisplay = <A extends AccountDisplay>(
   if (found === undefined || found.includes("leak")) return undefined;
   let at = 0;
   const shown = items.map((texts) => !found.slice(at, (at += texts.length)).includes("collision"));
-  // Items were listed info, badges, meters, stats; take them back in the same order.
   let index = 0;
   const keep = <T>(list: readonly T[]) => list.filter(() => shown[index++]);
   const accountInfo = Object.fromEntries(keep(info));

@@ -1,4 +1,3 @@
-/** Local organization member switching; production never mounts these handlers. */
 import { LoopbackOrigin } from "@executor-js/utils/url-policy";
 import { Effect, Redacted, Schema } from "effect";
 import { Cookies, HttpServerRequest, HttpServerResponse } from "effect/http";
@@ -15,7 +14,6 @@ const fixtures = [
   { role: "admin", name: "admin", displayName: "Jordan Lee" },
   { role: "owner", name: "agent", displayName: "Alex Morgan" },
 ] as const;
-/** Bootstrap a loopback-only operator; all user listing and impersonation use native auth routes. */
 export const hostedDevtools = (input: {
   readonly origin: string;
   readonly host: "cloud" | "self-host";
@@ -51,7 +49,6 @@ export const hostedDevtools = (input: {
         select: ["id"],
       }),
     );
-    // Bootstrap a new development database once. Existing organizations keep their real members/roles.
     if (existing === null) {
       for (const fixture of fixtures)
         yield* provisionTestAccount(input.auth, {
@@ -61,7 +58,6 @@ export const hostedDevtools = (input: {
           ...fixture,
         });
     }
-    // A local TLS proxy forwards the public host; writes still require the browser's exact Origin.
     const allowed = (request: HttpServerRequest.HttpServerRequest, write: boolean) =>
       (request.headers["x-forwarded-host"] ?? request.headers.host) === host &&
       (write

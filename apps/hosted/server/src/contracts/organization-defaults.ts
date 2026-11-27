@@ -11,6 +11,7 @@ import {
   AppVersionChanged,
   VersionBuildFailed,
   BuildMemoryExceeded,
+  MarkdownUnavailable,
   VersionNotFound,
   AppNameTaken,
   AppSlugTaken,
@@ -24,13 +25,11 @@ import { TemplateError } from "@executor-js/app-templates/contracts";
 import type { OrganizationId } from "./organization.ts";
 import type { ScheduleWakeup } from "./schedules.ts";
 
-/** A member job waits for the separate team installation to commit. */
 export class OrganizationDefaultsPending extends Schema.TaggedError<OrganizationDefaultsPending>()(
   "OrganizationDefaultsPending",
   {},
 ) {}
 
-/** Setup preserves safe generation and deploy failures alongside storage failures. */
 export const OrganizationDefaultsError = Schema.Union([
   OrganizationDefaultsPending,
   StorageError,
@@ -40,6 +39,7 @@ export const OrganizationDefaultsError = Schema.Union([
   TemplateError.annotate({ httpApiStatus: 422 }),
   VersionBuildFailed,
   BuildMemoryExceeded,
+  MarkdownUnavailable,
   VersionNotFound,
   AppNameTaken,
   AppSlugTaken,
@@ -54,17 +54,11 @@ export const OrganizationDefaultsError = Schema.Union([
   CredentialsError,
   AccountSelectionInvalid,
 ]);
-/** Trusted background identity; membership is rechecked before committing a managed key. */
 export interface ExecutorUserAccount {
   readonly userId: string;
   readonly name: string;
 }
 
-/**
- * One-time product setup; installed apps retain their ordinary lifecycle afterward. Setup that
- * saves webhook source intent, a new link, wakes source reconciliation through the caller's
- * {@link ScheduleWakeup}.
- */
 export class OrganizationDefaults extends Context.Service<
   OrganizationDefaults,
   (

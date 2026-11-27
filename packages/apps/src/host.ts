@@ -94,7 +94,6 @@ export const createIsolatedAppHandler = (app: unknown) => {
         const body = yield* Effect.promise(() => value.json()).pipe(
           Effect.flatMap(Schema.decodeUnknownEffect(HostResponse)),
         );
-        // Timing is an additive transport field, like telemetry; hosts that predate it ignore it.
         return Response.json(
           { ...body, telemetry, ...(timing === undefined ? {} : { timing }) },
           { status: value.status },
@@ -102,8 +101,6 @@ export const createIsolatedAppHandler = (app: unknown) => {
       }),
       {
         signal: request.signal,
-        // workerd delivers timers in order. A scheduler timer outside a transaction
-        // can block timers inside its closed input gate; microtasks avoid that queue.
         scheduler: new Scheduler.MixedScheduler("sync"),
       },
     );

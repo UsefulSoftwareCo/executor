@@ -3,7 +3,6 @@ import { appsManifest } from "../support/apps-release.ts";
 import { provisionedSource } from "../support/provisioned-source.ts";
 import { legacyStorage } from "../support/legacy-storage.ts";
 import { serverControl } from "../support/server-control.ts";
-/** Radio linking and agent connection policies share the same provisioned replacement boundary. */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Schema } from "effect";
 import { randomUUID } from "node:crypto";

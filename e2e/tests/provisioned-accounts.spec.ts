@@ -1,4 +1,3 @@
-/** Retained host credentials survive adopting a provisioned declaration; browser and HTTP cannot replace them. */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Schema } from "effect";
 import { Actors } from "../support/actors.ts";
@@ -86,9 +85,6 @@ layer(HostedLive, { excludeTestServices: true })("Provisioned accounts", (it) =>
         });
         expect(updated.status, JSON.stringify(updated.body)).toBe(200);
         const current = yield* body(Schema.Struct({ app: App }), updated);
-        // Host provisioning has no HTTP credential-write endpoint. Retain the pre-declaration
-        // account, as a host upgrading its existing provisioned account does, using the supported
-        // isolated database fixture. Normal account setup above still went through the product.
         yield* legacyStorage([
           {
             sql: "UPDATE executor_accounts SET provider = $1 WHERE id = $2",

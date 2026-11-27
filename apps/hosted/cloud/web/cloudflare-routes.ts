@@ -2,13 +2,10 @@ import { writeFileSync, readFileSync, existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import type { Plugin } from "vite-plus";
 
-/** Committed beside the route tree so the Worker's deployment reads the same page list. */
 export const dashboardRoutesFile = fileURLToPath(
   new URL("./src/implementation/worker-routes.gen.json", import.meta.url),
 );
 
-// Cloudflare and TanStack have different path grammars. Reject shapes we cannot
-// translate faithfully rather than shipping a dashboard with unreachable deep links.
 const workerPattern = (path: string): string => {
   const segments = path.replace(/\/$/, "").split("/").slice(1);
   const prefix = segments[0];
@@ -27,16 +24,13 @@ const workerPattern = (path: string): string => {
       throw new Error(
         `Cannot translate dashboard route "${path}" to a Worker route: unsupported segment "${segment}".`,
       );
-  // Cloudflare's run_worker_first globs only support `*`; a dynamic segment makes the rest a prefix.
   return dynamic === -1 ? `/${segments.join("/")}` : `/${segments.slice(0, dynamic).join("/")}/*`;
 };
 
-/** Start publishes its generated route manifest here; user generator plugins are not accepted. */
 declare global {
   var TSS_ROUTES_MANIFEST: Record<string, unknown> | undefined;
 }
 
-/** TanStack route paths keep layout markers: `_auth` is pathless and `create_` escapes nesting. */
 const fullPath = (routePath: string) =>
   "/" +
   routePath
@@ -45,10 +39,6 @@ const fullPath = (routePath: string) =>
     .map((segment) => segment.replace(/_$/, ""))
     .join("/");
 
-/**
- * Every dashboard document is rendered by the Worker. Derive its routes from TanStack's resolved
- * tree, the same one the router uses, so there is no second page list.
- */
 export const cloudflareRoutes = (): Plugin => ({
   name: "cloudflare-dashboard-routes",
   generateBundle() {

@@ -1,23 +1,3 @@
-/**
- * Records one attempt of a Deploy run as one event in the deploys dataset
- * (`src/infrastructure/deploy-events.ts`). `.github/workflows/deploy-events.yml` runs it when a
- * Deploy run on `main` completes, apart from the deploy, so it can neither delay nor fail it.
- *
- * It builds the event from GitHub's API with `deployEventOf`, as the backfill does, so both give
- * the same event for the same run attempt. An attempt that never reached its deploy step, as when
- * a newer push cancelled the run before it started, records nothing.
- *
- * Reads:
- * - `DEPLOY_RUN_ID` and `DEPLOY_RUN_ATTEMPT`: the attempt to record.
- * - `GITHUB_REPOSITORY` and `GITHUB_TOKEN`, which needs Actions and Contents read.
- * - `AXIOM_TOKEN` and `AXIOM_DEPLOY_EVENTS_URL`: where the event goes.
- *
- * `--dry-run` prints the event and sends nothing:
- *
- *   GITHUB_REPOSITORY=UsefulSoftwareCo/executor-next GITHUB_TOKEN="$(gh auth token)" \
- *     DEPLOY_RUN_ID=<run id> DEPLOY_RUN_ATTEMPT=<attempt> \
- *     node apps/hosted/cloud/scripts/deploy-event.ts --dry-run
- */
 import { parseArgs } from "node:util";
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import { Config, Console, Effect, Option } from "effect";

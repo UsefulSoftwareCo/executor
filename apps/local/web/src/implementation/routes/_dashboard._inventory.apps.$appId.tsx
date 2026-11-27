@@ -3,7 +3,6 @@ import { AppDetailPage } from "../pages/app-detail.tsx";
 import { parseAppParams } from "../route-params.ts";
 import { useOverview } from "../inventory.tsx";
 import { parseAppSearch } from "../../contracts/navigation.ts";
-/** Generated-tree route for /_dashboard/_inventory/apps/$appId. */
 export const Route = createFileRoute("/_dashboard/_inventory/apps/$appId")({
   staticData: { section: "apps" },
   params: { parse: parseAppParams },

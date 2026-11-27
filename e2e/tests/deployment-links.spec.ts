@@ -14,7 +14,6 @@ layer(HostedLive, { excludeTestServices: true })("Deployment links", (it) => {
       Effect.gen(function* () {
         const browser = yield* Browser;
         const actors = yield* Actors;
-        // The site lives on the edge (Cloud's `executor.sh`); sign-in on the browser origin.
         const hosts = targetHosts(yield* Target);
         const site = hosts.edge,
           app = hosts.browser;

@@ -1,8 +1,3 @@
-/**
- * Version lists check-storage-versions.ts must reject (`rejects` names the version) or accept with
- * the trailing index-only versions in `trailing`. `indexOnlyVersion` cannot express a table
- * change, so a mixed version is one built from a version other than the one before it.
- */
 import { Schema } from "effect";
 import { column, idColumn, schema, table, type AnySchema } from "fumadb-effect/schema";
 import { indexOnlyVersion } from "../src/implementation/storage-migrations.ts";
@@ -22,9 +17,7 @@ const tags = table("fixture_tags", {
 const ownerIndex = ["CREATE INDEX IF NOT EXISTS fixture_notes_owner ON fixture_notes (owner)"];
 
 const base = schema({ version: "1.0.0", tables: { notes } });
-/** Adds a table. */
 const withTags = schema({ version: "1.0.1", tables: { notes, tags } });
-/** Adds a nullable column. */
 const withTitle = schema({
   version: "1.0.1",
   tables: {

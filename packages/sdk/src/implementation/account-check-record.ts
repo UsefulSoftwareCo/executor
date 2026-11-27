@@ -1,4 +1,3 @@
-/** Display data shares the existing health JSON; older servers decode its identity fields only. */
 import { Effect, Option, Schema } from "effect";
 import { AccountInfo, AccountStatus } from "apps/contracts";
 import { StorageError } from "../contracts/shared.ts";

@@ -1,4 +1,3 @@
-/** Local identity/session adapter for the shared app-origin authentication protocol. */
 import { type Executor } from "@executor-js/sdk/core";
 import { localOwner } from "./owners.ts";
 import {
@@ -34,7 +33,6 @@ type Attempt = {
 };
 const unavailable = () => new UiFailed({ reason: "unavailable" });
 
-/** Validate the exact app origin before decoding any browser body or reading its session. */
 export const appRequest = (port: number) =>
   Effect.gen(function* () {
     const request = yield* HttpServerRequest.HttpServerRequest;
@@ -52,7 +50,6 @@ export const appRequest = (port: number) =>
     return { target: { app, origin }, request };
   });
 
-/** Browser-bound attempts are process-owned locally; established sessions keep using the persistent auth store. */
 export const appAuthentication = (
   executor: Executor,
   auth: LocalAuth,
@@ -79,11 +76,8 @@ export const appAuthentication = (
         ).join(""),
       );
     const cookie = (id: AppSignInId) => `executor_app_attempt_${config.port}_${id}`;
-    // Lax, not Strict: the dashboard is another site and redirects to the callback, which must
-    // receive this proof. Redeeming a code still needs this browser's attempt cookie.
     const cookieOptions = { httpOnly: true, sameSite: "lax" as const, path: "/_executor/auth" };
     const dashboardOrigin = config.browserOrigin ?? `http://127.0.0.1:${config.port}`;
-    /** The app must exist and be deployed; the page itself reports a version without a UI. */
     const usable = (target: AppSessionTarget) =>
       executor.apps.get({ app: target.app, owner: localOwner }).pipe(
         Effect.flatMap((app) =>
@@ -101,12 +95,10 @@ export const appAuthentication = (
           return yield* new UiUnauthorized();
         return entry;
       });
-    /** A page visit without an app session starts an attempt and goes straight to the dashboard. */
     const begin = Effect.gen(function* () {
       const { target, request } = yield* appRequest(config.port);
       yield* usable(target);
       const url = new URL(request.url, target.origin);
-      // The fragment stays in the browser, which carries it across these redirects.
       const returnTo = yield* Schema.decodeUnknownEffect(AppReturnPath)(
         url.pathname + url.search,
       ).pipe(Effect.mapError(() => new UiForbidden()));
@@ -131,7 +123,6 @@ export const appAuthentication = (
         Effect.orDie,
       );
     });
-    /** Redeem the dashboard's code with this browser's attempt proof, then return to the page. */
     const callback = lock
       .withPermits(1)(
         Effect.gen(function* () {
@@ -185,7 +176,6 @@ export const appAuthentication = (
         }),
       )
       .pipe(Effect.catchTag("UiUnauthorized", () => Effect.succeed(appSignInFailed())));
-    /** Approve an attempt for the paired dashboard login and return its callback URL. */
     const approve = (id: AppSignInId, parent: SessionHash) =>
       lock.withPermits(1)(
         Effect.gen(function* () {
@@ -221,11 +211,6 @@ export const appAuthentication = (
           : "unavailable";
     const failed = (error: UiUnauthorized | UiForbidden | UiFailed) =>
       appRedirect(`/app-auth?${new URLSearchParams({ failure: failure(error) })}`);
-    /**
-     * The dashboard's `/app-auth` resolves on the server when the browser sends its login. Only a
-     * missing request, a failure or an unpaired browser renders the page and its pairing gate.
-     * A session store that cannot be read is a failure, not an unpaired browser.
-     */
     const signIn = <E, R>(page: Effect.Effect<HttpServerResponse.HttpServerResponse, E, R>) =>
       Effect.gen(function* () {
         const request = yield* HttpServerRequest.HttpServerRequest;
@@ -238,8 +223,6 @@ export const appAuthentication = (
         if (Result.isFailure(identified)) return failed(unavailable());
         const parent = identified.success;
         if (parent === undefined) {
-          // The strict dashboard cookie is withheld when the app's site redirects here. A
-          // same-origin refresh sends it; if the browser is not paired, the page asks to pair.
           if (request.headers["sec-fetch-site"] === "cross-site")
             return HttpServerResponse.text(
               `<!doctype html><html><head><meta http-equiv="refresh" content="0"><title>Opening app</title></head><body></body></html>`,

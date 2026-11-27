@@ -13,9 +13,7 @@
  * imports them, so a change here never edits a released protocol.
  */
 import { Schema } from "effect";
-import { ConnectCommand } from "./connect-14.ts";
 import { CacheCommand, CacheReply } from "@executor-js/app-cache/contracts";
-const frameworkProtocol = 14;
 import {
   DatabaseFieldReserved,
   DatabaseLimitExceeded,
@@ -91,13 +89,21 @@ export class SkillLoadFailed extends Schema.TaggedError<SkillLoadFailed>()("Skil
 
 /**
  * Where a provider's credentials may be sent: an exact host, `host:port`, or `*.` followed by a
- * domain, matching exactly one more label. Lowercase, without a scheme or path.
+ * domain, matching exactly one more label. Lowercase, without a scheme or path. Labels may hold
+ * underscores, as Docker container and service names do (`n8n_server_1:5678`); URLs keep them.
  */
-export const CredentialHost = Schema.String.check(
-  Schema.isPattern(
-    /^(\*\.)?[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)*(?::[0-9]{1,5})?$/,
+export const CredentialHost = Schema.Union([
+  Schema.String.check(
+    Schema.isPattern(
+      /^(\*\.)?[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)*(?::[0-9]{1,5})?$/,
+    ),
   ),
-);
+  Schema.String.check(
+    Schema.isPattern(
+      /^(\*\.)?[a-z0-9_](?:[a-z0-9_-]{0,61}[a-z0-9_])?(?:\.[a-z0-9_](?:[a-z0-9_-]{0,61}[a-z0-9_])?)*(?::[0-9]{1,5})?$/,
+    ),
+  ),
+]);
 
 /**
  * Field names an auth method exposes to app code, and where its secret fields may be sent. Every
@@ -117,40 +123,56 @@ const exposure = {
   request: Schema.optionalKey(Placements),
 };
 
+/**
+ * Markdown the connect form shows where a user enters an OAuth client for this service: where to
+ * create one and what to choose there. Setup help, not part of the provider; see `withoutHelp`.
+ * Bundles before it declare none.
+ */
+const clientGuide = { clientGuide: Schema.optionalKey(Schema.String) };
+
 /** Serializable authentication declarations interpreted by the trusted host. */
 export const DeclaredAuthMethod = Schema.Union([
-  Schema.Struct({ type: Schema.Literal("interactive"), label: Schema.String, ...exposure }),
   Schema.Struct({
     type: Schema.Literal("secrets"),
     label: Schema.String,
+    /**
+     * Markdown the connect form shows above the fields: ordered setup, prerequisites, warnings.
+     * Setup help, not part of the provider; see `withoutHelp`. Bundles before it declare none.
+     */
+    guide: Schema.optionalKey(Schema.String),
     fields: JsonObject,
     ...exposure,
   }),
   Schema.Struct({
     type: Schema.Literal("oauth2"),
     ...OAuth2Config.members[0].fields,
+    ...clientGuide,
     response: JsonObject,
     ...exposure,
   }),
   Schema.Struct({
     type: Schema.Literal("oauth2"),
     ...OAuth2Config.members[1].fields,
+    ...clientGuide,
     response: JsonObject,
     ...exposure,
   }),
   Schema.Struct({
     type: Schema.Literal("oauth2"),
     ...OAuth2Config.members[2].fields,
+    ...clientGuide,
     response: JsonObject,
     ...exposure,
   }),
   Schema.Struct({
     type: Schema.Literal("oauth2"),
     ...OAuth2Config.members[3].fields,
+    ...clientGuide,
     response: JsonObject,
     ...exposure,
   }),
 ]);
+export type DeclaredAuthMethod = typeof DeclaredAuthMethod.Type;
 
 /** A credential-free provider declaration with the hosts its credentials may be sent to. */
 export const DeclaredProvider = Schema.Struct({
@@ -417,7 +439,6 @@ export type MigrateResult = typeof MigrateResult.Type;
 
 /** Framework-owned dispatch, independent of app-authored HTTP routing. */
 export const HostRequest = Schema.Union([
-  ...ConnectCommand.members,
   WorkflowCommand,
   WebhookCommand,
   Schema.Struct({ operation: Schema.Literal("requirements") }),
@@ -579,8 +600,6 @@ export type HostResponse = typeof HostResponse.Type;
 export const HostInvocation = Schema.Struct({
   command: HostRequest,
   accounts: ResolvedAccounts,
-  /** Trusted host identity; never part of the public command. */
-  caller: Schema.optionalKey(Schema.NonEmptyString),
   approval: Schema.optionalKey(TrustedToolApproval),
   replay: Schema.optionalKey(WorkflowReplay),
   deadline: Schema.optionalKey(InvocationDeadline),
@@ -621,7 +640,7 @@ export type MessageName = keyof typeof messageDirections;
 
 /** Every message of the current protocol. The snapshot records them by name. */
 export const protocol14 = {
-  version: frameworkProtocol,
+  version: 14,
   schemas: {
     invocation: HostInvocation,
     request: HostRequest,

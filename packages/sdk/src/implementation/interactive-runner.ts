@@ -1,5 +1,4 @@
-/** Run acquisition handlers through the ordinary app host, with current linked credentials. */
-import { Clock, type Crypto, Effect, Redacted, Schema } from "effect";
+import { Clock, Effect, Redacted, Schema } from "effect";
 import type { AccountInfo, ConnectCommand, InteractiveStatus } from "apps/contracts";
 import { AccountId, StorageError, type OwnerId } from "../contracts/shared.ts";
 import {
@@ -17,11 +16,10 @@ import { snapshot, resolve, resolveRemoval } from "./tools.ts";
 import { query, type Query } from "./database.ts";
 import type { ConnectionRow } from "./connection-state.ts";
 import { interactiveBinding } from "./interactive-state.ts";
+import type { HostCrypto } from "./host-crypto.ts";
 
-/** The limit includes credential resolution, app startup and the handler itself. */
 export const interactiveStepMillis = 15_000;
 
-/** Resolve the retained handler and credentials before a local mutation can remove their rows. */
 export const prepareInteractiveContext =
   (
     db: Query,
@@ -103,7 +101,6 @@ export const prepareInteractiveContext =
       Effect.withSpan("sdk.connections.interactive.invoke"),
     );
 
-/** A single command, or a retained context used to compensate an in-flight sign-in. */
 export const prepareInteractiveCall = (
   ...services: Parameters<typeof prepareInteractiveContext>
 ) => {
@@ -118,8 +115,6 @@ export const interactiveRunner = (...services: Parameters<typeof prepareInteract
     Effect.flatten(prepare(input)).pipe(Effect.timeout(interactiveStepMillis));
 };
 
-/** Save the opaque reference with the same name and product lifecycle used by other connects. */
-/** The most specific name in reported identity, bounded like a label the person types. */
 const identityLabel = (info: AccountInfo | undefined) => {
   const name = (info?.displayName ?? info?.username ?? info?.email)?.trim();
   return name ? name.slice(0, 120) : undefined;
@@ -128,7 +123,7 @@ const identityLabel = (info: AccountInfo | undefined) => {
 export const saveInteractiveAccount = (
   db: Query,
   credentials: Credentials,
-  crypto: Crypto.Crypto,
+  crypto: HostCrypto,
   row: ConnectionRow,
   binding: InteractiveBinding,
   connected: Extract<InteractiveStatus, { readonly state: "connected" }>,
@@ -147,14 +142,10 @@ export const saveInteractiveAccount = (
     const identity =
       existing === undefined
         ? {
-            id: AccountId.make(
-              `acc_${yield* crypto.randomUUIDv4.pipe(Effect.mapError(() => new StorageError()))}`,
-            ),
+            id: AccountId.make(`acc_${yield* crypto.random.uuidV4()}`),
             owner: row.owner,
             provider: row.provider,
             method: binding.method,
-            // The identity the app reported names the account, as a connected Gmail shows its
-            // address; without one it gets the owner's next free default name.
             label:
               identityLabel(connected.accountInfo) ??
               (yield* defaultLabel(db, row.owner, row.provider)),

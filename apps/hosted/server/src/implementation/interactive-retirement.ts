@@ -1,6 +1,5 @@
 import type { SqlClient } from "effect/sql";
 import { CurrentUserId } from "../contracts/auth.ts";
-/** Product authority and plain-slot replacement around the SDK's durable retirement claims. */
 import {
   InteractiveHost,
   StorageError,
@@ -11,9 +10,9 @@ import {
 import { Effect, Schema } from "effect";
 import { currentOwner } from "./access.ts";
 import { lockedChange } from "./app-accounts.ts";
-import { requireAccountAccess } from "./resource-policy.ts";
-export const canDeleteAccount = (account: AccountId) =>
-  requireAccountAccess(account, "manage").pipe(
+import { checkAccountAccess } from "./proofs/account-access.ts";
+export const canDeleteAccount = (executor: Executor, account: AccountId) =>
+  checkAccountAccess(executor, account).pipe(
     Effect.as(true),
     Effect.catchTag("OrganizationForbidden", () => Effect.succeed(false)),
   );
@@ -46,7 +45,7 @@ export const replacingAccounts = <A, E, R>(
             const account = row.account;
             if (
               (yield* executor[InteractiveHost].binding({ owner, account }))?.app === input.app &&
-              (yield* canDeleteAccount(account))
+              (yield* canDeleteAccount(executor, account))
             )
               accounts.push(account);
           }
@@ -56,7 +55,6 @@ export const replacingAccounts = <A, E, R>(
     return yield* executor[InteractiveHost].retire({ owner, accounts: retiring }, action);
   });
 
-/** Same personal/shared management rule as the normal account deletion API, read in this transaction. */
 export const canDeleteAccountWithSql = (sql: SqlClient.SqlClient, account: AccountId) =>
   Effect.gen(function* () {
     const user = yield* CurrentUserId;

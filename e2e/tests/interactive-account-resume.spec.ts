@@ -1,4 +1,3 @@
-/** A pending connection keeps working when the person chooses another sign-in method. */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Fiber, Schema } from "effect";
 import { randomUUID } from "node:crypto";
@@ -74,7 +73,6 @@ layer(HostedLive, { excludeTestServices: true })("Resume interactive accounts", 
               (yield* api.request(actors.owner, "GET", `${cp(connection.id)}/interactive/status`))
                 .body,
             ).toMatchObject({ state: "failed" });
-            // Cancellation failure is advisory and must not prevent a new attempt.
             yield* backend.refuseCancellation(true);
           }
           const before = (yield* backend.calls).filter((c) => c.step === "cancel").length;
@@ -97,7 +95,6 @@ layer(HostedLive, { excludeTestServices: true })("Resume interactive accounts", 
             state: { status: "cancelled" },
           });
         }
-        // Switching methods invalidates an in-flight poll without letting its result overwrite the new attempt.
         const polling = yield* pending();
         expect((yield* start(polling.id, "device")).status).toBe(200);
         const held = yield* backend.holdStatus;

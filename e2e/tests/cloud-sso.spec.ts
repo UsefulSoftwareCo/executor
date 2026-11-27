@@ -6,6 +6,7 @@ import { Actors, freshOwnerSession } from "../support/actors.ts";
 import { Api, body } from "../support/api.ts";
 import { Browser } from "../support/browser.ts";
 import { Target } from "../support/platform.ts";
+import { writeRows } from "../support/cloud-rows.ts";
 import { ssoFixture } from "../support/sso.ts";
 import { scenarios } from "../test-plan.ts";
 import { holdQuery } from "../support/query-transition.ts";
@@ -99,8 +100,6 @@ const enableEnterprise = (team: { readonly id: string; readonly slug: string }, 
         planId: `${free.id}-pay-as-you-go`,
         status: "active",
       });
-      // Checkout synchronizes seats first. PAYG has no seats to synchronize and
-      // must still reach the plan policy instead of failing with billing unavailable.
       expect(
         (yield* api.request(actors.owner, "POST", `${billingPath}/checkout`, {
           plan: enterprise.id,
@@ -623,7 +622,6 @@ layer(HostedLive, { excludeTestServices: true })("Cloud customer SSO", (it) => {
         const user = yield* browserSession;
         expect(user.user.email).toBe(email);
         expect(user.user.emailVerified).toBe(true);
-        // The identity provider owns this address; leaving the domain would also break SSO.
         for (const path of ["request-email-change", "change-email"])
           expect(
             yield* browser.use(`An SSO user cannot ${path.replaceAll("-", " ")}`, (page) =>
@@ -793,6 +791,18 @@ layer(HostedLive, { excludeTestServices: true })("Cloud customer SSO", (it) => {
         yield* browser.checkpoint("Verified SAML setup");
         yield* signOut;
         const email = `saml-${randomUUID().slice(0, 8)}@sso.example.test`;
+        const { userId: outsider } = yield* body(
+          Schema.Struct({ userId: Schema.String }),
+          yield* api.request(actors.member, "GET", "/api/viewer"),
+        );
+        yield* writeRows("sso-database.json", [
+          {
+            sql: `insert into invitation
+              (id, "organizationId", email, role, status, "expiresAt", "createdAt", "inviterId")
+              values ($1, $2, $3, 'admin', 'pending', now() + interval '1 day', now(), $4)`,
+            params: [`stale-${randomUUID()}`, team.id, email, outsider],
+          },
+        ]);
         yield* fixture.configure(email);
         const destination = `/org/${team.slug}/organization`;
         yield* startFromEmail(email, destination);
@@ -803,6 +813,19 @@ layer(HostedLive, { excludeTestServices: true })("Cloud customer SSO", (it) => {
         const identity = yield* browserSession;
         expect(identity.user.email).toBe(email);
         expect(identity.user.emailVerified).toBe(true);
+        const roster = yield* body(
+          Schema.Struct({
+            members: Schema.Array(Schema.Struct({ userId: Schema.String, role: Schema.String })),
+          }),
+          yield* api.request(
+            actors.owner,
+            "GET",
+            `/api/auth/organization/list-members?organizationId=${team.id}`,
+          ),
+        );
+        expect(
+          roster.members.filter((row) => row.userId === identity.user.id).map((row) => row.role),
+        ).toEqual(["member"]);
         yield* browser.checkpoint("SAML member opens their team");
         yield* signOut;
         yield* browser.use("Replay the already consumed assertion", (page) =>

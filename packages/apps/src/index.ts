@@ -58,6 +58,7 @@ export {
   ValidationError,
 } from "./contracts/schema.ts";
 export {
+  type FieldHelp,
   type Fields,
   type Infer,
   type ObjectSchema,
@@ -148,7 +149,6 @@ export type OAuth2Method<Response extends Schema<unknown, boolean>> = NativeOAut
 const accountDecoder = <S extends Schema<unknown, boolean>>(
   schema: S,
 ): EffectSchema.Decoder<AccountFields<S>> =>
-  // SAFETY: the brand exists only in types; secret values are strings at runtime.
   decoderOf(schema) as unknown as EffectSchema.Decoder<AccountFields<S>>;
 
 /** The `plain()` and `raw()` fields of an object schema, or none. */
@@ -201,28 +201,42 @@ type WithoutReservedParams<Config> = Config extends unknown
   : never;
 
 /**
- * Declare a secrets method without requiring an Effect schema from the author. `request` says
- * where its secret fields may be sent, such as `({ token }) => bearer(token)`; it runs once, here.
+ * Declare a secrets method without requiring an Effect schema from the author. Give each field a
+ * `description` saying where to find its value; add a `guide` only for ordered setup,
+ * prerequisites or warnings. Both are Markdown whose links are absolute https URLs, with no HTML
+ * or images, and indentation common to their lines is removed, so a template literal can be
+ * indented. `request` says where its secret fields may be sent, such as
+ * `({ token }) => bearer(token)`; it runs once, here.
  */
 export const secrets = <const F extends Fields>(options: {
   readonly label: string;
   /** Only the host provisions this method. It is never offered in a connect form. */
   readonly provisioned?: true;
+  /** Markdown the connect form shows above the fields, at most 4,000 characters. */
+  readonly guide?: string;
   readonly fields: ObjectSchema<F>;
   readonly request?: RequestPlacements<keyof F & string>;
 }): SecretsMethod<ObjectSchema<F>> =>
   nativeSecrets({
     label: options.label,
     ...(options.provisioned === true ? { provisioned: true } : {}),
+    ...(options.guide === undefined ? {} : { guide: options.guide }),
     fields: accountDecoder(options.fields),
     ...exposureOf(options.fields),
-    // SAFETY: the callback receives references named by the schema's own keys.
     ...placementsOf(
       `"${options.label}"`,
       options.fields,
       options.request as RequestPlacements<string> | undefined,
     ),
   });
+
+/**
+ * Markdown the connect form shows where a user enters an OAuth client: where to create one at this
+ * service and what to choose there, at most 4,000 characters. Executor's own steps and the
+ * redirect URL to copy come before it. Links are absolute https URLs, with no HTML or images, and
+ * indentation common to its lines is removed.
+ */
+type ClientGuide = { readonly clientGuide?: string };
 
 /**
  * Declare OAuth discovery/endpoints and an optional app-visible response projection.
@@ -232,30 +246,33 @@ export const secrets = <const F extends Fields>(options: {
  * `({ access_token }) => bearer(access_token)`; it runs once, here.
  */
 export function oauth2(
-  options: OAuth2Config & {
-    readonly request?: RequestPlacements<"access_token">;
-  },
+  options: OAuth2Config &
+    ClientGuide & {
+      readonly request?: RequestPlacements<"access_token">;
+    },
 ): OAuth2Method<typeof OAuth2AccessToken>;
 export function oauth2<Response extends Schema<unknown, boolean>>(
-  options: OAuth2Config & {
-    readonly response: Response;
-    readonly request?: RequestPlacements<FieldNameOf<Response>>;
-  },
+  options: OAuth2Config &
+    ClientGuide & {
+      readonly response: Response;
+      readonly request?: RequestPlacements<FieldNameOf<Response>>;
+    },
 ): OAuth2Method<Response>;
 export function oauth2(
-  options: OAuth2Config & {
-    readonly response?: Schema<unknown, boolean>;
-    readonly request?: unknown;
-  },
+  options: OAuth2Config &
+    ClientGuide & {
+      readonly response?: Schema<unknown, boolean>;
+      readonly request?: unknown;
+    },
 ): OAuth2Method<Schema<unknown, boolean>> {
-  const { response = OAuth2AccessToken, request, ...config } = options;
+  const { response = OAuth2AccessToken, request, clientGuide, ...config } = options;
   return Effect.runSync(
     oauth2Effect(
       config,
       accountDecoder(response),
       exposureOf(response).exposure,
-      // SAFETY: the callback receives references named by the response projection's own keys.
       placementsOf("OAuth", response, request as RequestPlacements<string> | undefined).request,
+      clientGuide,
     ),
   );
 }
@@ -346,7 +363,6 @@ export function query<Input, Output, Context extends AnyContext = NativeQueryCon
 ): ReturnType<typeof operationQuery<Input, Output, Context>>;
 export function query(first: unknown, second: unknown): unknown {
   if (typeof first === "string") return queryPlacement(first, second);
-  // SAFETY: the operation overload's signature types both arguments; this only dispatches on `first`.
   return operationQuery(...([first, second] as Parameters<typeof operationQuery>));
 }
 

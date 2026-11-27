@@ -1,21 +1,8 @@
-/**
- * `alchemy dev`'s sidecar starts every local Worker's watcher at once, and the alchemy patch makes
- * their first builds take turns (patches/alchemy.md). A turn must not outlive what it guards: a
- * Worker that stops while it waits leaves the queue at once, a watcher that fails to set up gives
- * its turn back, and a first build that hangs holds its turn for one minute at most.
- *
- * Each case runs a probe against the alchemy Cloud installs, with rolldown building two one-line
- * modules: under Node, which loads the patched `lib/`, and under Bun, which loads the patched `src/`
- * and runs the dev sidecar when `alchemy dev` runs under Bun. A plugin's `buildStart` hook holds a
- * build or records that it started. The probe must exit by itself: a watcher left open keeps it
- * alive.
- */
 import { expect, layer } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { Effect, FileSystem, Option, Path, Schema, Stream } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 
-/** How long a first build may hold its turn, as the patch states it. */
 const turnLimit = 60_000;
 
 const probe = `
@@ -106,12 +93,52 @@ if (scenario === "queued") {
 console.log(JSON.stringify(report));
 `;
 
+const uploadProbe = `
+const { createRequire } = await import("node:module");
+const { fileURLToPath } = await import("node:url");
+const { dirname, join } = await import("node:path");
+const entry = fileURLToPath(import.meta.resolve("alchemy"));
+const providerPath = join(dirname(entry), "Cloudflare/Workers/WorkerProvider" + (entry.endsWith(".ts") ? ".ts" : ".js"));
+const [{ measuredUpload }, { ScriptStartupError }, { Effect, Exit }] = await Promise.all([
+  import(providerPath),
+  import(createRequire(providerPath).resolve("@distilled.cloud/cloudflare/workers")),
+  import("effect"),
+]);
+const cpu = () => new ScriptStartupError({ code: 10021, message: "Script startup exceeded CPU time limit." });
+const thrown = () => new ScriptStartupError({ code: 10021, message: "Uncaught Error: no binding named DB at worker.js:1:7" });
+const unauthorized = () => ({ _tag: "Unauthorized", code: 10000, message: "Authentication error" });
+// An upload whose attempts fail with each of "failures" in turn, then succeed.
+const upload = (name, failures) => {
+  const state = { attempts: 0 };
+  const effect = Effect.suspend(() => {
+    const failure = failures[state.attempts++];
+    return failure === undefined ? Effect.succeed({ startupTimeMs: 300 }) : Effect.fail(failure());
+  });
+  return { state, run: measuredUpload(name, [], effect, "1 millis") };
+};
+const outcome = async (name, failures) => {
+  const { state, run } = upload(name, failures);
+  const exit = await Effect.runPromiseExit(run);
+  const error = Exit.isFailure(exit) ? exit.cause.reasons?.[0]?.error ?? exit.cause.failures?.[0]?.error : undefined;
+  return { attempts: state.attempts, succeeded: Exit.isSuccess(exit), error: error?.message ?? error?._tag };
+};
+const report = {
+  refusedOnceForCpu: await outcome("refused-once", [cpu]),
+  refusedThreeTimesForCpu: await outcome("refused-always", [cpu, cpu, cpu, cpu]),
+  otherValidationError: await outcome("thrown", [thrown, thrown]),
+  unauthorized: await outcome("unauthorized", [unauthorized, unauthorized]),
+};
+const [a, b] = [upload("parallel-a", [cpu]), upload("parallel-b", [cpu])];
+const both = await Effect.runPromiseExit(Effect.all([a.run, b.run], { concurrency: "unbounded" }));
+report.twoRefusedInParallel = { attempts: [a.state.attempts, b.state.attempts], succeeded: Exit.isSuccess(both) };
+console.log(JSON.stringify(report));
+`;
+
 const runtimes = {
   node: ["--input-type=module", "--eval", probe],
   bun: ["-e", probe],
 } as const;
 
-/** Runs one scenario; `exited` is false when the probe was still running after 30 s. */
 const scenario = (runtime: keyof typeof runtimes, name: "queued" | "setup" | "hung") =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
@@ -185,6 +212,71 @@ layer(NodeServices.layer, { excludeTestServices: true })("Alchemy first builds",
             secondBuilt: true,
             firstBuilt: true,
           });
+        }),
+    );
+  }
+});
+
+const uploads = (runtime: keyof typeof runtimes) =>
+  Effect.gen(function* () {
+    const processes = yield* ChildProcessSpawner.ChildProcessSpawner;
+    const path = yield* Path.Path;
+    const child = yield* processes.spawn(
+      ChildProcess.make(
+        runtime,
+        runtime === "node" ? ["--input-type=module", "--eval", uploadProbe] : ["-e", uploadProbe],
+        {
+          cwd: path.resolve("apps/hosted/cloud"),
+          env: { GITHUB_ACTIONS: "true" },
+          extendEnv: true,
+        },
+      ),
+    );
+    const [stdout, stderr, exitCode] = yield* Effect.all(
+      [
+        child.stdout.pipe(Stream.decodeText(), Stream.mkString),
+        child.stderr.pipe(Stream.decodeText(), Stream.mkString),
+        child.exitCode,
+      ],
+      { concurrency: "unbounded" },
+    ).pipe(Effect.timeout("30 seconds"));
+    expect(exitCode, stderr).toBe(0);
+    const lines = stdout.trim().split("\n");
+    const report = yield* Schema.decodeUnknownEffect(
+      Schema.fromJsonString(Schema.Record(Schema.String, Schema.Json)),
+    )(lines.find((line) => line.startsWith("{")));
+    return { report, lines, logs: `${stdout}${stderr}` };
+  }).pipe(Effect.scoped);
+
+layer(NodeServices.layer, { excludeTestServices: true })("Worker upload re-sends", (it) => {
+  for (const runtime of Object.keys(runtimes) as Array<keyof typeof runtimes>) {
+    it.effect(
+      `an upload refused for startup CPU is sent again, at most three attempts, and nothing else is (${runtime})`,
+      () =>
+        Effect.gen(function* () {
+          const run = yield* uploads(runtime);
+          expect(run.report).toEqual({
+            refusedOnceForCpu: { attempts: 2, succeeded: true },
+            refusedThreeTimesForCpu: {
+              attempts: 3,
+              succeeded: false,
+              error: expect.stringContaining("Refused on all 3 attempts."),
+            },
+            otherValidationError: {
+              attempts: 1,
+              succeeded: false,
+              error: "Uncaught Error: no binding named DB at worker.js:1:7",
+            },
+            unauthorized: { attempts: 1, succeeded: false, error: "Authentication error" },
+            twoRefusedInParallel: { attempts: [2, 2], succeeded: true },
+          });
+          expect(run.logs).toContain("attempt 1 of 3");
+          expect(run.lines).toContain(
+            "Cloudflare Worker startup summary: 11 upload attempts, 6 refused for startup CPU (error 10021), 5 re-sent, 1 Workers refused on all 3 attempts. Re-sending is a stopgap; a refusal means a Worker's startup is too close to Cloudflare's limit.",
+          );
+          expect(run.lines).toContain(
+            "::warning title=Worker upload refused for startup CPU::11 upload attempts, 6 refused for startup CPU (error 10021), 5 re-sent, 1 Workers refused on all 3 attempts. Re-sending is a stopgap; a refusal means a Worker's startup is too close to Cloudflare's limit.",
+          );
         }),
     );
   }

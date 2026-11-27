@@ -1,4 +1,3 @@
-/** Host credentials appear only when an editor needs to repair the app. */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Schema } from "effect";
 import { Actors } from "../support/actors.ts";

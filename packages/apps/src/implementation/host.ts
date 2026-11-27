@@ -19,6 +19,8 @@ import { dispatchConnect } from "./connect.ts";
 import { Cause, Clock, Effect, Match, Option, Redacted, Schema } from "effect";
 import { captureTelemetry, owned, type InvocationTelemetry } from "@executor-js/telemetry";
 import { appInvocationFetch } from "./network.ts";
+import { dedent, dedentFieldHelp } from "./help-text.ts";
+import { withoutHelp } from "../contracts/help-text.ts";
 import type { AccountSlots, BoundAccounts, ScopedSlots } from "../contracts/app.ts";
 import type { AppIcons } from "../contracts/icons.ts";
 import {
@@ -27,6 +29,7 @@ import {
   type DeclaredAccountSlots,
   InvocationDeadline,
   ToolResultObservation,
+  AfterReply,
   HostAccountsInvalid,
   HostDeclarationInvalid,
   HostOperationNotFound,
@@ -112,7 +115,6 @@ const evaluationSafe = <A>(work: Effect.Effect<A, unknown>, secrets: readonly st
       const error = Cause.squash(cause);
       const provider = parseProviderError(error);
       const skills = parseSkillLoadFailed(error);
-      // An MCP server that cannot be reached is not an invalid app definition; keep its safe fields.
       const mcp = parseMcpError(error, secrets);
       return Effect.fail(
         Option.isSome(provider)
@@ -181,7 +183,8 @@ function providerDeclaration(provider: Provider<AuthMethods>) {
                 type: "secrets",
                 ...(method.provisioned === true ? { provisioned: true } : {}),
                 label: method.label,
-                fields: yield* jsonSchemaDocument(method.fields),
+                ...(method.guide === undefined ? {} : { guide: dedent(method.guide) }),
+                fields: dedentFieldHelp(yield* jsonSchemaDocument(method.fields)),
                 ...declaredExposure(method.exposure),
                 ...declaredPlacements(method.request),
               });
@@ -190,7 +193,10 @@ function providerDeclaration(provider: Provider<AuthMethods>) {
               auth.set(name, {
                 type: "oauth2",
                 ...method.config,
-                response: yield* jsonSchemaDocument(method.response),
+                ...(method.clientGuide === undefined
+                  ? {}
+                  : { clientGuide: dedent(method.clientGuide) }),
+                response: dedentFieldHelp(yield* jsonSchemaDocument(method.response)),
                 ...declaredExposure(method.exposure),
                 ...declaredPlacements(method.request),
               });
@@ -200,7 +206,6 @@ function providerDeclaration(provider: Provider<AuthMethods>) {
         return yield* Schema.decodeUnknownEffect(DeclaredProvider)({
           name: provider.name,
           auth: Object.fromEntries(auth),
-          // Order and repetition carry no meaning, so neither changes the provider's identity.
           ...(provider.hosts === undefined ? {} : { hosts: [...new Set(provider.hosts)].sort() }),
         });
       }),
@@ -265,7 +270,6 @@ function requirements(
   });
 }
 
-// Key order has no meaning in provider declarations; array order remains significant.
 function canonical(value: JsonValue): string {
   if (Array.isArray(value)) return `[${value.map(canonical).join(",")}]`;
   if (value !== null && typeof value === "object") {
@@ -278,15 +282,17 @@ function canonical(value: JsonValue): string {
 }
 
 /**
- * A provider without its hosts and placements. The host sends each account's granted hosts and
- * placements, which can differ from the app's declaration, so they are not part of matching an
- * account to its slot.
+ * What matching an account to its slot compares: the provider without its hosts, placements and
+ * setup help. The host sends each account's granted hosts and placements, which can differ from
+ * the app's declaration. Help is not part of the provider, and a host whose protocol predates a
+ * help key drops it.
  */
-function withoutGrants({ hosts: _hosts, ...provider }: DeclaredProvider): JsonValue {
+function comparable(provider: DeclaredProvider): JsonValue {
+  const { hosts: _hosts, ...defined } = withoutHelp(provider);
   return {
-    ...provider,
+    ...defined,
     auth: Object.fromEntries(
-      Object.entries(provider.auth).map(([name, { request: _request, ...method }]) => [
+      Object.entries(defined.auth).map(([name, { request: _request, ...method }]) => [
         name,
         method,
       ]),
@@ -324,8 +330,8 @@ function bindScope(
         if (ids.has(account.id)) return yield* Effect.fail(new HostAccountsInvalid());
         ids.add(account.id);
         if (
-          canonical(withoutGrants(account.provider)) !==
-            canonical(withoutGrants(requirement.definition)) ||
+          canonical(comparable(account.provider)) !==
+            canonical(comparable(requirement.definition)) ||
           !Object.hasOwn(provider.auth, account.method)
         )
           return yield* Effect.fail(new HostAccountsInvalid());
@@ -463,7 +469,6 @@ function dispatch(
         );
       const native = toEffectApp(app);
       const secrets = accountSecrets(context.accounts);
-      // The build's migrations, not a flag, decide whether the app has a database.
       const ownsSql = hasMigrations(context.files ?? []);
       const declared = yield* requirements(
         native.accounts,
@@ -551,8 +556,6 @@ function dispatch(
               Effect.fail(new WorkflowFailure({ reason: "engine", retryable: true })),
             ),
           );
-          // Also reject a body that blocked the event loop past its deadline before
-          // the timer could run. This check remains inside the owning transaction.
           if ((yield* Clock.currentTimeMillis) >= deadline)
             return yield* new WorkflowFailure({ reason: "engine", retryable: true });
           return result;
@@ -567,21 +570,19 @@ function dispatch(
           deadline,
         ).pipe(withinDeadline);
       let running: InvocationTelemetry | undefined;
-      // SQL transactions are synchronous, so a handler can never wait for input inside one.
       const delivery: ElicitationHandler = (request, signal) =>
         Effect.suspend(() =>
           running !== undefined && context.elicitation !== undefined
-            ? context.elicitation(request, signal).pipe(
-                // Delivering the question and waiting for its answer is the person's time.
-                owned("person", "app.tool.elicitation"),
-                Effect.provideContext(running.context),
-              )
+            ? context
+                .elicitation(request, signal)
+                .pipe(
+                  owned("person", "app.tool.elicitation"),
+                  Effect.provideContext(running.context),
+                )
             : Effect.fail(new ElicitationFailed({ reason: "unavailable" })),
         );
       const unavailableWorkflow = () =>
         Effect.fail(new WorkflowFailure({ reason: "unavailable", retryable: false }));
-      // Authored code calls these as Promises; they run in this invocation's telemetry, so their
-      // spans join its trace and its timing.
       const telemetry = yield* captureTelemetry;
       const control = <A, E>(operation: string, work: Effect.Effect<A, E>) =>
         work.pipe(
@@ -642,7 +643,6 @@ function dispatch(
       const files = yield* Schema.decodeUnknownEffect(Schema.Array(SkillFile))(
         context.files ?? [],
       ).pipe(Effect.mapError(() => new HostDeclarationInvalid()));
-      // Counts cache commands, so a skill read can tell whether its loader used the app cache.
       let cacheCommands = 0;
       const hostCache = context.cache ?? unavailableCache;
       const fetching = yield* fetchLifetime(signal, hostCache.background);
@@ -673,7 +673,6 @@ function dispatch(
         fetch: yield* appInvocationFetch(fetching.signal),
         elicit: makeElicit(delivery, invocationSignal, telemetry.context),
       };
-      // Every bound account may be named; only the caller's count when an emit names none.
       const attributable = userAccountIds(bound);
       const accountIds = [
         ...Object.values(bound.app.accounts).flatMap((selected) =>
@@ -724,8 +723,6 @@ function dispatch(
           (yield* folderSkillsEffect({ files }).pipe(
             Effect.mapError(() => new HostDeclarationInvalid()),
           ));
-        // Dynamic skills fail like evaluation and join the static catalog. Other operations never
-        // call them. A repeated authored name fails the catalog check below.
         const source = definition.dynamicSkills;
         const before = cacheCommands;
         const dynamic =
@@ -735,8 +732,6 @@ function dispatch(
                 Effect.withSpan("app.skills.load"),
               );
         const cached = source !== undefined && cacheCommands > before;
-        // Router skills never fail the read. An authored skill with a router skill's name
-        // replaces that router's generated skill.
         const authored = new Set([...declared, ...dynamic].map((skill) => skill.name));
         const routed = (yield* routerSkills(definition.tools).pipe(
           Effect.withSpan("app.skills.routers"),
@@ -794,7 +789,6 @@ function dispatch(
             Effect.gen(function* () {
               const current = yield* execution.resolve();
               const accounts = yield* safe(
-                // A run keeps its initiating caller; each step refreshes only the accounts.
                 () =>
                   bindAccounts(native.accounts, declared, {
                     ...current,
@@ -818,7 +812,6 @@ function dispatch(
                   stepId,
                   idempotencyKey: stepId,
                 },
-                // The resolved values, not the app's decoded fields, which may be `Redacted`.
                 secrets: accountSecrets(current.accounts),
               };
             }),
@@ -860,9 +853,6 @@ function dispatch(
               .map(([name, { tool: _tool, ...schedule }]) => ({ name, ...schedule })),
         }).pipe(Effect.withSpan("app.catalog.read"));
         const { tools, routers } = catalog;
-        // Router errors are tagged classes; encoding keeps only their serialized safe fields. A
-        // shared catalog writes each definition and each distinct `$defs` once, however many tools
-        // reach them. Only a full read describes its tools with schemas, which `every` checks.
         return yield* safe(
           () =>
             (request.definitions === "shared" &&
@@ -882,8 +872,6 @@ function dispatch(
         request.operation === "webhook-handle" ||
         request.operation === "webhook-unregister"
       ) {
-        // Lifecycle hooks get `ctx.sql` with no surrounding transaction: registration can wait on a
-        // provider that calls this app back before it answers.
         const session = yield* sqlSession();
         return yield* dispatchWebhook(
           definition,
@@ -922,8 +910,6 @@ function dispatch(
           : request.operation === "query"
             ? "query"
             : "mutation";
-      // The caller's kind chooses storage and the Cloudflare write mode before this runs. A call
-      // without one is to a tool the host's catalog does not list; it runs with its own kind.
       if (requested !== undefined && tool.kind !== requested)
         return yield* new HostKindMismatch({ tool: toolName, requested, actual: tool.kind });
       const kind = tool.kind === "query" ? "query" : "mutate";
@@ -989,23 +975,24 @@ function dispatch(
               new HostInputInvalid(),
             );
       if (replay !== undefined && kind !== "mutate") return yield* new HostInputInvalid();
-      // A replayed workflow step records its receipt inside its one SQL transaction.
       const session = yield* sqlSession(replay);
       const execute = () =>
         Effect.gen(function* () {
           const output = yield* Effect.gen(function* () {
             running = yield* captureTelemetry;
             const fetch = yield* appInvocationFetch(fetching.signal);
-            return yield* tool.run(
-              {
-                ...bound,
-                fetch,
-                workflows: kind === "mutate" ? workflowControls : workflowReads,
-                sql: kind === "mutate" ? session.writer : session.reader,
-                ...(kind === "mutate" ? { events: emitter() } : {}),
-              },
-              input,
-            );
+            return yield* tool
+              .run(
+                {
+                  ...bound,
+                  fetch,
+                  workflows: kind === "mutate" ? workflowControls : workflowReads,
+                  sql: kind === "mutate" ? session.writer : session.reader,
+                  ...(kind === "mutate" ? { events: emitter() } : {}),
+                },
+                input,
+              )
+              .pipe(Effect.provideService(AfterReply, context.cache?.background));
           }).pipe(
             Effect.ensuring(
               Effect.sync(() => {
@@ -1017,10 +1004,8 @@ function dispatch(
               const error = Cause.squash(cause);
               const provider = parseProviderError(error);
               const response = Schema.decodeUnknownOption(OpenapiResponseError)(error);
-              // An MCP server's failure is not the app's own error; keep its server's answer.
               const mcp = parseMcpError(error, secrets);
               const failure = Schema.decodeUnknownOption(ElicitationFailed)(error);
-              // A router found, while running it, that its source no longer has the tool.
               const removed = Schema.is(HostToolNotFound)(error)
                 ? request.operation === "call"
                   ? new HostToolNotFound()
@@ -1085,7 +1070,6 @@ function checkAccount(
   deadline: number | undefined,
 ) {
   return Effect.gen(function* () {
-    // A requirement name is unique across scopes; the host supplies the account in its scope.
     const scope = Object.hasOwn(slots.app, requirement)
       ? "app"
       : Object.hasOwn(slots.user, requirement)
@@ -1190,8 +1174,6 @@ export const createAppHandler =
             toolError = true;
           },
         }),
-        // Name what failed on the span; the bounded message stays in the reply only. The host
-        // records an app's own error names and codes as `unrecognized` (telemetry `app-records`).
         Effect.tapError((error) =>
           (error._tag === "HostEvaluationFailed" ||
             error._tag === "HostOperationFailed" ||
@@ -1204,8 +1186,6 @@ export const createAppHandler =
               })
             : Effect.void,
         ),
-        // Tool operations time themselves, dividing their time by who owned the work in progress.
-        // Other operations do not.
         command.operation === "call" ||
           command.operation === "query" ||
           command.operation === "mutate"
@@ -1235,8 +1215,7 @@ export const createAppHandler =
       Effect.catchCause((cause) =>
         Cause.hasInterrupts(cause)
           ? Effect.interrupt
-          : // The cause can carry any text the app threw; its caller receives that, not the log.
-            Effect.logError("The app's request failed unexpectedly").pipe(
+          : Effect.logError("The app's request failed unexpectedly").pipe(
               Effect.andThen(
                 Schema.encodeEffect(HostError)(
                   declarationInvalid(

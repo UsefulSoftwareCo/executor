@@ -1,4 +1,3 @@
-/** Select footage by driver-call order, including repeated switches between the same windows. */
 import { Effect, FileSystem, Path, Schema } from "effect";
 import { BrowserDriver } from "./browser.ts";
 import { driver } from "./platform.ts";
@@ -19,7 +18,6 @@ const focusSpans = (activities: ReadonlyArray<Activity>) => {
   }
   return spans.map((span, index) => {
     const next = spans[index + 1]?.startedAtMs ?? Infinity;
-    // Include a still-running operation when focus returns to its window.
     const activeUntil = activities
       .filter(
         (activity) =>
@@ -28,11 +26,9 @@ const focusSpans = (activities: ReadonlyArray<Activity>) => {
           activity.endedAtMs >= span.startedAtMs,
       )
       .reduce((end, activity) => Math.max(end, activity.endedAtMs), span.endedAtMs);
-    // A newer call wins, even if an earlier operation is still waiting for a response.
     return { ...span, endedAtMs: Math.min(activeUntil + 300, next) };
   });
 };
-/** Export one film from the recorded focus timeline. Originals and measured timings stay intact. */
 export const renderFocusedRecording = (directory: string, origin: string) =>
   Effect.scoped(
     Effect.gen(function* () {
@@ -95,9 +91,8 @@ export const renderFocusedRecording = (directory: string, origin: string) =>
               source.contentStartMs === null ? null : source.contentStartMs / 1000;
             if (contentStart !== null && contentStart < end)
               start = Math.max(start, contentStart - 0.1);
-            else end = Math.min(end, start + 0.6); // A genuinely blank focused terminal remains visible briefly.
+            else end = Math.min(end, start + 0.6);
           }
-          // A stopped process can still be inspected. Its window retains the final captured frame.
           start = Math.min(start, Math.max(0, media.duration - 0.2));
           end = Math.min(media.duration, Math.max(start + 0.2, end));
           const hold = Math.max(0, (window.kind === "terminal" ? 3 : 0.6) - (end - start));

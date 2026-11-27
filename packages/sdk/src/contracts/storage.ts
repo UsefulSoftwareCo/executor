@@ -56,7 +56,6 @@ export const StoredApp = Schema.Struct({
   deploySequence: Schema.Int,
   activatedSequence: Schema.Int,
 })
-  // Storage keeps the column's former name, `active_deployment`.
   .pipe(Schema.encodeKeys({ activeVersion: "activeDeployment" }))
   .check(
     Schema.makeFilter((app) => app.slug === appSlug(app.name), {

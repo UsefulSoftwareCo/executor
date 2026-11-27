@@ -1,13 +1,10 @@
-/** Terminal capture analysis and video export run after all test processes have exited. */
 import { resolveTerminalControlBinary } from "@kitlangton/terminal-control";
 import { Effect, FileSystem, Schema } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 
-/** A raw Terminal Control capture, distinct from a rendered video. */
 export const terminalCaptureType = "application/x-terminal-control";
 const Event = Schema.Struct({ type: Schema.String, at_ms: Schema.optional(Schema.Number) });
 
-/** Read the first output timestamp without exposing recorded terminal content in errors. */
 export const firstTerminalOutput = (source: string) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
@@ -21,7 +18,6 @@ export const firstTerminalOutput = (source: string) =>
     return firstOutput?.at_ms ?? null;
   });
 
-/** Export the full source timeline; focus composition trims it later without changing test timing. */
 export const renderTerminalRecording = (source: string) =>
   Effect.gen(function* () {
     const processes = yield* ChildProcessSpawner.ChildProcessSpawner;

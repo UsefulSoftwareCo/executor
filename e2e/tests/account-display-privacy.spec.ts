@@ -3,7 +3,6 @@ import { Api } from "../support/api.ts";
 import { Resource } from "../support/contracts.ts";
 import { appsManifest } from "../support/apps-release.ts";
 import { accountStatusBackend } from "../support/account-status-fixture.ts";
-/** Encodings and identity-only results cannot bypass the public display confidentiality check. */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Schema } from "effect";
 import { body } from "../support/api.ts";
@@ -119,7 +118,6 @@ layer(HostedLive, { excludeTestServices: true })("Display confidentiality", (it)
             }
           }
         }
-        // Identity strings need the same encoding protection even without status.
         for (const encoded of forms(interactiveBackendKey)) {
           yield* fixture.statusBackend.answer({
             status: 200,
