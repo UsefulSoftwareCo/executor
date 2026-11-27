@@ -1,6 +1,7 @@
 import { WorkflowRunId } from "../contracts/workflows.ts";
 import { AppSlug } from "../contracts/app-slug.ts";
 import { AccountScope } from "../contracts/apps.ts";
+import { AccountIdentityId } from "../contracts/account-identity.ts";
 import { SourceCommit } from "../contracts/source.ts";
 import {
   AccountId,
@@ -664,4 +665,52 @@ export const version4017Tables = {
 
 export const eventSelectionIndexes = [
   "CREATE INDEX IF NOT EXISTS executor_event_subscriptions_owner_selection ON executor_event_subscriptions (owner, status) WHERE app IS NULL",
+] as const;
+
+const identifiedAccounts = table("executor_accounts", {
+  ...version4015Tables.accounts.columns,
+  identityId: column("identity_id", Schema.NullOr(AccountIdentityId), {
+    type: "varchar(255)",
+  }).default(null),
+  oauthGrantId: column("oauth_grant_id", Schema.NullOr(AccountId), {
+    type: "varchar(255)",
+  }).default(null),
+});
+
+const accountIdentities = table("executor_account_identities", {
+  id: idColumn("id", AccountIdentityId, { type: "varchar(255)" }),
+  owner: column("owner", OwnerId, { type: "varchar(255)" }),
+  placement: column("placement", Schema.String),
+  issuer: column("issuer", Schema.String),
+  subject: column("subject", Schema.String),
+  name: column("name", Schema.String),
+  label: column("label", Schema.String),
+  verifiedAt: column("verified_at", Schema.Date),
+  createdAt: column("created_at", Schema.Date),
+});
+
+const reusableConnections = table("executor_account_connections", {
+  ...version4017Tables.accountConnections.columns,
+  sourceAccount: column("source_account", Schema.NullOr(AccountId), {
+    type: "varchar(255)",
+  }).default(null),
+  additionalTargets: column("additional_targets", Schema.Json).default([]),
+});
+
+const reusableGrants = table("executor_oauth_grants", {
+  ...version4017Tables.oauthGrants.columns,
+  owner: column("owner", Schema.NullOr(OwnerId), { type: "varchar(255)" }).default(null),
+});
+
+export const version4018Tables = {
+  ...version4017Tables,
+  accounts: identifiedAccounts,
+  accountIdentities,
+  accountConnections: reusableConnections,
+  oauthGrants: reusableGrants,
+};
+
+export const accountIdentityIndexes = [
+  "CREATE INDEX IF NOT EXISTS executor_accounts_identity ON executor_accounts (identity_id)",
+  "CREATE INDEX IF NOT EXISTS executor_accounts_oauth_grant ON executor_accounts (oauth_grant_id)",
 ] as const;

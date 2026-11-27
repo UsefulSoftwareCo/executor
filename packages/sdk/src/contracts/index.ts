@@ -2,6 +2,7 @@
 export * from "./shared.ts";
 export * from "./provider.ts";
 export * from "./account.ts";
+export * from "./account-identity.ts";
 export * from "./account-connection.ts";
 export * from "./oauth.ts";
 export * from "./oauth-clients.ts";
