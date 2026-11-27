@@ -4,6 +4,7 @@ import {
   ApprovalMode,
   ConnectionId,
   GrantId,
+  grantAuthorization,
   desktopResource,
   mcpOAuthResources,
 } from "@executor-js/mcp-auth";
@@ -165,6 +166,7 @@ const projectPatAccess = (
     return McpAccess.make({
       userId: identity.userId,
       clientId: `pat:${identity.key.id}`,
+      policy: identity.policy,
       grant: {
         id: patGrantId({ token: identity.key.id, organization, mode }),
         policy: { kind: "all" },
@@ -197,6 +199,7 @@ export const mcpOAuthPlugins = (options: HostedOAuthOptions) => {
         userId: grant.userId,
         clientId: grant.clientId,
         grant: grant.grant,
+        policy: grantAuthorization(grant.grant.policy),
         access: { organization, owner: organizationOwner(organization), role: member.role },
       });
     });

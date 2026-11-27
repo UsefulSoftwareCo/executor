@@ -1,9 +1,5 @@
 import { defaultKeyHasher } from "@better-auth/api-key";
-import {
-  fullAuthority,
-  selectedAuthority,
-  type AuthorizationPolicy,
-} from "@executor-js/authorization";
+import { selectedAuthority, type AuthorizationPolicy } from "@executor-js/authorization";
 import {
   ApprovalMode,
   ConnectionId,
@@ -31,7 +27,7 @@ import { McpAccess, McpForbidden, McpForbiddenReason, McpUnauthorized } from "..
 import { AuthFailureReason, AuthenticationUnavailable, Unauthorized } from "../contracts/auth.ts";
 import { recordAuthFailure, recordCaller, recordCredential } from "./auth-telemetry.ts";
 import { OrganizationForbidden } from "../contracts/organization.ts";
-import { isApiKey } from "./api-keys.ts";
+import { apiKeyAuthorization, apiKeyScopeMatches, isApiKey } from "./api-keys.ts";
 import { patGrantId, type HostedOAuthOrigins } from "./mcp-oauth.ts";
 
 class BearerRejected extends Schema.TaggedError<BearerRejected>()("BearerRejected", {
@@ -495,6 +491,7 @@ const patAccess = (
     const metadata = yield* Schema.decodeUnknownEffect(KeyMetadata)(jsonText(row.metadata)).pipe(
       Effect.mapError(() => unauthorized("unknown")),
     );
+    if (!apiKeyScopeMatches(token, metadata?.scope)) return yield* unauthorized("unknown");
     const pinned = metadata?.organization;
     if (pinned !== undefined && holdsRole(row.memberships, pinned))
       yield* recordCaller(pinned, row.userId);
@@ -520,6 +517,7 @@ const patAccess = (
     return {
       userId: row.userId,
       id,
+      policy: apiKeyAuthorization(metadata?.scope),
       access: { organization, owner: organizationOwner(organization), role },
       organizationSlug: membership?.slug ?? null,
     };
@@ -540,6 +538,7 @@ export const mcpBearerAccess = (
         userId: grant.userId,
         clientId: grant.clientId,
         grant: grant.grant,
+        policy: grantAuthorization(grant.grant.policy),
         access: grant.access,
       });
     }
@@ -548,6 +547,7 @@ export const mcpBearerAccess = (
     return McpAccess.make({
       userId: key.userId,
       clientId: `pat:${key.id}`,
+      policy: key.policy,
       grant: {
         id: patGrantId({ token: key.id, organization: key.access.organization, mode }),
         policy: { kind: "all" },
@@ -621,7 +621,7 @@ export const apiBearerAccess = (
           Effect.map((key) => ({
             userId: key.userId,
             key: { id: key.id },
-            policy: fullAuthority,
+            policy: key.policy,
             access: key.access,
             organizationSlug: key.organizationSlug,
           })),

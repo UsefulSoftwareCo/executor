@@ -46,6 +46,20 @@ curl "$EXECUTOR_API_ORIGIN/api/context" \
 
 A token pinned to one organization can omit the `X-Executor-Organization` header. Invalid, expired, or revoked tokens return `401`. Insufficient access returns `403`.
 
+## Tools-only clients
+
+A signed-in browser can create a tools-only key through
+`POST /api/auth/api-key/create` with
+`metadata: { organization: "<organization-id>", scope: "tools" }`.
+Tools-only keys start with `ext_`; older servers refuse them. The key can
+discover and run tools in that organization, with your current roles and the
+tools' existing approval rules. It cannot read app source, manage apps, change
+account settings or create more keys. Keep model gateway credentials separate.
+Omitting `scope` preserves ordinary personal token permissions.
+
+This limits the key's API authority. Connected tools still use the accounts and
+permissions you granted them; review those before giving a client tool access.
+
 ## Expiry and revocation
 
 Signing out does not revoke tokens. Removing an organization membership deletes tokens pinned to that organization (subsequent requests return `401`) and stops **Full account** tokens from accessing that organization (`403`, while remaining usable in other organizations you belong to). Role changes apply to subsequent requests.

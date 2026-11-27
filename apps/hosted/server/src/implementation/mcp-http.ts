@@ -1,7 +1,6 @@
 import { CurrentPolicy } from "../contracts/authorization.ts";
 import { CurrentUsage } from "../contracts/product-analytics.ts";
 import { requiresToolMetadata } from "@executor-js/authorization";
-import { grantAuthorization } from "@executor-js/mcp-auth";
 import { GroupDatabase } from "../contracts/groups.ts";
 import { CurrentUserId, callerSpanAttributes } from "../contracts/auth.ts";
 import { recordAuthFailure } from "./auth-telemetry.ts";
@@ -202,7 +201,7 @@ export const dispatchHostedMcp = <E, R>(
         if (refusal !== undefined) return yield* new GrantForbidden({ refusal });
         const backend = yield* hostedMcpBackend.pipe(
           Effect.provideService(CurrentOrganization, fresh.access),
-          Effect.provideService(CurrentPolicy, grantAuthorization(fresh.grant.policy)),
+          Effect.provideService(CurrentPolicy, fresh.policy),
           Effect.provideService(CurrentUserId, fresh.userId),
           Effect.provideService(CurrentMcpGrant, fresh.grant.id),
           Effect.provideService(CurrentMcpSession, session),
@@ -292,7 +291,7 @@ export const dispatchHostedMcp = <E, R>(
           !fold.result.value.access.canUse
             ? Effect.succeed(undefined)
             : callerAccounts(read.app.success, fold.result.value.accounts).pipe(
-                Effect.provideService(CurrentPolicy, grantAuthorization(access.grant.policy)),
+                Effect.provideService(CurrentPolicy, access.policy),
                 Effect.provideService(CurrentUserId, access.userId),
                 Effect.provideContext(services),
                 Effect.option,
@@ -359,7 +358,7 @@ export const dispatchHostedMcp = <E, R>(
         Effect.gen(function* () {
           if (
             (yield* ConcurrentStatements) === undefined ||
-            requiresToolMetadata(grantAuthorization(access.grant.policy).tools, input.app)
+            requiresToolMetadata(access.policy.tools, input.app)
           )
             return yield* current.pipe(Effect.flatMap((fresh) => fresh.callTool(input, options)));
           const batch = yield* StatementBatch;

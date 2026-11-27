@@ -8,8 +8,10 @@ export const isManagedKey = (key: {
     | undefined;
 }) => key.metadata?.executorApp === true && key.metadata.organization !== undefined;
 export const ApiKeyId = Schema.NonEmptyString.pipe(Schema.brand("ApiKeyId"));
+export const ApiKeyScope = Schema.Literal("tools");
 export const ApiKeyMetadata = Schema.Struct({
   organization: Schema.optional(OrganizationId),
+  scope: Schema.optional(ApiKeyScope),
   executorApp: Schema.optional(Schema.Literal(true)),
 });
 export type ApiKeyMetadata = typeof ApiKeyMetadata.Type;
@@ -27,7 +29,12 @@ export type ApiKeySummary = typeof ApiKeySummary.Type;
 export const CreateApiKey = Schema.Struct({
   name: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(80), Schema.isPattern(/\S/u)),
   expiresIn: Schema.optional(Schema.Number.check(Schema.isInt(), Schema.isGreaterThan(0))),
-  metadata: Schema.optional(Schema.Struct({ organization: OrganizationId })),
+  metadata: Schema.optional(
+    Schema.Struct({
+      organization: OrganizationId,
+      scope: Schema.optional(ApiKeyScope),
+    }),
+  ),
 });
 export const CreatedApiKey = Schema.Struct({
   ...ApiKeySummary.fields,

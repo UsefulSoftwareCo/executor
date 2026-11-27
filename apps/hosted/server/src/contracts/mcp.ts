@@ -14,6 +14,7 @@ import type {
 } from "@executor-js/mcp-auth/connections";
 import type { ConnectedAgent, ConnectedAgentNotFound } from "@executor-js/mcp-auth/agents";
 import { UserFacingError, type ErrorPresentation } from "@executor-js/utils/user-facing-error";
+import { AuthorizationPolicy } from "@executor-js/authorization";
 import { Context, Schema } from "effect";
 import type { Effect } from "effect";
 import { OrganizationAccess, type OrganizationReference } from "./organization.ts";
@@ -24,6 +25,7 @@ export const McpAccess = Schema.Struct({
   clientId: Schema.NonEmptyString,
   access: OrganizationAccess,
   grant: Grant,
+  policy: AuthorizationPolicy,
 });
 export type McpAccess = typeof McpAccess.Type;
 
