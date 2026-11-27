@@ -3499,6 +3499,16 @@ export const scenarios = plan({
       local: na("Local lets app code reach private addresses by design."),
     },
   },
+  cloudOutboundWebSocket: {
+    fixtures: "actors",
+    file: "cloud-outbound-websocket.spec.ts",
+    title: "A Cloud app exchanges messages over an outbound WebSocket",
+    targets: {
+      cloud: managedCloud,
+      "self-host": na("This scenario exercises Cloud's outbound Worker gateway."),
+      local: na("This scenario exercises Cloud's outbound Worker gateway."),
+    },
+  },
   appFetchUserAgent: {
     fixtures: "actors",
     file: "app-fetch-user-agent.spec.ts",

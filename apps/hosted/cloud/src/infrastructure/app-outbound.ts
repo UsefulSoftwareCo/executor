@@ -200,7 +200,11 @@ export const appCredentialOutbound = Effect.gen(function* () {
             ),
           );
         if (unsent !== undefined) yield* report(unsent);
-        return HttpServerResponse.fromWeb(response);
+        // external: keep the native Response so workerd preserves WebSocket upgrades and zero-copy bodies.
+        return HttpServerResponse.raw(response, {
+          status: response.status,
+          statusText: response.statusText,
+        });
       }),
   };
 });
