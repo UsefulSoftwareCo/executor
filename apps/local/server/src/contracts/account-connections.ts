@@ -1,4 +1,9 @@
 import { RequestRejection } from "@executor-js/sdk/core";
+import {
+  InteractiveRetirementBusy,
+  InteractiveRetirementFailed,
+  InteractiveReconnectUnsupported,
+} from "@executor-js/sdk";
 import { UserFacingError } from "@executor-js/utils/user-facing-error";
 import { Schema } from "effect";
 import { HttpApi, HttpApiEndpoint, HttpApiGroup, OpenApi } from "effect/http-api";
@@ -13,6 +18,7 @@ import {
   AppNotFound,
   AccountSelectionInvalid,
   AccountConnectionTargetChanged,
+  AccountProvisioned,
   AccountConnectionRefused,
   AccountNotFound,
   ProviderNotFound,
@@ -78,6 +84,10 @@ export const ConnectionOAuthStart = Schema.Struct({
 });
 
 const errors = [
+  AccountProvisioned,
+  InteractiveRetirementBusy,
+  InteractiveRetirementFailed,
+  InteractiveReconnectUnsupported,
   ConnectionLinkRejected,
   AuthForbidden,
   StorageError,

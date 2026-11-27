@@ -4,6 +4,8 @@
   "type": "module",
   "sideEffects": false,
   "exports": {
+    "./account-display-privacy": "./src/account-display-privacy.ts",
+    "./account-secrets": "./src/account-secrets.ts",
     "./random-uuid": "./src/random-uuid.ts",
     "./url-policy": "./src/url-policy.ts",
     "./safe-fetch": "./src/safe-fetch.ts",

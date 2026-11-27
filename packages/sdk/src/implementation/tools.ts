@@ -181,6 +181,7 @@ export function snapshot(
     version?: VersionId | undefined;
     accounts?: AppAccounts | undefined;
     captured?: { readonly accounts: SelectedAccounts; readonly scope: AccountScope } | undefined;
+    connecting?: string;
   },
   readAhead?: SnapshotReads,
 ) {
@@ -216,6 +217,7 @@ export function snapshot(
             input.captured.scope,
           ),
       ahead?.accounts,
+      input.connecting,
     );
     return { app, version, scope, selections, accounts, actor: yield* CurrentActor };
   });
@@ -244,7 +246,7 @@ class GrantHint {
   }
 }
 const readsGrant = (types: ReadonlyArray<string | undefined> | undefined) =>
-  types === undefined || types.some((type) => type !== "secrets");
+  types === undefined || types.some((type) => type !== "secrets" && type !== "interactive");
 const grantHint = (
   app: Effect.Success<ReturnType<typeof gotApp>>,
   accounts: AppAccounts | undefined,
@@ -432,7 +434,10 @@ function resolveFor(
       state.scope === "app"
         ? { app: selections.app }
         : { app: selections.app, user: selections.user };
-    return { accounts: Redacted.make(accounts) };
+    return {
+      accounts: Redacted.make(accounts),
+      ...(state.scope === "user" && state.actor !== undefined ? { caller: state.actor } : {}),
+    };
   });
 }
 
@@ -504,7 +509,7 @@ const renewRefused = (
       accounts.user === undefined
         ? { app: replaceScope(accounts.app) }
         : { app: replaceScope(accounts.app), user: replaceScope(accounts.user) };
-    return { accounts: Redacted.make(renewedAccounts) } satisfies InvocationContext;
+    return { ...context, accounts: Redacted.make(renewedAccounts) } satisfies InvocationContext;
   });
 
 function invocation(
