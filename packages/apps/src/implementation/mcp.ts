@@ -43,6 +43,8 @@ import {
   McpHealthInput,
   mcpHealthReserveMs,
   McpToolsOptions,
+  mcpUiExtension,
+  mcpUiMimeType,
   type McpConnection,
   type McpHealthCheck,
   type McpHealthOptions,
@@ -289,7 +291,11 @@ function withClient<A, E>(
               { name: "executor-apps", version: "0.1.0" },
               {
                 jsonSchemaValidator: mcpJsonSchemaValidator,
-                capabilities: mode === "call" ? { elicitation: { form: {} } } : {},
+                // external: MCP Apps servers can omit `_meta.ui` for a client without the extension (SEP-1865).
+                capabilities: {
+                  extensions: { [mcpUiExtension]: { mimeTypes: [mcpUiMimeType] } },
+                  ...(mode === "call" ? { elicitation: { form: {} } } : {}),
+                },
               },
             );
             if (changed !== undefined) {

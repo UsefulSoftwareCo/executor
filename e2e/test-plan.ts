@@ -12419,6 +12419,17 @@ export const scenarios = plan({
       local: na("This scenario tests hosted organization consent, which Local does not have."),
     },
   },
+  mcpAppsUpstreamUi: {
+    fixtures: "actors",
+    file: "mcp-apps.spec.ts",
+    title:
+      "MCP Apps hosts list an imported MCP server's UI tools, read their ui:// resources with the caller's account, and call them with approvals",
+    targets: {
+      "self-host": scheduled,
+      cloud: na("Loopback upstream MCP fixture"),
+      local: na("Hosted version API scenario"),
+    },
+  },
   mcpSkillsExtension: {
     managementApps: ["owner"],
     fixtures: "actors",

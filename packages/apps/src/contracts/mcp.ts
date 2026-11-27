@@ -111,6 +111,18 @@ export const McpToolMetadata = Schema.Struct({
 });
 export type McpToolMetadata = typeof McpToolMetadata.Type;
 
+/** The MCP Apps extension (SEP-1865) and the UI resource type Executor accepts from a server. */
+export const mcpUiExtension = "io.modelcontextprotocol/ui";
+export const mcpUiMimeType = "text/html;profile=mcp-app";
+
+/**
+ * The tool every `mcpRouter` resolves, and never lists, to read a `ui://` resource that one of its
+ * tools names in `_meta.ui.resourceUri`, with the account of that tool. Its input is `{ uri }`; its
+ * output is the server's `resources/read` result as sent. MCP tool names have no `/`, so it names
+ * no upstream tool.
+ */
+export const mcpUiResourceTool = "resources/read";
+
 /** What a server reports about itself when a session initializes. Icons are for display only. */
 export const McpServerHeader = Schema.Struct({
   name: Schema.optionalKey(Schema.String),

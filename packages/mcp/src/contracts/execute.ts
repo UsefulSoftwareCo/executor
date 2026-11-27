@@ -248,7 +248,8 @@ export const ResumeInput = Schema.Struct({
   requestId: InteractionId,
   response: ElicitationResponse,
 });
-export const ExecutionResultMeta = { "anthropic/maxResultSizeChars": 500_000 };
+export const ModelOnlyMeta = { ui: { visibility: ["model"] } };
+export const ExecutionResultMeta = { "anthropic/maxResultSizeChars": 500_000, ...ModelOnlyMeta };
 
 export const ResumeTool = McpTool.make("resume", {
   description:
@@ -410,6 +411,7 @@ export const SearchTool = McpTool.make("search", {
   success: SearchToolResult,
   failure: CatalogUnavailable,
 })
+  .annotate(McpTool.Meta, ModelOnlyMeta)
   .annotate(McpTool.Readonly, true)
   .annotate(McpTool.Destructive, false);
 export const DescribeTool = McpTool.make("describe", {
@@ -419,6 +421,7 @@ export const DescribeTool = McpTool.make("describe", {
   success: DescribeResult,
   failure: CatalogUnavailable,
 })
+  .annotate(McpTool.Meta, ModelOnlyMeta)
   .annotate(McpTool.Readonly, true)
   .annotate(McpTool.Destructive, false);
 

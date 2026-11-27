@@ -244,7 +244,7 @@ type Target = Place & {
   readonly version: VersionId;
   readonly linked: McpAppAccounts;
 };
-type Entry = {
+export type Entry = {
   readonly path: string;
   readonly tool: AppTool;
   readonly target: Target;
@@ -1753,5 +1753,10 @@ export const searchCatalog = (backend: McpBackend<Error>, input: typeof SearchIn
 
 export const describeCatalog = (backend: McpBackend<Error>, input: typeof DescribeInput.Type) =>
   readCatalog(backend, (discovered) => describeTools(discovered.described, input.paths)).pipe(
+    Effect.map(({ value }) => value),
+  );
+
+export const listedTools = (backend: McpBackend<Error>, apps: ReadonlyArray<string> | "all") =>
+  readCatalog(backend, (discovered) => discovered.described(apps)).pipe(
     Effect.map(({ value }) => value),
   );

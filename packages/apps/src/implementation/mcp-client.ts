@@ -11,6 +11,7 @@ import {
   ErrorCode,
   ListToolsResultSchema,
   McpError as ProtocolError,
+  ReadResourceResultSchema,
 } from "@modelcontextprotocol/sdk/types.js";
 import { Effect, Exit, Option, Schema } from "effect";
 import {
@@ -22,7 +23,7 @@ import {
 } from "../contracts/mcp.ts";
 import type { UpstreamError } from "../contracts/failure.ts";
 import { RouterIcon } from "../contracts/router.ts";
-import type { JsonObject } from "../effect.ts";
+import { JsonObject } from "../effect.ts";
 import { mcpCall } from "./mcp-call.ts";
 import { jsonSchemaDecoder } from "./schema.ts";
 import { bodyUpstreamError } from "./upstream-error.ts";
@@ -172,7 +173,31 @@ export function mcpClient(
       owned("upstream", "provider.mcp.call", { attributes: { "mcp.tool.name": name } }),
     );
 
-  return { list, check, call };
+  /** Read one resource once with one account; contents and `_meta` are kept as the server sent them. */
+  const read = (uri: string) =>
+    withClient("call", (client) =>
+      // oxlint-disable-next-line executor/authored-code-through-adapter -- MCP SDK
+      Effect.tryPromise({
+        try: (signal) =>
+          client.request({ method: "resources/read", params: { uri } }, ReadResourceResultSchema, {
+            signal,
+            timeout: timeoutMs,
+          }),
+        catch: (error) => failure("call", error),
+      }).pipe(
+        owned("upstream", "provider.mcp.request", {
+          kind: "client",
+          attributes: { "rpc.system.name": "jsonrpc", "rpc.method": "resources/read" },
+        }),
+        Effect.flatMap((result) =>
+          Schema.decodeUnknownEffect(JsonObject)(result).pipe(
+            Effect.mapError(() => new McpError({ phase: "call", reason: "invalid_response" })),
+          ),
+        ),
+      ),
+    ).pipe(owned("upstream", "provider.mcp.read"));
+
+  return { list, check, call, read };
 }
 
 /** Transport-independent operations consumed by the app tool adapter. */

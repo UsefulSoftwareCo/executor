@@ -6,6 +6,7 @@ import {
   Exit,
   Layer,
   Match,
+  Option,
   Stream,
   Tracer,
   type Scope,
@@ -28,6 +29,7 @@ import { callTools, describeCatalog, executeProgram, searchCatalog } from "./exe
 import { decodeSkillsInput, skills } from "./skills.ts";
 import { skillCatalog } from "./skill-catalog.ts";
 import { eventsHandler } from "./events.ts";
+import { uiResourceCatalog, uiToolCatalog } from "./mcp-apps.ts";
 import { withOperationSpan } from "./telemetry.ts";
 
 const observeExecution =
@@ -165,6 +167,16 @@ export const makeMcp = (options: McpOptions) =>
             sessionId,
           };
         });
+        const catalogCaller = Effect.serviceOption(HttpServerRequest.HttpServerRequest).pipe(
+          Effect.flatMap(
+            Option.match({
+              onNone: () => Effect.die("An MCP Apps request has no HTTP request"),
+              onSome: (request) =>
+                caller.pipe(Effect.provideService(HttpServerRequest.HttpServerRequest, request)),
+            }),
+          ),
+          Effect.map(({ id }) => id),
+        );
         const skill = (params: unknown) =>
           decodeSkillsInput(params).pipe(
             Effect.flatMap((input) =>
@@ -317,6 +329,8 @@ export const makeMcp = (options: McpOptions) =>
           toolkit,
           McpServer.events(eventsHandler(options.backend)),
           McpServer.skillCatalog(skillCatalog(options.backend)),
+          McpServer.toolCatalog(uiToolCatalog(options.backend, executions, catalogCaller)),
+          McpServer.resourceCatalog(uiResourceCatalog(options.backend)),
         ).pipe(
           Layer.provide(
             McpServer.layerHttp({

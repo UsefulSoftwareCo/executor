@@ -11,7 +11,7 @@ import {
 import { type JsonSchema, Schema } from "effect";
 import { Tool as McpTool } from "effect/ai";
 import { RecordedMessage } from "@executor-js/utils/recorded-message";
-import { UnavailableApp } from "./execute.ts";
+import { ModelOnlyMeta, UnavailableApp } from "./execute.ts";
 
 const needs = {
   name: ["app"],
@@ -147,6 +147,7 @@ export const SkillsTool = McpTool.dynamic("skills", {
   success: SkillsResult,
   failure: SkillsFailure,
 })
+  .annotate(McpTool.Meta, ModelOnlyMeta)
   .annotate(McpTool.Readonly, true)
   .annotate(McpTool.Destructive, false)
   .annotate(McpTool.Idempotent, true)
