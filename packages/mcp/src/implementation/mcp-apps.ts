@@ -102,7 +102,11 @@ const project = (entry: Entry) =>
     }
     const resourceUri =
       meta.resourceUri === undefined ? undefined : namespaced(entry.target.slug, meta.resourceUri);
-    const { "ui/resourceUri": flat, ...rest } = entry.tool._meta ?? {};
+    const {
+      "ui/resourceUri": flat,
+      "openai/outputTemplate": template,
+      ...rest
+    } = entry.tool._meta ?? {};
     const descriptor = Schema.decodeUnknownOption(McpSchema.Tool)({
       name,
       ...(entry.tool.title === undefined ? {} : { title: entry.tool.title }),
@@ -114,6 +118,12 @@ const project = (entry: Entry) =>
         ...(flat === undefined || resourceUri === undefined
           ? {}
           : { "ui/resourceUri": resourceUri }),
+        ...(template === undefined
+          ? {}
+          : {
+              "openai/outputTemplate":
+                resourceUri !== undefined && template === meta.resourceUri ? resourceUri : template,
+            }),
         ...(meta.ui === undefined
           ? {}
           : { ui: { ...meta.ui, ...(resourceUri === undefined ? {} : { resourceUri }) } }),

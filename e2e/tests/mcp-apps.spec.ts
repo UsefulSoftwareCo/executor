@@ -97,7 +97,9 @@ const upstream = () =>
                     required: ["boardId"],
                   },
                   annotations: { readOnlyHint: true },
-                  ...(withUi ? { _meta: { ui: { resourceUri: board } } } : {}),
+                  ...(withUi
+                    ? { _meta: { ui: { resourceUri: board }, "openai/outputTemplate": board } }
+                    : {}),
                 },
                 {
                   name: "move_card",
@@ -292,7 +294,10 @@ layer(HostedLive, { excludeTestServices: true })("MCP Apps", (it) => {
         expect(fixture.seen.initialize.every((declared) => declared)).toBe(true);
         const show = listed.tools.find((tool) => tool.name === "show_board");
         const move = listed.tools.find((tool) => tool.name === "move_card");
-        expect(show?._meta).toEqual({ ui: { resourceUri: widget } });
+        expect(show?._meta).toEqual({
+          ui: { resourceUri: widget },
+          "openai/outputTemplate": widget,
+        });
         expect(move?._meta).toEqual({ ui: { resourceUri: widget, visibility: ["app"] } });
         expect(show?.inputSchema).toMatchObject({
           type: "object",
