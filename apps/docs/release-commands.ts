@@ -23,7 +23,7 @@ export const releaseCommands = {
   "cli-script": {
     description:
       "Without Node, on macOS or Linux: the script checks the download against the release's SHA256SUMS and links ~/.local/bin/executor.",
-    command: `curl -fsSL ${release.cloudOrigin}/docs/install.sh | sh\nexecutor --version\nexecutor`,
+    command: `curl -fsSL ${release.cloudOrigin}/docs/install.sh | sh`,
   },
   "cli-windows": {
     description: "Without Node, on Windows, in PowerShell:",
@@ -49,11 +49,15 @@ export const releaseCommands = {
   },
   source: {
     description: "The public repository includes a Compose setup that builds this release locally:",
-    command: `git clone --depth 1 --branch '${published.tag}' https://github.com/${release.repository}.git executor-v2\ncd executor-v2\ndocker compose -f apps/hosted/self-host/compose.yaml build --build-arg EXECUTOR_BUILD_VERSION=${published.version}\ndocker compose -f apps/hosted/self-host/compose.yaml up -d`,
+    command: `git clone --depth 1 --branch '${published.tag}' https://github.com/${release.repository}.git executor-v2\ncd executor-v2\ndocker compose -f apps/hosted/self-host/compose.yaml build --build-arg EXECUTOR_BUILD_VERSION=${published.version}\nEXECUTOR_BUILD_VERSION=${published.version} docker compose -f apps/hosted/self-host/compose.yaml up -d`,
   },
 };
 
+export const releaseCommandLanguage = (product: typeof ReleaseCommandProduct.Type) =>
+  product === "cli-windows" ? "powershell" : "bash";
+
 export const releaseCommandMarkdown = (product: unknown): string => {
-  const snippet = releaseCommands[Schema.decodeUnknownSync(ReleaseCommandProduct)(product)];
-  return `${snippet.description}\n\n\`\`\`bash\n${snippet.command}\n\`\`\``;
+  const name = Schema.decodeUnknownSync(ReleaseCommandProduct)(product);
+  const snippet = releaseCommands[name];
+  return `${snippet.description}\n\n\`\`\`${releaseCommandLanguage(name)}\n${snippet.command}\n\`\`\``;
 };

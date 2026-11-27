@@ -1,0 +1,140 @@
+---
+title: App UI and static files
+description: "Add a React UI in ui/index.html, style it with built-in Tailwind CSS v4, serve static assets from ui/public/, and open the app's private URL."
+slug: "/build/ui"
+---
+
+An Executor app can ship a private React SPA in `ui/index.html` and `ui/main.tsx`, static or binary files in `ui/public/`, and an SVG icon in `ui/icon.svg`. Browser code calls app operations via `createAppClient`, `queryReference`, and `mutationReference` (`apps/client`) and `useAppQuery` (`apps/react`) on **Local**, **Self-host**, and **Cloud**.
+
+**The step that matters most:** add `react` and `react-dom` to `package.json`, add `ui/index.html` and `ui/main.tsx`, deploy, and click **Open app**.
+
+**Prerequisites:** an app you can edit and deploy. On **Self-host** public origins, configure `EXECUTOR_APP_UI_BASE_URL`, wildcard DNS, and HTTPS ([Serving app web pages](/docs/run/self-host#serving-app-web-pages)); built-in localhost covers `localhost` and `127.0.0.1`.
+
+**You'll know it worked when…** after deploying, **Open app** loads your signed-in React page and shows **All systems normal**.
+
+## How to use it
+
+### 1. Add `ui/index.html`, `ui/main.tsx`, and styles
+
+- Declare `react` and `react-dom` in `package.json` (`apps` expects `react` `^19.2.0`).
+- Use `import type` for server operation types from `../index.ts`. Put shared schemas in a separate file imported by both entry points.
+- **Tailwind CSS v4 is built in:** import `./style.css` from `ui/main.tsx` and start it with `@import "tailwindcss";`. No Tailwind dependency, config file, or build script is needed. Use `@theme` for tokens and `@source inline("...")` for classes supplied only at runtime.
+- If a path does not match an asset and contains no dots (`.`), Executor serves `ui/index.html` so your client-side router can handle it.
+
+### 2. Serve static files from `ui/public/` and add `ui/icon.svg`
+
+- Files under `ui/public/` are copied verbatim to the version and served at the app's origin (for example `ui/public/data.json` is served at `/data.json`). Binary assets (images, fonts, audio, video, `.wasm`, `.glb`) and prebuilt scripts/styles are supported with single byte-range requests and content revalidation.
+- Add `ui/icon.svg` for the app's icon (served at `/_executor/icon.svg`) used by desktop windows, launchers, and the menu bar. For desktop-window installation, menu-bar popovers (`ui/menubar.html`), shortcuts, and notifications, see [Desktop apps](/docs/desktop-apps).
+
+### 3. Open the app's URL
+
+- **Local:** open the dashboard in a browser paired with this Executor and click **Open app**. Each app opens on its own `localhost` subdomain. If Firefox stops on **Open Executor locally** even though the dashboard is paired, open that sign-in URL in the paired dashboard tab and continue.
+- **Cloud and Self-host:** open the app in the dashboard and click **Open app**, or call `tools.executor.appUi.location({ path: { organization, app } })` over MCP using a connection authorized for the organization and app and with the built-in Executor app's account linked. Open the returned `url` when `status` is `"ready"` (for example `https://<app-slug>.<org-slug>.executor.website` on Cloud). Before deployment the route raises `AppNotDeployed`; after deployment it can also return `"pending"` (for example while a new organization's app domain is being set up), `"failed"`, or `"unavailable"` with `reason: "no_ui"` or `"no_app_domain"`.
+
+Deploying builds and activates the UI automatically, and active open pages reload on each new activation.
+
+## Example
+
+Save these files in `./status-board` (replacing `0.0.1-beta.148` with the `version` reported by `executor apps framework` if your target reports a different release). For a standalone local TypeScript check, install `@types/react` and `@types/react-dom` alongside the `ui/style.d.ts` declaration below.
+
+<CodeGroup>
+
+```json status-board/package.json
+{
+  "name": "status-board",
+  "private": true,
+  "dependencies": {
+    "apps": "0.0.1-beta.148",
+    "react": "19.3.0",
+    "react-dom": "19.3.0"
+  }
+}
+```
+
+```ts status-board/index.ts
+import { defineApp, object, query, router, string } from "apps";
+
+export const status = query(
+  {
+    description: "Return the current service status",
+    input: object({}),
+    output: string(),
+  },
+  async () => "All systems normal",
+);
+
+export default defineApp({}, { tools: router({ status }) });
+```
+
+```html status-board/ui/index.html
+<!doctype html>
+<html>
+  <head>
+    <title>Status Board</title>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="./main.tsx"></script>
+  </body>
+</html>
+```
+
+```tsx status-board/ui/main.tsx
+import React from "react";
+import { createRoot } from "react-dom/client";
+import { string } from "apps";
+import { createAppClient, queryReference } from "apps/client";
+import { useAppQuery } from "apps/react";
+import type { status } from "../index.ts";
+import "./style.css";
+
+const client = createAppClient();
+const statusAtom = client.queryAtom(queryReference<typeof status>("status"), {}, string());
+
+function App() {
+  const { data, pending, error } = useAppQuery(statusAtom);
+  return (
+    <main className="p-6 font-sans">
+      <h1 className="text-xl font-semibold">Status Board</h1>
+      <p role="status">{error ?? (pending ? "Loading…" : data)}</p>
+    </main>
+  );
+}
+
+createRoot(document.getElementById("root")!).render(<App />);
+```
+
+```css status-board/ui/style.css
+@import "tailwindcss";
+```
+
+```ts status-board/ui/style.d.ts
+declare module "*.css";
+```
+
+</CodeGroup>
+
+Create and deploy `./status-board` using the commands in [Build an app](/docs/build):
+
+```bash
+APP_ID=$(executor apps create --name "Status Board" --files ./status-board | node -pe 'JSON.parse(require("fs").readFileSync(0, "utf8")).id')
+executor apps deploy --app "$APP_ID" --files ./status-board
+```
+
+Open the app in a paired (Local) or signed-in (Cloud / Self-host) dashboard browser, click **Open app**, and check that **Status Board** displays **All systems normal**.
+
+## Limits
+
+- **React SPAs only:** React is the only supported UI framework. Server-side rendering (SSR), React Server Components, and custom bundler plugins are not supported.
+- **Tailwind CSS v4 directives:** filesystem `@source` paths and JavaScript `@config` / `@plugin` files are not supported.
+- **Static file bounds (`ui/public/`):** at most 10,000 files, 32 MB per file, and 1 GB total; paths cannot collide with `index.html`, `_executor/`, or any compiled browser output. If `ui/public/` assets would exceed the 16 MiB inline upload limit, push them with Git (code outside `ui/public/` still has a 16 MiB limit; see [Build an app](/docs/build#deploying)).
+- **Icon validation (`ui/icon.svg`):** use one well-formed `<svg xmlns="http://www.w3.org/2000/svg">` file up to 64 KiB. Use in-document references such as `href="#shape"` if the icon needs links.
+- **Browser authentication and framing:** served app pages check app access through an authenticated app-site browser session. On **Cloud** and **Self-host**, sign-in establishes a separate app cookie. MCP tokens do not create that session. The app UI serving paths add a CSP frame restriction to documents and icons. Keep credentials in server-side app code.
+- **Approvals from a UI:** if a tool's approval rule requests approval when called from an app's own served web page, the call fails. App setup can run before the rule.
+
+## Related
+
+- [Desktop apps](/docs/desktop-apps)
+- [Build an app](/docs/build)
+- [Tools, routers, and schemas](/docs/build/tools)
+- [App storage and SQLite](/docs/build/storage)

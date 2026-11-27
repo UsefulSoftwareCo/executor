@@ -3,25 +3,27 @@ title: Add an MCP client
 description: "Connect an MCP client with browser sign-in, a personal access token, or a local server key."
 ---
 
-The dashboard's **Connect an agent** page shows these commands with your own
+The dashboard's **Connections** page shows these commands with your own
 endpoint already filled in. Open it at `/org/<your-organization>/connect` on
-hosted and self-host, or **Connect** in the local dashboard.
+**Cloud** and **Self-host**, or **Connections** (`/connections`) in the **Local** dashboard. Copy the endpoint for your running server into your MCP client. For hosted OAuth, your client must be able to reach the server and you need membership in the organization you select.
 
-The endpoint is your origin plus `/mcp`:
+Verify the connection by finding and running an available read tool in an app the connection can use, with its required account linked.
 
-| Where | Endpoint |
+| Where | MCP endpoint |
 | --- | --- |
-| Hosted | `https://mcp.executor.sh/mcp` |
-| Self-host | `<your origin>/mcp` |
-| Local | `http://127.0.0.1:4312/mcp` |
+| **Cloud** | `https://mcp.executor.sh/mcp` (separate from the dashboard origin `https://app.executor.sh`) |
+| **Self-host** | `<your origin>/mcp` |
+| **Local** | `http://127.0.0.1:4312/mcp` |
 
-You can also connect with a [personal access token](/api-keys#connect-an-mcp-client) as the Authorization bearer on `<your origin>/org/<organization>/mcp`. The **Personal access token** tab on an organization's Connections page shows that address filled in.
+On **Cloud** and **Self-host**, you can also connect with a [personal access token](/docs/api-keys#connect-an-mcp-client) as the `Authorization: Bearer` header on `<mcp-origin>/org/<organization>/mcp`. The **Personal access token** tab on an organization's **Connections** page shows that address filled in.
+
+**Approval defaults:** The browser OAuth consent screen preselects **Automatic** for the default MCP URL, which accepts app approval requests without a separate Executor prompt. See [Choosing where approvals appear](/docs/mcp-clients#choosing-where-approvals-appear) for the other modes.
 
 Most clients load MCP servers only at startup. After you add Executor, restart
 the client or open a new session before its tools appear.
 
 Moving from a local Executor or Executor 1 to a self-hosted server? Remove the
-old entry first, and see [Move from a local Executor](/run/self-host#move-from-a-local-executor).
+old entry first before adding your self-hosted endpoint.
 
 ## ChatGPT
 
@@ -33,9 +35,11 @@ account authorization are separate steps; you may be asked to connect on first u
 Start a new chat and ask: **Show me the apps and tools available in my Executor workspace.**
 If your workspace prevents installation, ask your admin to allow Executor.
 
-For self-host or a scoped MCP URL, use **Plugins → Add → Add custom MCP server**
-instead. Name it **Executor**, enter your endpoint, choose **OAuth**, then click
-**Create as a plugin** and **Connect**. Sign in and approve access.
+For Self-host or a scoped MCP URL, confirm that your ChatGPT workspace allows
+custom MCP servers and that ChatGPT can reach your server, then use
+**Plugins → Add → Add custom MCP server**. Name it **Executor**, enter your
+endpoint, choose **OAuth**, then click **Create as a plugin** and **Connect**.
+Sign in and approve access.
 
 ## Codex
 
@@ -48,7 +52,7 @@ In Codex CLI, run `/plugins`, find Executor in the plugin browser and install it
 Start a new session to load its skills and tools, and complete sign-in when prompted.
 Marketplace availability depends on your Codex environment.
 
-The IDE extension does not support plugins. For the IDE extension, self-host,
+The IDE extension does not support plugins. For the IDE extension, Self-host,
 or a scoped connection, add the MCP server directly:
 
 ```bash
@@ -73,10 +77,10 @@ Claude Code has its own command. `--scope user` adds Executor for every project.
     ```
   </Step>
   <Step title="Run /mcp inside Claude Code">
-    It opens Executor in your browser.
+    Select `executor`, then choose **Authenticate** to open Executor in your browser.
   </Step>
   <Step title="Sign in and approve">
-    Choose an organization, then approve the connection.
+    Choose an organization, review the approval mode, and approve the connection.
   </Step>
 </Steps>
 
@@ -114,7 +118,8 @@ browser the first time the client connects.
 
 A local server also signs clients in through your browser, using the dashboard
 you paired with `executor`. A client that cannot sign in can send the local API
-key as a bearer token instead. The port is `4312` unless you changed it with
+key as a bearer token instead (note: the bare Local server key defaults to model
+approval mode). The port is `4312` unless you changed it with
 `executor service set port`:
 
 <CodeGroup>
@@ -144,26 +149,43 @@ The background Executor keeps running until you stop it, but it does not start
 with your computer: after a restart, run `executor` or `executor service start`,
 or the client's connection is refused.
 
+## Scoped connections
+
+Use **Connections** to manage named MCP connections with their own app, tool and account policy. A scoped URL uses OAuth. Scoped edits apply on later authorization checks, including for agents with an existing grant. Revoking a grant or connection blocks subsequent requests that use it.
+
 ## Choosing where approvals appear
 
-By default the agent relays an approval request to you and answers on your
-behalf with `resume`. To answer in your browser instead, add the mode to the URL
-before you connect:
+The browser OAuth consent screen preselects **Automatic** for the default MCP URL,
+which accepts app approval requests without a separate Executor prompt. To use model
+mode, select **Through your agent** on the consent screen to let the client answer
+and resume. Select **In your browser** to answer from the credential owner's
+signed-in hosted browser or a paired Local browser. A URL with
+`?elicitation_mode=browser` or `?elicitation_mode=native` can preselect that option.
+
+For browser approvals, use:
 
 ```bash
 claude mcp add --transport http --scope user executor 'https://mcp.executor.sh/mcp?elicitation_mode=browser'
 ```
 
-The mode is fixed when the connection is approved. To change it, connect again
-with the new URL. See [The MCP endpoint](/mcp) for what each mode does.
+OAuth keeps the mode you approved until you connect again with a new grant. A
+hosted personal access token defaults to automatic and accepts
+`?elicitation_mode=model`, `?elicitation_mode=native`, or
+`?elicitation_mode=browser` in its MCP URL; the bare Local server key defaults to
+model mode. See [what happens when a tool requests approval](/docs/concepts/tools-and-approvals#what-happens-when-a-tool-requests-approval) for each mode.
 
 ## Check that it worked
 
-Ask the agent to run this:
+On Local, or on a hosted connection with access to the built-in Executor app and its linked service account, ask the agent to run this:
 
 ```js
 return await tools.search({ query: "Executor" });
 ```
 
-It should return callable paths for the Executor app itself. If the tool list is
-empty, the client has not reconnected since you added the server.
+Look for callable paths for the Executor app, then run an available read tool. For a connection without that app, find and run a read tool from another allowed app with its required account linked.
+
+## Related
+
+- [API keys](/docs/api-keys)
+- [Tools and approvals](/docs/concepts/tools-and-approvals)
+- [How Executor protects credentials](/docs/security/credentials)
