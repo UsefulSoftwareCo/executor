@@ -1,0 +1,225 @@
+{
+  "base": "f10d44db5855d9c78f4ddecd4b1a9fc174f46bba",
+  "decisions": {
+    "below the threshold": {
+      "admitted": true,
+      "refusal": null,
+      "planned": [],
+      "evicted": [],
+      "failed": [],
+      "torn": [],
+      "registry": 80,
+      "warnsOverLimit": false
+    },
+    "oldest is a PR preview": {
+      "admitted": true,
+      "refusal": null,
+      "planned": [],
+      "evicted": ["pr-2994"],
+      "failed": [],
+      "torn": ["pr-2994"],
+      "registry": 80,
+      "warnsOverLimit": false
+    },
+    "oldest is a temporary stage, whoever owns it": {
+      "admitted": true,
+      "refusal": null,
+      "planned": [],
+      "evicted": ["temp-a"],
+      "failed": [],
+      "torn": ["temp-a"],
+      "registry": 80,
+      "warnsOverLimit": false
+    },
+    "oldest is kept, a PR preview is next": {
+      "admitted": true,
+      "refusal": null,
+      "planned": [],
+      "evicted": ["kept-stage"],
+      "failed": [],
+      "torn": ["kept-stage"],
+      "registry": 80,
+      "warnsOverLimit": false
+    },
+    "every stage is kept": {
+      "admitted": true,
+      "refusal": null,
+      "planned": [],
+      "evicted": ["pr-2994"],
+      "failed": [],
+      "torn": ["pr-2994"],
+      "registry": 80,
+      "warnsOverLimit": false
+    },
+    "stages that only resemble PR previews are kept": {
+      "admitted": true,
+      "refusal": null,
+      "planned": [],
+      "evicted": ["ops-stage", "pr-2995", "pr-2996", "pr-2997", "pr-2998", "pr-2994"],
+      "failed": [],
+      "torn": ["ops-stage", "pr-2995", "pr-2996", "pr-2997", "pr-2998", "pr-2994"],
+      "registry": 80,
+      "warnsOverLimit": false
+    },
+    "two needed, a kept stage between evictable ones": {
+      "admitted": true,
+      "refusal": null,
+      "planned": [],
+      "evicted": ["temp-a", "kept-stage"],
+      "failed": [],
+      "torn": ["temp-a", "kept-stage"],
+      "registry": 80,
+      "warnsOverLimit": false
+    },
+    "--no-evict with a PR preview to evict": {
+      "admitted": false,
+      "refusal": "no-evict",
+      "planned": [],
+      "evicted": [],
+      "failed": [],
+      "torn": [],
+      "registry": 80,
+      "warnsOverLimit": false
+    },
+    "--no-evict when every stage is kept": {
+      "admitted": false,
+      "refusal": "no-evict",
+      "planned": [],
+      "evicted": [],
+      "failed": [],
+      "torn": [],
+      "registry": 80,
+      "warnsOverLimit": false
+    },
+    "redeploying a registered slug at the threshold": {
+      "admitted": true,
+      "refusal": null,
+      "planned": [],
+      "evicted": [],
+      "failed": [],
+      "torn": [],
+      "registry": 81,
+      "warnsOverLimit": false
+    },
+    "plan with a kept oldest stage": {
+      "admitted": true,
+      "refusal": null,
+      "planned": ["kept-stage"],
+      "evicted": [],
+      "failed": [],
+      "torn": [],
+      "registry": 80,
+      "warnsOverLimit": false
+    },
+    "plan when every stage is kept": {
+      "admitted": true,
+      "refusal": null,
+      "planned": ["pr-2994"],
+      "evicted": [],
+      "failed": [],
+      "torn": [],
+      "registry": 80,
+      "warnsOverLimit": false
+    },
+    "a second candidate's lease changes to a person's before eviction locks it": {
+      "admitted": true,
+      "refusal": null,
+      "planned": [],
+      "evicted": ["pr-2994", "pr-3000"],
+      "failed": [],
+      "torn": ["pr-2994", "pr-3000"],
+      "registry": 80,
+      "warnsOverLimit": false
+    },
+    "a second candidate, a temporary stage, changes owner before eviction locks it": {
+      "admitted": true,
+      "refusal": null,
+      "planned": [],
+      "evicted": ["pr-2994", "temp-b"],
+      "failed": [],
+      "torn": ["pr-2994", "temp-b"],
+      "registry": 80,
+      "warnsOverLimit": false
+    },
+    "a second candidate leaves the registry before eviction locks it": {
+      "admitted": true,
+      "refusal": null,
+      "planned": [],
+      "evicted": ["pr-2994", "pr-3000"],
+      "failed": [],
+      "torn": ["pr-2994", "pr-3000"],
+      "registry": 80,
+      "warnsOverLimit": false
+    },
+    "497 of 500 classes, a second candidate PR preview destroyed by something else before eviction locks it": {
+      "admitted": true,
+      "refusal": null,
+      "planned": [],
+      "evicted": ["pr-2994", "pr-3000"],
+      "failed": [],
+      "torn": ["pr-2994", "pr-3000"],
+      "registry": 80,
+      "warnsOverLimit": false
+    },
+    "497 of 500 classes, two needed, an empty temporary stage, an empty kept stage, then a PR preview": {
+      "admitted": false,
+      "refusal": "quota",
+      "planned": [],
+      "evicted": [],
+      "failed": [],
+      "torn": [],
+      "registry": 81,
+      "warnsOverLimit": false
+    },
+    "497 of 500 classes, the oldest stage is an empty temporary stage": {
+      "admitted": false,
+      "refusal": "quota",
+      "planned": [],
+      "evicted": [],
+      "failed": [],
+      "torn": [],
+      "registry": 80,
+      "warnsOverLimit": false
+    },
+    "497 classes with no limit set, the oldest stage is an empty temporary stage": {
+      "admitted": true,
+      "refusal": null,
+      "planned": [],
+      "evicted": ["empty-stage"],
+      "failed": [],
+      "torn": ["empty-stage"],
+      "registry": 80,
+      "warnsOverLimit": false
+    },
+    "497 of 500 classes, a kept oldest stage, three empty stages, then a PR preview": {
+      "admitted": true,
+      "refusal": null,
+      "planned": [],
+      "evicted": ["kept-stage"],
+      "failed": [],
+      "torn": ["kept-stage"],
+      "registry": 80,
+      "warnsOverLimit": false
+    },
+    "six unreadable PR previews at the front": {
+      "admitted": true,
+      "refusal": null,
+      "planned": [],
+      "evicted": [],
+      "failed": ["pr-3001"],
+      "torn": [],
+      "registry": 81,
+      "warnsOverLimit": true
+    },
+    "six unreadable PR previews at the front, 497 of 500 classes": {
+      "admitted": false,
+      "refusal": "quota",
+      "planned": [],
+      "evicted": [],
+      "failed": ["pr-3001"],
+      "torn": [],
+      "registry": 80,
+      "warnsOverLimit": true
+    }
+  }
+}
