@@ -1,13 +1,15 @@
 ---
 title: Command line
-description: "Install the executor command. Run Executor on your machine, or sign in to hosted Executor and call your tools from a shell."
+description: "Install the executor command to run Executor locally on your machine, or sign in to a Self-host or Cloud Executor from a shell."
 ---
 
-The `executor` command does two jobs. It runs Executor on your machine, for one
-person: the local server holds your accounts, runs your apps and serves an MCP
-endpoint for your agents. It is also a client of any Executor, local, hosted or
-self-hosted: it signs in, calls your tools from a shell, and serves them to MCP
-clients over stdio.
+The `executor` command runs Executor on your machine (**Local**) for one person and also acts as a shell and stdio MCP client for **Local**, **Self-host**, and **Cloud** Executor hosts.
+
+Install the beta release with `npm i -g executor@beta` (Node 14.18.0 or newer; a bare `npm i -g executor` installs v1.6.11 without apps), or use the install script or Homebrew without Node. With the default service settings, `executor` starts the background server and opens the dashboard.
+
+**Prerequisites:** macOS (Apple Silicon or Intel), Linux with glibc (ARM64 or x64) and system CA certificates installed, or Windows (x64). For npm, keep Node.js 14.18.0 or newer on `PATH` — the npm launcher uses Node to start Executor's bundled native runtime. The standalone installers and Homebrew run without a separate Node or Bun installation.
+
+**You'll know it worked when** `executor --version` prints `executor v2.0.0-beta.79` and `executor` opens the dashboard in your browser (or, on a headless machine, prints a one-use connection link valid for five minutes).
 
 ## Install and start
 
@@ -19,323 +21,75 @@ clients over stdio.
 
 <ReleaseCommand product="cli-homebrew" />
 
-`executor` starts Executor in the background, opens the dashboard in your
-browser and exits. Executor keeps running until you stop it; see
-[The background Executor](#the-background-executor). Executor is one executable
-with its runtime, dashboard, Git and workerd beside it; no source checkout, Node
-or Bun is needed to run it.
+After installing with the standalone script or Homebrew, follow any `PATH` instructions and open a new terminal. Check the installed version, then start Executor:
 
-The npm package is a small launcher. The first time a version starts, it
-downloads that release's archive for your platform from the public GitHub
-release, checks it against the SHA-256 the package records, and keeps it in
-`~/.executor/v2/launcher/<version>`. Set `EXECUTOR_DOWNLOAD_URL` to use a mirror
-of the releases.
+```bash
+executor --version
+executor
+```
 
-The install script keeps each release in `~/.executor/v2/runtime/versions/`,
-points `~/.executor/v2/runtime/current` at the one in use and links
-`~/.local/bin/executor` to it. It never edits your shell profile: if
-`~/.local/bin` is not on your `PATH`, it prints the line to add. On Windows the
-script adds `%USERPROFILE%\.executor\v2\runtime\current` to your user `PATH`.
-Pass a version to install that release, for example
-`curl -fsSL https://executor.sh/docs/install.sh | sh -s -- 2.0.0-beta.16`.
+With the default service settings, `executor` starts the background Executor if it is not running, opens the dashboard in your browser, and exits. If `executor` cannot launch a browser, open the one-use connection link it prints within five minutes; on a headless machine, use `executor service start` and `executor service pair`. Executor ships as one executable with its runtime, dashboard, Git, and workerd beside it.
 
-If `executor --version` still shows v1, your shell is finding an older install.
-Run `type -a executor` on macOS or Linux, or `where.exe executor` on Windows,
-to see which executable takes priority. Remove the old install with the package
-manager that installed it, then open a new terminal. For example, use
-`bun remove -g executor` for an old Bun install. This does not delete your data.
+- **npm launcher:** Keeps Node.js 14.18.0 or newer on `PATH` to launch the native runtime. The first time a version runs, it downloads that release's platform archive from the public GitHub release, verifies its SHA-256 checksum against the npm manifest, and caches it in `~/.executor/v2/launcher/<version>`. Set `EXECUTOR_DOWNLOAD_URL` to point at a release mirror.
+- **Install script:** Keeps each release under `~/.executor/v2/runtime/versions/`, points `~/.executor/v2/runtime/current` at the active version, and links `~/.local/bin/executor` to it on macOS and Linux (printing `PATH` instructions if `~/.local/bin` is not already on your `PATH`, without editing your shell profile). On Windows, the script adds `%USERPROFILE%\.executor\v2\runtime\current` to your user `PATH` (unless `EXECUTOR_NO_MODIFY_PATH` is set) and instructs you to open a new terminal. Pass a version argument to install a specific release, for example `curl -fsSL https://executor.sh/docs/install.sh | sh -s -- 2.0.0-beta.79`.
+- **Desktop app:** If you prefer a window over a browser tab, install the desktop app — it shares the same background server and `~/.executor/v2/cli` data directory by default (desktop can override its directory).
 
-On first launch, Executor saves its API and encryption keys in macOS Keychain,
-Windows Credential Manager, or Linux Secret Service. Unlock the credential store
-and allow Executor access when asked. If there is no credential store on the
-first launch, for example on a Linux server without GNOME Keyring, Executor saves
-the keys to `keys.json` in its data directory instead. The file is readable only
-by your user. Keep that directory private. If a credential store exists but
-access is denied, for example because you dismissed the prompt or the store is
-locked, Executor stops without writing `keys.json`. Start it again to be asked
-again. Where no prompt can appear, such as over SSH, unlock the store first: on
-Linux run `gnome-keyring-daemon --unlock`, on macOS `security unlock-keychain`.
+<ReleaseDesktopLink />
 
-To use `keys.json` on a new data directory even when a credential store works,
-set `EXECUTOR_KEY_STORAGE=file` for its first start. Set
-`EXECUTOR_KEY_STORAGE=os` to require the credential store and never fall back to
-`keys.json`. Executor never switches an existing directory's key storage: a
-value that does not match the directory stops startup and changes nothing.
+## Commands
 
 | Command | Purpose |
 | --- | --- |
-| `executor` | Start the background Executor if it is not running, open the dashboard and exit. |
-| `executor serve` | Run Executor in this terminal, without opening a browser, until you press Ctrl+C. |
-| `executor service` | Start, stop and configure the background Executor, print a connection link and replace its API key. |
-| `executor login`, `logout`, `whoami` | Sign in to an Executor host, sign out, and show what the sign-in reaches. See [Use your tools from a shell](#use-your-tools-from-a-shell). |
-| `executor search`, `describe`, `call`, `execute`, `resume`, `skills` | Call your tools from a shell. |
-| `executor mcp` | Serve your tools to an MCP client over stdio. |
-| `executor apps` | Create, edit, deploy and install apps. See [Author an app](/author-an-app). |
-| `executor upgrade` | Install the newest release the way Executor was installed; `--rollback` returns to the previous one. |
+| `executor` | With the default service settings, start the background Executor if it is not running, open the dashboard, and exit. Accepts `--standalone` and `--server <url>`. |
+| `executor serve` | Run Executor in the current terminal without opening a browser until you press Ctrl+C. |
+| `executor service` | Start, stop, restart, inspect, and configure the background Executor; print a connection link or rotate its local API key. |
+| `executor login`, `executor apps login`, `executor logout`, `executor whoami` | Sign in to a **Self-host** or **Cloud** host for tool commands or app commands, sign out, and inspect the active sign-in. |
+| `executor search`, `describe`, `call`, `execute`, `resume`, `skills` | Search, inspect, and call app tools and skills from a shell. |
+| `executor mcp` | Serve the resolved host's MCP endpoint to an MCP client over stdio. |
+| `executor apps` | Create, edit, deploy, share, and install apps. See [Author an app](/docs/author-an-app). |
+| `executor upgrade` | Install the newest release on your channel, or switch back with `--rollback`. |
 
-### Coming from Executor 1
-
-Executor 2 does not have Executor 1's `web`, `open`, `daemon`, `install`,
-`tools`, `server` or `docs` commands; running one reports an unknown command.
-
-| Executor 1 | Executor 2 |
-| --- | --- |
-| `executor web` | `executor` starts the background Executor if needed and opens the dashboard. |
-| `executor open` | `executor service pair` prints a connection link for the background Executor. |
-| `executor daemon run` | `executor service start` starts the background Executor without opening a browser. It runs until `executor service stop`. |
-| `executor install`, `executor service install` | Nothing to install. `executor` or `executor service start` starts the background Executor, which runs until you stop it; it does not start with your computer. |
-| `executor service uninstall` | Nothing to remove. `executor service stop` stops the background Executor. |
-| `executor tools` | `executor search` and `executor describe`. |
-| `executor call`, `executor resume`, `executor mcp`, `executor login` | Executor 2 has commands with these names; see [Use your tools from a shell](#use-your-tools-from-a-shell). |
-| `executor server` | No server profiles. Commands take `--host` and remember the host you signed in to last; `executor service rotate-key` replaces `executor server rotate-token`. |
-| `executor docs` | Open [executor.sh/docs](https://executor.sh/docs). |
-
-## Use your tools from a shell
-
-`executor login` signs in to hosted Executor. It prints a link and a code; open
-the link in any browser where you are signed in, check the code and approve.
-On that page you choose which apps the sign-in reaches and how approvals are
-answered. Sign in to a self-hosted Executor with `--host`:
-
-```sh
-executor login
-executor login --host https://executor.example.com
-```
-
-The sign-in is saved in your operating system's credential store, or, on a
-machine without one, in a file under `~/.local/state/executor/auth` that only
-you can read. It renews itself. `executor whoami` prints the host, its
-organization, what the sign-in reaches and its approval mode.
-`executor logout` removes this computer's sign-in for the host.
-
-`executor apps` uses the same sign-in. Creating, changing and deploying apps
-needs a sign-in approved for **All apps**; one approved for a scoped connection
-lists that connection's apps and cannot change them. A self-hosted Executor
-from before this sign-in covered app commands refuses it there until the host
-is updated.
-
-Every client command, the tool commands, `executor mcp` and `executor apps`,
-talks to one host: `--host`, then `EXECUTOR_HOST`, then the host you signed in
-to last with `executor login`. With none of these, it
-uses the background Executor on this computer, which starts if needed, with
-its API key. `executor logout` forgets the host it signs out of, so commands go
-back to the background Executor. Set `EXECUTOR_ACCESS_TOKEN` to send a pasted
-access token instead of a saved sign-in.
-
-The tool commands call the [MCP tools](/mcp#the-tools) of the same name and
-print the result as JSON on stdout. A failure exits with status 1 and prints the
-error's message, code and next step on stderr; when stdout is not a terminal, it
-also prints them as `{"error": {...}}` on stdout.
-
-| Command | Arguments |
-| --- | --- |
-| `executor search [query]` | `--namespace <app>`, `--limit <n>`, `--offset <n>` |
-| `executor describe <path>...` | One to 20 exact paths from `search`. |
-| `executor call [path]` | `--input <json>` or `--input-file <file>`, `-` for standard input. Without a path, the input is a JSON array of `{ "path", "input" }` calls, which run concurrently. The input defaults to `{}`. |
-| `executor execute` | `--code <program>` or `--file <file>`, `-` for standard input. |
-| `executor resume <request-id>` | `--action accept\|decline\|cancel`, and `--content <json>` or `--content-file <file>` for the form's fields. In browser mode pass only the ID. |
-| `executor skills` | `--app <slug>`, `--name <skill>`, `--file <path>`, `--version <id>`, `--revision <revision>` |
-
-```sh
-executor search "github issues"
-executor call tools.github.issues.list --input '{"repo":"acme/web"}' > issues.json
-executor execute --file report.js > report.json
-```
-
-Redirect a large result to a file and read the part you need, instead of
-passing it whole to your agent. When a call needs approval or input, the
-command prints the pending request, with `approvalUrl` in browser mode. Answer
-it with `executor resume`; never run the call again to continue it. A browser
-approval belongs to the MCP session the call was made in, so the CLI keeps that
-session's ID, which grants nothing, under `~/.local/state/executor/paused` until
-the request is answered, and `executor resume` continues it.
-
-### Serve your tools to an MCP client
-
-`executor mcp` is a stdio MCP server for clients that start a command, such as
-Claude Code:
-
-```sh
-claude mcp add executor -- executor mcp
-```
-
-It passes every message to the host's MCP endpoint, including approvals and
-questions the host asks the client, with your sign-in, which it renews as it
-runs. It tells the agent that the `executor` command is available in its shell.
-When the host no longer knows its MCP session, as after the host restarts, it
-opens a new one and sends the request again, so the client keeps working.
-Without a sign-in, it serves the background Executor on this computer.
+All subcommands also accept `--help` (`-h`), `--version` (`-v`), `--wizard`, `--completions <bash|zsh|fish|powershell|sh|pwsh>`, and `--log-level <level>`.
 
 ## The background Executor
 
-Each data directory has one background Executor that every command shares. The
-first command that needs it starts it: `executor`, `executor service start`, or
-a client command without a host, such as `executor apps list` or `executor search`. It keeps running after that command exits, until you
-run `executor service stop`. Nothing is installed with your operating system, so
-it does not start again after you restart your computer: MCP clients cannot
-connect until you run `executor` or `executor service start`.
-
-The desktop app uses the same background Executor and data directory. When you
-stop it, with `executor service stop` or by changing a setting, the desktop app
-says it was stopped and does not start it again. It reconnects once a command
-starts it, or when you click **Start** there.
-
-Desktop app releases before the background Executor kept their own data. The
-first launch of a newer desktop app moves that data into the command line's data
-directory, `~/.executor/v2/cli`, once, so both use the same apps and accounts.
-Nothing is merged: if the command line already had data there, the desktop
-app's data replaces it, and the command line's folder, with its apps, accounts
-and `service.json`, moves to `~/.executor/v2/backups/cli-data-<time>`. Either
-way its settings carry over, except the port, which becomes the desktop app's,
-and the `env` variables that belong to the replaced data: `EXECUTOR_PORT`,
-`EXECUTOR_KEY_STORAGE`, `EXECUTOR_API_KEY` and `EXECUTOR_ENCRYPTION_KEY`. The
-desktop app names that folder and says which settings changed. Nothing is
-deleted: the desktop app's old folder moves to
-`~/.executor/v2/backups/desktop-data-<time>`, or stays where it was when it is
-on another drive. A desktop app that never started successfully has no data to
-move, and the command line's data is left alone.
-
-When the background Executor runs another version, `executor` stops it and
-starts its own version. Other commands use whichever version is running. An
-upgrade outside `executor upgrade`, such as `brew upgrade`, `npm i -g` or the
-install script, removes or replaces the executable it runs from. It then stops
-by itself within five seconds, and the next command starts the installed
-version; the install script stops it first. On Windows the files of a running
-program cannot be replaced, so run `executor service stop` before you install
-with npm, pnpm, Bun or Yarn.
-
-| Command | Purpose |
-| --- | --- |
-| `executor service start` | Start the background Executor, or confirm that it runs, and print its URL. |
-| `executor service stop` | Stop it. |
-| `executor service restart` | Stop it and start this version. |
-| `executor service status` | Print its URL, version and process ID, with `starting`, `stopping` or `not responding` before them while it starts, stops or does not answer, or `stopped`. |
-| `executor service get [setting]` | Print every setting as JSON, or one setting. |
-| `executor service set <setting> <value>` | Change a setting. |
-| `executor service unset <setting>` | Remove a setting. |
-| `executor service pair` | Print a new connection link for the background Executor. |
-| `executor service rotate-key` | Replace the saved API key. Run `executor service restart`, then update clients that used the old key. |
-
-`executor service pair` asks the background Executor for a link, waiting up to
-30 seconds while it starts, stops or does not respond. It only reads: it never
-starts Executor or creates a data directory or keys. When you set
-`EXECUTOR_API_KEY`, it sends that key instead, to the background Executor or,
-when none runs, to the server on `EXECUTOR_PORT`.
-
-| Setting | Purpose |
-| --- | --- |
-| `port` | The port it listens on. `EXECUTOR_PORT` wins over it; the default is `4312`. Each data directory's background Executor needs its own port. |
-| `env` | Extra environment variables for it: `executor service set env <name> <value>`, `executor service unset env <name>`. |
-| `disabled` | `true` makes `executor`, and client commands without a host, run a private server for the command instead, as `--standalone` does. `executor service start`, `executor service pair` and the desktop app still use the background Executor. |
-
-Changing `port` or `env`, or setting `disabled` to `true`, stops the background
-Executor; the next command that needs it starts it with the new settings. It
-runs with the environment of the command that started it plus `env`, so use
-`env` for variables it should always have, such as `EXECUTOR_BROWSER_ORIGIN`.
-`EXECUTOR_API_KEY` and `EXECUTOR_ENCRYPTION_KEY` reach it only when both are
-set, as for supplied keys; `EXECUTOR_API_KEY` alone is only the key the command
-itself sends.
-
-The data directory holds the settings in `service.json`. While Executor runs,
-`server.json` records its address, process ID and a password that changes each
-time it starts, and `.server.lock` stops a second server from opening the same
-data directory. `service.json` and `server.json` are readable only by your user.
-
-`executor --standalone` runs a private server on a free port for that command
-instead, until you press Ctrl+C. It uses the same data directory, so stop the
-background Executor first or set `EXECUTOR_DATA_DIR` to another folder.
-`executor --server <url>` opens the dashboard of an Executor server that already
-runs at that URL, using `EXECUTOR_API_KEY` or the API key saved in the data
-directory. `executor serve` runs Executor in your terminal instead of the
-background, so stop the background Executor first; while it runs, other commands
-use it as they would the background Executor.
+By default, local commands and the desktop app share one background server per data directory. Manage it with `executor service start`, `stop`, `restart`, `status`, `get`, `set`, `unset`, `pair`, and `rotate-key`. See [Background server and key storage](/docs/run/cli/background-server).
 
 ## Configure it
 
-| Variable | Purpose |
-| --- | --- |
-| `EXECUTOR_PORT` | Port. Wins over the `port` setting; the default is `4312`. |
-| `EXECUTOR_NO_UPDATE_CHECK` | Set to `1` to skip the daily check for a newer release. |
-| `EXECUTOR_DATA_DIR` | Data directory, default `~/.executor/v2/cli`. |
-| `EXECUTOR_BROWSER_ORIGIN` | Exact HTTPS origin for generated browser links. |
-| `EXECUTOR_WEBHOOK_ORIGIN` | Exact HTTPS origin that receives webhooks. |
-| `EXECUTOR_KEY_STORAGE` | `file` or `os`: key storage for a new data directory. |
-| `DO_NOT_TRACK` or `EXECUTOR_DISABLE_ANALYTICS` | Set to `1` to turn off anonymous [usage analytics](/run/usage-analytics) and feedback. |
+Set `EXECUTOR_PORT`, `EXECUTOR_DATA_DIR`, `EXECUTOR_KEY_STORAGE`, `EXECUTOR_API_KEY`, `EXECUTOR_ENCRYPTION_KEY`, `EXECUTOR_BROWSER_ORIGIN`, `EXECUTOR_WEBHOOK_ORIGIN`, `EXECUTOR_NO_UPDATE_CHECK`, or `DO_NOT_TRACK` / `EXECUTOR_DISABLE_ANALYTICS` to customize the local server. See [Background server and key storage](/docs/run/cli/background-server#configure-it).
 
-To keep keys in a secret manager instead, supply both `EXECUTOR_API_KEY` (at
-least 32 characters) and `EXECUTOR_ENCRYPTION_KEY` (exactly 64 hexadecimal
-characters) before the first start. Keep these same keys for every start.
-Executor does not save supplied keys. A directory keeps its chosen key source
-across upgrades: a directory using the credential store still needs it later,
-and a directory using `keys.json` needs that file.
+## Use your tools from a shell
+
+For **Cloud** and **Self-host**, use `executor login` for tools and MCP and `executor apps login` for app commands. Pass `--host <your Self-host origin>` for Self-host. With no target host selected, tool and app commands and the stdio bridge use Local. See [background service settings](/docs/run/cli/background-server#settings-stored-in-servicejson) for standalone mode. Run `executor search`, `describe`, `call`, `execute`, `resume`, and `skills` from any shell. See [Use Executor from a shell](/docs/run/cli/from-a-shell).
+
+### Serve your tools to an MCP client
+
+Run `executor mcp` to bridge the resolved host's MCP endpoint over stdio for clients that launch a command, such as `claude mcp add executor -- executor mcp`. See [Use Executor from a shell](/docs/run/cli/from-a-shell#serve-your-tools-to-an-mcp-client).
 
 ## Connect an agent
 
-Use the dashboard's **Connect** card to add the local MCP endpoint to your
-agent. See [Add an MCP client](/mcp-clients) for Claude Code, Cursor and Codex.
-A client that starts a command can run `executor mcp` instead; see
-[Serve your tools to an MCP client](#serve-your-tools-to-an-mcp-client).
-The client connects to the background Executor. After you restart your
-computer, run `executor` or `executor service start` first; until then the
-client's connection is refused. If you change the port, update the client's URL.
+In the local dashboard, open **Connections**, choose a connection such as **Full access**, and click **Connect** to add the local MCP endpoint to Claude Code, Cursor, or Codex, or bridge it over stdio with `executor mcp`. After a reboot, run `executor service start` before using a direct Local HTTP connection configured for the background server. See [Add an MCP client](/docs/mcp-clients).
+
+## Coming from Executor 1
+
+If `executor --version` still prints v1, another installation is earlier on your `PATH`, and Executor 1 commands such as `web`, `daemon`, `tools`, and `server` have moved to new names. See [Upgrade and migrate from Executor 1](/docs/run/cli/upgrade#coming-from-executor-1).
 
 ## Back up and update
 
-Back up the data directory, including `installation.json`, and its matching
-OS credential. The credential service is `com.usefulsoftware.executor.v2`;
-its account ID is in `installation.json`. Copying only the database to another
-machine is not enough to restore it. If you supplied keys, back them up in
-your secret manager.
+Back up the Local data directory (default `~/.executor/v2/cli`) together with its matching key source: the OS credential, the `keys.json` inside the directory, or both original supplied keys, according to how the installation was configured. Update with `executor upgrade` or roll back a standalone install with `executor upgrade --rollback`. See [Upgrade and migrate from Executor 1](/docs/run/cli/upgrade) and [Background server and key storage](/docs/run/cli/background-server#back-up-your-data-and-keys).
 
-Missing keys stop startup. Executor will not generate replacements for an
-existing installation. Restore the original keys to recover access.
+## Limits
 
-`executor` and `executor serve` check npm at most once a day for a newer
-release on their channel and print a reminder to run `executor upgrade`. Beta
-installs are told about stable once it is newer. The check never installs
-anything and is skipped in CI. The v2 data directory stays the same when beta
-becomes stable. Uninstalling the package does not delete data or keys.
+- Running `npm i -g executor` without `@beta` installs Executor v1 (`1.6.11`), which does not support apps or Executor 2 commands.
+- Linux installs require glibc (musl distributions such as Alpine are not supported) and system CA certificates installed.
+- The background Executor does not register with your OS service manager, so it does not start automatically on boot.
 
-`executor upgrade` installs the newest release on your channel the way
-Executor was installed, which it tells from where Executor's files live. For an
-install from the install script, it downloads the release, checks it against
-the release's SHA256SUMS, confirms the new version starts, and then switches
-`current` to it. The version it replaced stays installed, and
-`executor upgrade --rollback` switches back to it. For npm, pnpm, Bun or Yarn,
-it runs that package manager; `--method npm|pnpm|bun|yarn` chooses one instead.
-It first checks that your Node.js meets the new launcher's requirement, and
-afterwards runs `executor --version` to confirm the new command works. A
-Homebrew install is upgraded with `brew upgrade`.
+## Related
 
-```sh
-executor upgrade                 # newest release on your channel
-executor upgrade 2.0.0-beta.16   # a specific release
-executor upgrade --rollback      # back to the previous release (install script)
-executor upgrade --method pnpm   # install with pnpm
-```
-
-On a terminal it asks before installing; `--yes` skips the question. Without a
-terminal, as for agents and CI, it installs without asking. Installing an older
-release needs the version and confirmation, or `--yes` without a terminal. If
-you run Executor through `npx`, `bunx` or `pnpm dlx`, there is nothing to
-upgrade: run `npx executor@beta` to get the newest release. When Executor cannot
-tell which package manager installed it, it prints the install command for each
-one instead of guessing.
-
-The upgrade replaces the files the background Executor runs from, so
-`executor upgrade` and `executor upgrade --rollback` stop it first and start it
-again on the new version afterwards. If the upgrade fails or you cancel it, the
-old version starts again. If the new version does not start, the upgrade still
-succeeds and tells you to run `executor service start`. A release from before
-the background Executor, which `--rollback` or an older version can install,
-has no `executor service`: run `executor serve`, or `executor`, and keep it
-running. A background Executor from a development build keeps running. Executor
-never updates itself without being asked.
-
-The desktop app shares the background Executor with the command line. It
-checks for updates in the background and asks before restarting to install one.
-Beta installs follow beta releases and move to stable when it is newer. On
-Linux, only the AppImage updates itself; install a newer `.deb` over the
-existing package.
-
-<ReleaseDesktopLink />
+- [Background server and key storage](/docs/run/cli/background-server)
+- [Use Executor from a shell](/docs/run/cli/from-a-shell)
+- [Upgrade and migrate from Executor 1](/docs/run/cli/upgrade)
+- [Add an MCP client](/docs/mcp-clients)
+- [Author an app](/docs/author-an-app)
+- [Desktop troubleshooting](/docs/desktop/troubleshooting)

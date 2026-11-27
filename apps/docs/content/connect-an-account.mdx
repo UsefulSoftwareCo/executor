@@ -1,11 +1,13 @@
 ---
 title: Connect an account
-description: "Save a credential once as an account, from the app you are configuring or through an agent, then link it to any app that needs that provider, for yourself or for everyone who uses the app."
+description: "Save a credential once as an account, from the app you are configuring or through an agent, then link it to apps that need that provider and that you have permission to configure."
 ---
 
-An **account** is one saved set of credentials for one **provider**. You connect
-it once. Every app that needs that provider can use it, and none of them holds
-a second copy.
+An **account** is one saved set of credentials for one **provider**. On **Local**, **Self-host**, and **Cloud**, open a deployed app's **Accounts** tab and choose **Connect new account** beside a provider requirement. You can reuse a saved account for matching requirements on apps you have permission to configure.
+
+**Prerequisites:** The app must be deployed and declare the provider requirement. On **Self-host** and **Cloud**, you need access to use the app for **Your accounts** and permission to edit it for **App accounts**. For agent setup on Cloud or Self-host, use a connection with management access that can call the built-in Executor app with its linked service account. On Local, use the Local Executor MCP connection.
+
+**You'll know it worked when:** The new account appears linked under the requirement on the app's **Accounts** tab (or, when started from an agent, `connection.state.status === "completed"`).
 
 There are two kinds of credential, and the provider decides which it accepts:
 
@@ -15,10 +17,8 @@ There are two kinds of credential, and the provider decides which it accepts:
 
 ## From the dashboard
 
-Every account is connected for an app. Choose **Connect new account** at the end of a provider's list on the app's
-**Accounts** tab, then choose **Connect** to start browser sign-in. If the provider
-needs credentials, enter them in the same dialog. The connection dialog contains the
-sign-in methods supported by the provider.
+Every account is connected for a deployed app. Choose **Connect new account** at the end of a provider's list on the app's
+**Accounts** tab, then choose **Connect \<provider\>** (or **Reconnect \<provider\>** when replacing credentials, or **Continue to \<provider\>** for an intermediate step) to start browser sign-in. For a new secrets account, enter the fields in the dialog and select **Connect account**.
 
 The dialog uses the provider fields already loaded with the app. Opening it does
 not create a connection or fetch the fields again. A connection is created when
@@ -35,18 +35,18 @@ If your own client is required, its fields appear immediately. A failed check of
 server during these checks.
 
 The provider's code declares the grant, endpoints, scopes, and authentication
-method. Open **Advanced** below Connect to review **Required permissions**.
+method. If **Advanced** is available below the connect button, open it to review **Requested permissions** and any **User token permissions**.
 The dialog asks only for a client ID
 and, when required, a client secret. For browser sign-in, copy the fixed redirect
 URL into the OAuth app's settings. When the app explains how to create that OAuth
 app at the service, its steps follow the redirect URL. Machine-to-machine
 connections complete in the dialog and need no browser redirect.
 
-If saved OAuth client details are wrong, open **Advanced** below the Connect button,
-choose **Change** next to OAuth client, and enter the replacement. Executor saves manual client details
-only after a successful sign-in. A failed replacement keeps the previous client
-and account. If browser sign-in rejects the client, **Update client details**
-opens the form again.
+If saved OAuth client details are wrong, open **Advanced** below the connect button,
+choose **Change** next to OAuth client, and enter the replacement. Completing a reconnect
+replaces credentials on the existing account. On Cloud or Self-host, if you also choose
+to register or update an organization OAuth client, Executor can save that client
+before starting provider sign-in. If sign-in rejects the client, **Update client details** opens the form again.
 
 You name an account after it connects. Executor names each new account
 `Default`, then `Default 2`, and so on when that name is already in use for the
@@ -56,8 +56,7 @@ Closing it keeps the default. Reconnecting keeps the existing name. You can also
 rename an account later from its menu on the app's **Accounts** tab, or with **Edit
 details** on the **Accounts** page.
 
-Completing a connection saves the account and links it to this app. There is
-no separate step. Browser sign-in returns to the app's Accounts tab;
+Completing an app-specific connection saves and links the account together when the requirement and access checks pass. Browser sign-in returns to the app's Accounts tab;
 cancelling or failing sign-in offers a direct way back to the app.
 
 The Accounts tab has two sections. **Your accounts** ("Linked for you") holds
@@ -74,12 +73,12 @@ account** at the end of the list adds an account and links it. Each change is
 saved immediately. Members who can view an app but not use it cannot change its
 links.
 
-Only people who can edit the app (organization owners and admins, and the app's
-creator; on local, the owner) change **App accounts**, and only with accounts
-they can use. Everyone else sees that section greyed out and read-only: which
-account fills each requirement and whether it works, without the account's
-email, username or other details from the provider. The same account may be
-linked in both sections.
+People who can edit the app (organization owners and admins, and the app's
+creator; on Local, the owner) can link accounts they own to **App accounts** and
+can remove any link from **App accounts**. Managing an app does not transfer
+ownership of another member's account. People who can use the app can see its
+shared link labels and health; provider identity checks are visible to editors.
+The same account may be linked in both sections.
 
 Unlinking keeps the saved account available to other apps. When no app uses it
 any more, Executor offers to delete it. The global **Accounts** page lists saved
@@ -90,15 +89,14 @@ Local has the same Accounts tab. See "Which accounts a call uses" below.
 
 ## From an agent
 
-An agent can start the same flow. It must never ask you for a secret in chat,
-and must never read a token out of your files. It asks Executor for a connection
-link and gives you the link; you finish in your browser.
+Open the complete connection link returned by the Executor app's management tool in your browser. For a new secrets account, enter the fields and select **Connect account**. For OAuth, finish sign-in with the provider. The page shows **Account connected** on success.
 
 <CodeGroup>
 
 ```js Hosted
 return await tools.executor.appAccounts.userConnect({
   path: { organization: "<organization-id>", app: "<app-id>", requirement: "vercel" },
+  body: {},
 });
 ```
 
@@ -112,14 +110,12 @@ return await tools.executor.appAccounts.userConnect({
 </CodeGroup>
 
 Neither request names an account owner: hosted saves the account under your
-organization and local under the app's owner.
+organization (checked against your user ownership) and local under the app's owner.
 
-Every request names the app requirement it connects for. Use
+Every request names the deployed app's requirement it connects for. Use
 `appAccounts.userConnect` for a user requirement and `appAccounts.appConnect`
 for one of the app's own requirements; on hosted, only people who can edit the
-app can start the second. To replace the credentials of an account the app already
-uses, add its ID as `account` in the body. The account keeps its ID, name and
-links.
+app can start the second. To reconnect the same account for an unchanged provider, add its ID as `account` in the body (`body: { account: "<account-id>" }`). The account keeps its ID and name, and compatible links remain.
 
 The app's requirements carry its setup help, so the agent can explain in chat
 where to get the credentials before it sends the link.
@@ -132,20 +128,20 @@ Check whether you finished:
 const connection = await tools.executor.accounts.connection({
   path: { organization: "<organization-id>", connection: "<connection-id>" },
 });
-return connection.state;
+return connection.state.status === "completed";
 ```
 
 ```js Local
 const connection = await tools.executor.accountConnections.get({
   path: { connection: "<connection-id>" },
 });
-return connection.state;
+return connection.state.status === "completed";
 ```
 
 </CodeGroup>
 
-`Completed` means the account is saved and linked to the requirement, for you
-or for everyone, in the same transaction. If the app's requirement changed while
+When `connection.state.status === "completed"`, the account is saved and linked to the requirement, for you
+or for everyone, in the same transaction (and the response returns connection status and account metadata without entered secret fields or OAuth tokens). If the app's requirement changed while
 the request was open, such as moving between user and app accounts, the request
 fails with `AccountConnectionTargetChanged` rather than saving the account. If
 you can no longer link the account in that scope, it fails with
@@ -153,18 +149,19 @@ you can no longer link the account in that scope, it fails with
 
 A pending request expires after thirty minutes. Issue a new one if it does.
 
-An agent manages links with the same five tools in each scope,
-`appAccounts.user.*` for your own links and `appAccounts.app.*` for the app's.
-Local takes the same paths without `organization`:
+An agent manages links with five tools in each scope — `appAccounts.user*` for
+your own links and `appAccounts.app*` for the app's. Local takes the same paths
+without `organization`:
 
-- `list({ path: { organization, app } })` lists the links.
-- `get({ path: { organization, app, requirement } })` lists the requirement's
-  linked accounts, then the other accounts you could link.
-- `link({ path: { organization, app, requirement, account } })` links an
-  account. For a single-account requirement it replaces the one before.
-- `unlink({ path: { organization, app, requirement, account } })` unlinks it.
-- `connect({ path: { organization, app, requirement } })` connects a new account,
-  as above.
+- `userList` / `appList` (`{ path: { organization, app } }`) lists the links.
+- `userGet` / `appGet` (`{ path: { organization, app, requirement } }`) lists
+  the requirement's linked accounts, then the other accounts you could link.
+- `userLink` / `appLink` (`{ path: { organization, app, requirement, account } }`)
+  links an account. For a single-account requirement it replaces the one before.
+- `userUnlink` / `appUnlink` (`{ path: { organization, app, requirement, account } }`)
+  unlinks it.
+- `userConnect` / `appConnect` (`{ path: { organization, app, requirement }, body: {} }`)
+  connects a new account, as above.
 
 Linking fails with `RequirementMismatch` when the app has no such requirement in
 that scope or the account's provider differs. Changing app links needs edit
@@ -172,14 +169,12 @@ access to the app.
 
 ## Which accounts a call uses
 
-Calls never choose accounts. Every call, schedule and page runs with the
-accounts linked to the app: for each of your requirements, the one account you
-linked to a single-account requirement and every account you linked to a
-`.many()` requirement; for each of the app's own requirements, the accounts
-linked for everyone. A single-account requirement with no account fails with
-`AccountRequired`, which says whether you need to link one or someone who can
-edit the app does. A tool input that passes `$accounts` fails with
-`AccountChoiceUnsupported`.
+Calls never choose accounts. A call uses the links for the scope it runs in:
+
+- **User calls** use **Your accounts** (the one account linked to each single-account requirement and all accounts linked to each `.many()` requirement) plus **App accounts** as required.
+- **App-scope background work** (such as schedules and webhooks) uses **App accounts**.
+
+A tool that needs an unlinked account cannot run. It may be absent from tool discovery, or a directly addressed call may return `AccountRequired`. In MCP `execute`, passing `$accounts` to a discovered tool that does not declare that field returns `AccountChoiceUnsupported`.
 
 To use a different account, link it on the app's **Accounts** tab. To use two
 accounts of one provider side by side, copy the app and link one to each copy.
@@ -189,11 +184,15 @@ accounts of one provider side by side, copy the app and link one to each copy.
 You can rename an account, replace its credentials, and remove it. Replace credentials
 from an app that uses the account: open its menu on the app's **Accounts** tab and choose
 **Reconnect** or **Update credentials**. A **Needs sign-in** account also has a
-**Reconnect** button there. Replacing credentials keeps the same account, so every app
-linked to it keeps working.
+**Reconnect** button there. Reconnecting to the same provider keeps the account ID, name, and compatible links across apps.
 
 Removing an account removes your links to it. An account linked to an app for
 everyone cannot be removed until someone who can edit the app unlinks it
-(`AccountLinkedToApp`). An app left with no account
-for a requirement exposes no tools until you link or connect another. Executor
-does not substitute a different account.
+(`AccountLinkedToApp`). Link or connect another account to restore any tools that need the unfilled requirement.
+
+## Related
+
+- [Providers and accounts](/docs/concepts/providers-and-accounts)
+- [How Executor protects credentials](/docs/security/credentials)
+- [Groups and sharing](/docs/organizations/groups)
+- [Organizations and access](/docs/concepts/organizations-and-access)
