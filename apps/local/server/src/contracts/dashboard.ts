@@ -318,6 +318,7 @@ const scopeEndpoints = <const S extends AccountScope>(scope: S) => {
         OAuthClientUnavailable,
         OAuthClientNotFound,
         OAuthSetupFailed,
+        OAuthCompletionFailed,
       ],
     }).annotate(
       OpenApi.Description,

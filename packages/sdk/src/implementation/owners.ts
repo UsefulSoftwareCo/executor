@@ -72,7 +72,7 @@ export const makeOwners = (
           );
           const accounts = yield* query(() =>
             tx.findMany("accounts", {
-              select: ["id", "provider"],
+              select: ["id", "provider", "oauthGrantId"],
               where: (b) => b("owner", "=", owner),
             }),
           );
@@ -90,6 +90,12 @@ export const makeOwners = (
             });
           const appIds = apps.map((app) => app.id);
           const accountIds = accounts.map((account) => account.id);
+          const grantIds = [
+            ...new Set(accounts.map((account) => account.oauthGrantId ?? account.id)),
+          ];
+          const accountByGrant = new Map(
+            accounts.map((account) => [account.oauthGrantId ?? account.id, account]),
+          );
           const webhookIds = webhooks.map((webhook) => webhook.id);
           yield* assertNoWorkInFlight(tx, owner, accountIds);
           const runs = yield* query(() =>
@@ -165,28 +171,41 @@ export const makeOwners = (
             yield* query(() =>
               tx.deleteMany("accountChecks", { where: (b) => b("account", "in", accountIds) }),
             );
-            const stored = yield* query(() =>
-              tx.findMany("oauthGrants", {
-                select: ["id", "encrypted"],
-                where: (b) => b("id", "in", accountIds),
-              }),
-            );
-            const encrypted = new Map(stored.map((grant) => [grant.id, grant.encrypted]));
-            for (const account of accounts) {
-              const bytes = encrypted.get(account.id);
-              if (bytes !== undefined)
-                grants.push({
-                  account: account.id,
-                  owner,
-                  provider: account.provider,
-                  encrypted: bytes,
-                });
-            }
-            yield* query(() =>
-              tx.deleteMany("oauthGrants", { where: (b) => b("id", "in", accountIds) }),
-            );
             yield* query(() => tx.deleteMany("accounts", { where: (b) => b("owner", "=", owner) }));
           }
+          const storedGrants = yield* query(() =>
+            tx.findMany("oauthGrants", {
+              select: ["id", "encrypted"],
+              where: (b) =>
+                b.or(
+                  grantIds.length === 0 ? false : b("id", "in", grantIds),
+                  b("owner", "=", owner),
+                ),
+            }),
+          );
+          for (const grant of storedGrants) {
+            const account = accountByGrant.get(AccountId.make(grant.id));
+            if (account !== undefined)
+              grants.push({
+                account: AccountId.make(grant.id),
+                owner,
+                provider: account.provider,
+                encrypted: grant.encrypted,
+              });
+          }
+          if (storedGrants.length > 0)
+            yield* query(() =>
+              tx.deleteMany("oauthGrants", {
+                where: (b) =>
+                  b.or(
+                    grantIds.length === 0 ? false : b("id", "in", grantIds),
+                    b("owner", "=", owner),
+                  ),
+              }),
+            );
+          yield* query(() =>
+            tx.deleteMany("accountIdentities", { where: (b) => b("owner", "=", owner) }),
+          );
           const connections = yield* query(() =>
             tx.findMany("accountConnections", {
               select: ["id", "oauthAttempt"],

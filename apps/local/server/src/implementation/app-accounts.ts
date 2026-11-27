@@ -550,6 +550,8 @@ export const localResourceLifecycle = (
       );
     }).pipe(Effect.catchTags(sqlFailures));
   return {
+    accountIdentityPlacement: (account) => Effect.succeed(account.owner),
+    connectionIdentityPlacement: (connection) => Effect.succeed(connection.owner),
     userLinks: (input) =>
       Effect.gen(function* () {
         const sdk = yield* executor;

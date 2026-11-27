@@ -28,6 +28,8 @@ import {
   storedOAuthClientIndexes,
   storedOAuthClientIssuerIndexes,
   queueReadIndexes,
+  version4018Tables,
+  accountIdentityIndexes,
 } from "./storage-schema.ts";
 
 export const storageIndexes = [
@@ -67,6 +69,7 @@ export const currentIndexes = [
   ...storedOAuthClientIssuerIndexes,
   ...queueReadIndexes,
   ...eventSelectionIndexes,
+  ...accountIdentityIndexes,
 ] as const;
 
 const indexOnlyVersions = new WeakSet<AnySchema>();
@@ -512,6 +515,25 @@ export const storageSchemas = [
         Effect.map((operations) => [
           ...operations,
           ...eventSelectionIndexes.map((sql) => ({ type: "custom" as const, sql })),
+        ]),
+      ),
+  }),
+  schema({
+    version: "4.0.18",
+    tables: version4018Tables,
+    relations: {
+      accounts: ({ one }) => ({
+        providerDefinition: one("providers", ["provider", "id"]).foreignKey(),
+      }),
+      apps: ({ one }) => ({
+        deployment: one("deployments", ["activeDeployment", "id"], ["code", "code"]).foreignKey(),
+      }),
+    },
+    up: ({ auto }) =>
+      auto.pipe(
+        Effect.map((operations) => [
+          ...operations,
+          ...accountIdentityIndexes.map((sql) => ({ type: "custom" as const, sql })),
         ]),
       ),
   }),
