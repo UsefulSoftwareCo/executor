@@ -16,10 +16,7 @@ const releases = [
 ] as const;
 export type Release = (typeof releases)[number];
 const RuntimePackage = Schema.Record(Schema.String, Schema.Unknown);
-const Packed = Schema.Union([
-  Schema.NonEmptyArray(Schema.Struct({ filename: Schema.String })),
-  Schema.Struct({ filename: Schema.String }),
-]);
+const Packed = Schema.NonEmptyArray(Schema.Struct({ filename: Schema.String }));
 class PackageFixtureFailed extends Schema.TaggedError<PackageFixtureFailed>()(
   "PackageFixtureFailed",
   { reason: Schema.String },
@@ -74,35 +71,24 @@ const packDirectory = (source: string, destination: string) =>
             prefix: [path.join(path.dirname(process.execPath), "node_modules/npm/bin/npm-cli.js")],
           }
         : { command: "npm", prefix: [] };
-    const parsePacked = (command: string, args: ReadonlyArray<string>) =>
-      processes
-        .string(ChildProcess.make(command, args, { stdout: "pipe", stderr: "ignore" }))
-        .pipe(Effect.flatMap(Schema.decodeUnknownEffect(Schema.fromJsonString(Packed))));
-    const args = [
-      ...npm.prefix,
-      "pack",
-      source,
-      "--json",
-      "--ignore-scripts",
-      "--pack-destination",
-      destination,
-    ];
-    const packed = yield* parsePacked(npm.command, args).pipe(
-      Effect.catchTag("SchemaError", () =>
-        parsePacked("pnpm", [
-          "--dir",
-          source,
-          "pack",
-          "--json",
-          "--ignore-scripts",
-          "--pack-destination",
-          destination,
-        ]),
-      ),
-    );
-    const filename = "filename" in packed ? packed.filename : packed[0].filename;
-    const absolute = filename.startsWith("/") || /^[A-Za-z]:[\\/]/.test(filename);
-    return yield* fs.readFile(absolute ? filename : path.join(destination, filename));
+    const packed = yield* processes
+      .string(
+        ChildProcess.make(
+          npm.command,
+          [
+            ...npm.prefix,
+            "pack",
+            source,
+            "--json",
+            "--ignore-scripts",
+            "--pack-destination",
+            destination,
+          ],
+          { stdout: "pipe", stderr: "ignore" },
+        ),
+      )
+      .pipe(Effect.flatMap(Schema.decodeUnknownEffect(Schema.fromJsonString(Packed))));
+    return yield* fs.readFile(path.join(destination, packed[0].filename));
   });
 
 export const appPackageFixture = Effect.gen(function* () {
