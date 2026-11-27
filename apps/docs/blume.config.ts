@@ -231,6 +231,16 @@ export default defineConfig({
           "/security/credentials",
         ],
       },
+      {
+        label: "Reference",
+        items: [
+          "/reference/cli",
+          "/reference/self-host-env",
+          "/reference/mcp",
+          "/reference/skills",
+          "/changelog",
+        ],
+      },
     ],
   },
 });
