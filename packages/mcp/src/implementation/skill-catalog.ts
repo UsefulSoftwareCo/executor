@@ -20,9 +20,35 @@ const skillLoadMillis = 60_000;
 const listingLoads = defaultMcpRuntimeLimits.discoveryConcurrency;
 
 type ListedApp = Pick<App, "id" | "name" | "slug" | "activeVersion">;
-type Skill = AppSkillBundle["skills"][number];
+type Skill = AppSkillBundle["skills"][number] & {
+  readonly namespace?: string;
+  readonly localName?: string;
+};
+type SkillAddress = {
+  readonly slug: string;
+  readonly name: string;
+  readonly namespace?: string;
+  readonly localName?: string;
+  readonly file: string;
+};
 
-const skillUri = (app: ListedApp, skill: Skill) => `${scheme}${app.slug}/${skill.name}/SKILL.md`;
+const namespaceOf = (skill: Skill) => {
+  if (skill.namespace !== undefined && skill.namespace !== "") return skill.namespace;
+  const separator = skill.name.indexOf(":");
+  return separator === -1 ? undefined : skill.name.slice(0, separator);
+};
+const localNameOf = (skill: Skill) => {
+  if (skill.localName !== undefined && skill.localName !== "") return skill.localName;
+  const separator = skill.name.indexOf(":");
+  return separator === -1 ? skill.name : skill.name.slice(separator + 1);
+};
+const skillPath = (skill: Skill) => {
+  const namespace = namespaceOf(skill);
+  return namespace === undefined ? skill.name : `${namespace}/${localNameOf(skill)}`;
+};
+
+const skillUri = (app: ListedApp, skill: Skill) =>
+  `${scheme}${app.slug}/${skillPath(skill)}/SKILL.md`;
 const encodePath = (path: string) => path.split("/").map(encodeURIComponent).join("/");
 const toOptions = (app: ListedApp, skill: Skill): McpServer.SkillOptions => ({
   uri: skillUri(app, skill),
@@ -31,17 +57,47 @@ const toOptions = (app: ListedApp, skill: Skill): McpServer.SkillOptions => ({
   } & Record<string, string>,
 });
 
+const safeSegment = (segment: string) =>
+  segment !== "" &&
+  segment !== "." &&
+  segment !== ".." &&
+  !segment.includes("/") &&
+  !segment.includes("\\") &&
+  !segment.includes("\0");
+
 const parse = (uri: string) => {
   if (!uri.startsWith(scheme)) return undefined;
-  const [slug, name, ...rest] = uri.slice(scheme.length).split("/");
-  const segments = Option.liftThrowable(() => rest.map(decodeURIComponent))();
+  const [slug, ...path] = uri.slice(scheme.length).split("/");
+  if (slug === undefined || path.length < 2) return undefined;
+  const segments = Option.liftThrowable(() => path.map(decodeURIComponent))();
   if (Option.isNone(segments)) return undefined;
-  const file = segments.value.join("/");
+  if (!Schema.is(AppSlug)(slug)) return undefined;
   if (segments.value.some((segment) => segment.includes("/"))) return undefined;
-  if (!Schema.is(AppSlug)(slug) || !Schema.is(AppSkillName)(name)) return undefined;
-  if (!Schema.is(SourceFilePath)(file)) return undefined;
-  return { slug, name, file };
+  const [first, second, ...rest] = segments.value;
+  if (first === undefined || second === undefined) return undefined;
+  const readings: SkillAddress[] = [];
+  if (rest.length > 0) {
+    const file = rest.join("/");
+    if (safeSegment(first) && Schema.is(AppSkillName)(second) && Schema.is(SourceFilePath)(file))
+      readings.push({
+        slug,
+        name: `${first}:${second}`,
+        namespace: first,
+        localName: second,
+        file,
+      });
+  }
+  const file = [second, ...rest].join("/");
+  if (Schema.is(AppSkillName)(first) && Schema.is(SourceFilePath)(file))
+    readings.push({ slug, name: first, file });
+  return readings.length === 0 ? undefined : readings;
 };
+
+const matches = (skill: Skill, address: SkillAddress) =>
+  address.namespace === undefined
+    ? skill.name === address.name
+    : (namespaceOf(skill) === address.namespace && localNameOf(skill) === address.localName) ||
+      skill.name === address.name;
 
 const bySlug = (apps: ReadonlyArray<ListedApp>) => {
   const counts = new Map<string, number>();
@@ -112,13 +168,18 @@ export const skillCatalog = <E extends Error>(backend: McpBackend<E>): McpServer
     apps.pipe(Effect.map((apps) => apps.find((app) => app.slug === slug)));
   const skillAt = (uri: string) =>
     Effect.gen(function* () {
-      const address = parse(uri);
+      const addresses = parse(uri);
+      if (addresses === undefined) return undefined;
+      const [address] = addresses;
       if (address === undefined) return undefined;
       const app = yield* appBySlug(address.slug);
       if (app === undefined) return undefined;
       const { skills } = yield* bundle(app);
-      const skill = skills.find((skill) => skill.name === address.name);
-      return skill === undefined ? undefined : { app, skill, file: address.file };
+      for (const reading of addresses) {
+        const skill = skills.find((skill) => matches(skill, reading));
+        if (skill !== undefined) return { app, skill, file: reading.file };
+      }
+      return undefined;
     });
   return {
     list: apps.pipe(
@@ -145,7 +206,10 @@ export const skillCatalog = <E extends Error>(backend: McpBackend<E>): McpServer
       Effect.withSpan("mcp.skills.extension.list"),
     ),
     get: (uri) =>
-      (parse(uri)?.file === "SKILL.md" ? skillAt(uri) : Effect.succeed(undefined)).pipe(
+      (parse(uri)?.some((address) => address.file === "SKILL.md")
+        ? skillAt(uri)
+        : Effect.succeed(undefined)
+      ).pipe(
         Effect.map((found) =>
           found === undefined || found.file !== "SKILL.md"
             ? undefined
