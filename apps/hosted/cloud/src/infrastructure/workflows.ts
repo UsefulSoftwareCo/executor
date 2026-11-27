@@ -174,9 +174,12 @@ const runEncryptedWorkflow = (
     });
   }).pipe(Effect.orDie);
 
-const runLegacyWorkflow = (input: {
-  run: string;
-}, faults: EngineFaultList | null): Effect.Effect<Schema.Json, never, Cloudflare.Workflows.WorkflowServices | HostedExecutor> =>
+const runLegacyWorkflow = (
+  input: {
+    run: string;
+  },
+  faults: EngineFaultList | null,
+): Effect.Effect<Schema.Json, never, Cloudflare.Workflows.WorkflowServices | HostedExecutor> =>
   Effect.gen(function* () {
     const { NonRetryableError } = yield* Effect.promise(() => import("cloudflare:workflows"));
     const run = yield* Schema.decodeUnknownEffect(WorkflowRunId)(input.run);
@@ -259,7 +262,8 @@ const runWorkflow = (
   Schema.Json | Uint8Array,
   never,
   Cloudflare.Workflows.WorkflowServices | HostedExecutor
-> => (encrypted ? runEncryptedWorkflow(input, encryptionKey, faults) : runLegacyWorkflow(input, faults));
+> =>
+  encrypted ? runEncryptedWorkflow(input, encryptionKey, faults) : runLegacyWorkflow(input, faults);
 export class AppWorkflows extends Cloudflare.Workflow<AppWorkflows>()(
   "AppWorkflows",
   Effect.gen(function* () {
