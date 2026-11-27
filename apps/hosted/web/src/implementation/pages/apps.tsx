@@ -1,3 +1,4 @@
+import { AppScreenBadge } from "./app-screen.tsx";
 import { useMemo } from "react";
 import { useAtom } from "@effect/atom-react";
 import { Option } from "effect";
@@ -40,6 +41,7 @@ export function AppsPage() {
   return (
     <SharedPage
       query={atoms.query}
+      screen={(app) => <AppScreenBadge app={app} />}
       Failure={HostedFailure}
       pending={
         Option.isSome(data) && data.value.pendingApp ? (

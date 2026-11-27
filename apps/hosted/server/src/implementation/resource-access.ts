@@ -23,6 +23,7 @@ import {
   ownedAccountIds,
   requireAppAccess,
 } from "./resource-policy.ts";
+import { appUiIndicators } from "./app-ui.ts";
 
 export const resourceDirectory = (view: "available" | "managed" = "available") =>
   Effect.gen(function* () {
@@ -37,11 +38,17 @@ export const resourceDirectory = (view: "available" | "managed" = "available") =
         actor,
       )).map((access) => [access.app, access]),
     );
-    const listedApps = apps.flatMap((app) => {
+    const visibleApps = apps.flatMap((app) => {
       const access = appPolicies.get(app.id);
       return access !== undefined && (view === "managed" ? access.canManage : access.canUse)
         ? [{ app, access }]
         : [];
+    });
+    const indicated = new Map(
+      (yield* appUiIndicators(visibleApps.map(({ app }) => app))).map((app) => [app.id, app]),
+    );
+    const listedApps = visibleApps.map(({ app, access }) => {
+      return { app: indicated.get(app.id) ?? app, access };
     });
     const usableApps = listedApps.filter(({ access }) => access.canUse).map(({ app }) => app.id);
     const links = yield* callerLinkedAccounts(usableApps);

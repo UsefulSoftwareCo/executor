@@ -14,7 +14,7 @@ import {
   Account,
   AccountHealth,
   AccountId,
-  App,
+  AppFields,
   AppId,
   OwnerId,
   ProviderId,
@@ -54,6 +54,11 @@ export const organizationHandle = (name: string, maxLength = organizationSlugMax
     .replace(/-+$/g, "");
 export const OrganizationReference = Schema.Union([OrganizationId, OrganizationSlug]);
 export type OrganizationReference = typeof OrganizationReference.Type;
+export const AppScreenRecord = Schema.Struct({
+  ...AppFields.fields,
+  hasUi: Schema.optional(Schema.Boolean),
+});
+export type AppScreenRecord = typeof AppScreenRecord.Type;
 export const OrganizationLogo = Schema.NullOr(
   Schema.String.check(
     Schema.makeFilter((value) => {
@@ -170,7 +175,7 @@ export const Inventory = Schema.Struct({
       label: Schema.String,
     }),
   ),
-  apps: Schema.Array(App),
+  apps: Schema.Array(AppScreenRecord),
   accounts: Schema.Array(
     Schema.Struct({ ...Account.fields, health: Schema.optionalKey(AccountHealth) }),
   ),

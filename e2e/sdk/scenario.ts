@@ -89,6 +89,7 @@ export const startScenario = (
     const started = Target.of({
       ...target,
       controlOrigin: server.controlOrigin,
+      ...(server.tlsCertificate === undefined ? {} : { tlsCertificate: server.tlsCertificate }),
       metadata: { ...target.metadata, origin: server.origin },
     });
     addStageOrigins(Object.values(targetHosts(started)));

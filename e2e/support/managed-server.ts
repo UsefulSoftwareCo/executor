@@ -1,4 +1,5 @@
 import { createServer } from "node:http";
+import { appOriginTls } from "./app-origin-tls.ts";
 import { randomBytes } from "node:crypto";
 import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
 import {
@@ -99,6 +100,7 @@ export const startManagedServer = (
       requested.port === "0"
         ? `${requested.protocol}//${requested.hostname}:${port}`
         : target.metadata.origin;
+    const tls = environment.E2E_HTTPS_APP_ORIGINS === "true" ? yield* appOriginTls : undefined;
     const runtimePath = yield* Config.String("EXECUTOR_E2E_RUNTIME_PATH").pipe(
       Config.withDefault(process.env.PATH ?? ""),
     );
@@ -177,6 +179,9 @@ export const startManagedServer = (
         ? {}
         : { NODE_EXTRA_CA_CERTS: process.env.NODE_EXTRA_CA_CERTS }),
       ...environment,
+      ...(tls === undefined
+        ? {}
+        : { BETTER_AUTH_URL: tls.origin, EXECUTOR_APP_UI_BASE_URL: tls.base }),
     };
     const shutdown = Effect.suspend(() => {
       const child = running;
@@ -336,7 +341,19 @@ export const startManagedServer = (
               if (clock !== null) confirmedOffset = Number(clock[1]);
               if (/^Executor: http:\/\/127\.0\.0\.1:\d+$/.test(line)) {
                 origin = line.slice("Executor: ".length);
+                if (
+                  environment.BETTER_AUTH_URL?.endsWith(":0") &&
+                  new URL(environment.BETTER_AUTH_URL).hostname.endsWith(".localhost")
+                ) {
+                  const named = new URL(origin);
+                  named.hostname = new URL(environment.BETTER_AUTH_URL).hostname;
+                  origin = named.origin;
+                }
                 env.PORT = new URL(origin).port;
+                if (tls !== undefined) {
+                  tls.forward(origin);
+                  origin = tls.origin;
+                }
                 env.EXECUTOR_PORT = env.PORT;
                 env.BETTER_AUTH_URL = origin;
                 if (target.metadata.target === "self-host")
@@ -563,7 +580,11 @@ export const startManagedServer = (
     if (!("port" in server.address))
       return yield* new ServerFailed({ message: "Control listener must use TCP" });
     yield* start;
-    return { controlOrigin: `http://127.0.0.1:${server.address.port}`, origin };
+    return {
+      controlOrigin: `http://127.0.0.1:${server.address.port}`,
+      origin,
+      ...(tls === undefined ? {} : { tlsCertificate: tls.certificate }),
+    };
   });
 
 const startIsolatedSelfHost = (

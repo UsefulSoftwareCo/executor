@@ -43,6 +43,7 @@ import {
   OrganizationReference,
   OrganizationForbidden,
   RequireOrganization,
+  AppScreenRecord,
 } from "./organization.ts";
 
 export const InstallApp = Schema.Struct({ ...CatalogImport.fields, name: Schema.NonEmptyString });
@@ -124,7 +125,7 @@ export const HostedApps = HttpApiGroup.make("apps")
   .add(
     HttpApiEndpoint.get("get", `${prefix}/:app`, {
       params: app,
-      success: App,
+      success: AppScreenRecord,
       error: [StorageError, AppNotFound],
     }).annotate(RequiredAction, "discover"),
   )
@@ -208,7 +209,7 @@ export const HostedApps = HttpApiGroup.make("apps")
       .annotate(RequiredAction, "manage")
       .annotate(
         OpenApi.Description,
-        "Rename an app and derive its new slug from the name; the app ID, accounts, links and data stay. The new slug changes the app's tool namespace, Git clone URL and the page address appUi.location returns, and the old address stops working. The name and slug must be unique in the organization.",
+        "Rename an app and derive its new slug from the name; the app ID, accounts, links and data stay. The new slug changes the app's tool namespace and Git clone URL. Nested app UI addresses follow the new slugs and the old address stops working; opaque app UI addresses retain the app ID. The name and slug must be unique in the organization.",
       ),
   )
   .middleware(RequireOrganization);

@@ -80,7 +80,32 @@ Apps that ship a web UI need `EXECUTOR_APP_UI_BASE_URL` set to an HTTPS origin w
 EXECUTOR_APP_UI_BASE_URL=https://apps.example.net
 ```
 
-With `EXECUTOR_APP_UI_BASE_URL=https://apps.example.net`, Executor serves each app page at `<app-slug>.<organization-slug>.apps.example.net` (two labels before the configured base). For the default `executor` organization, configure wildcard DNS and a matching TLS certificate for `*.executor.apps.example.net` (a wildcard certificate for `*.apps.example.net` alone does not cover two subdomain levels). Preserve the requested `Host` header when forwarding to the container's configured `PORT` (default `4400`). Each slug can be at most 63 characters, and the whole hostname can be at most 253 characters. On `localhost` or `127.0.0.1`, a localhost app base is derived automatically.
+The default address scheme is `nested`: `<app-slug>.<organization-slug>.<base>`. Forward these hosts to container port 4400. Each slug must fit in one DNS label of 63 characters. Your proxy needs DNS and certificate coverage for every organization's app hosts. A certificate for `*.apps.example.net` does not cover `app.organization.apps.example.net`. On localhost the base origin is derived for you.
+
+### Address scheme and embedding
+
+| Variable | Default | Behavior |
+| --- | --- | --- |
+| `EXECUTOR_APP_UI_ADDRESS_SCHEME` | `nested` | `nested` uses app and organization slugs. `opaque` uses one immutable app UUID label. |
+| `EXECUTOR_APP_UI_EMBEDDED` | `false` | Adds an App tab for deployed apps with a web page. Opens that tab by default unless the link selects another tab or tool. |
+
+For a single wildcard certificate and an embedded screen, configure:
+
+```bash
+EXECUTOR_APP_UI_BASE_URL=https://apps.example.net
+EXECUTOR_APP_UI_ADDRESS_SCHEME=opaque
+EXECUTOR_APP_UI_EMBEDDED=true
+```
+
+Opaque addresses use `a-<app UUID>.apps.example.net`. Executor removes the `app_` prefix from the immutable app ID. Reserve the complete `a-<lowercase UUID>` namespace for apps; never assign dashboard or other product hosts there. Renaming an app or organization preserves its opaque origin. Only the configured scheme is accepted. Switching schemes changes app URLs and requires app sign-in again.
+
+The iframe is sandboxed and keeps Open in new tab available. App responses permit only the configured dashboard origin as a frame ancestor. The dashboard's `/app-auth` route permits same-origin framing for the existing browser-bound sign-in handshake. Other dashboard pages remain unframeable. App sessions are host-only, HttpOnly and SameSite=Lax. HTTPS app cookies also use `Secure` and the `__Host-` prefix. Use a same-site HTTPS app base and dashboard for embedding; cross-site cookies are restricted by browsers. Safari remains unverified.
+
+### Cloud operator settings
+
+Cloud uses the same address and embedding options. Nested mode keeps the existing per-organization domain provisioning. Opaque mode skips that provisioning; operators supply the wildcard DNS, certificate and route to the AppPages Worker.
+
+`EXECUTOR_APP_UI_MANAGED_ROUTE` defaults to `true` on Cloud. Set it to `false` only when an external router owns the app host route. Executor then omits the managed AppPages route. The router must send only reserved app hosts to that Worker and preserve dashboard routes. This setting does not add DNS records or certificates. `EXECUTOR_APP_UI_BASE_URL` remains required to enable Cloud app hosting. `CLOUD_DEV_APP_UI_PORT` controls the task-local AppPages development listener and defaults to `4413`. Live DNS and certificate setups remain unverified.
 
 ## Private network fetch, Worker, and MCP client limits
 
@@ -127,7 +152,7 @@ You'll know it worked when `docker compose -f apps/hosted/self-host/compose.yaml
 ## Limits
 
 - Raising `EXECUTOR_MCP_CLIENTS` well above the default increases memory use and can slow tool execution under heavy concurrency.
-- With `EXECUTOR_APP_UI_BASE_URL`, each app hostname uses two labels before the base (`<app-slug>.<organization-slug>.<base>`): each label can be at most 63 characters and the whole hostname at most 253 characters.
+- With `EXECUTOR_APP_UI_BASE_URL`, `nested` addresses use two labels before the base (`<app-slug>.<organization-slug>.<base>`), while `opaque` addresses use one (`a-<app UUID>.<base>`). Each label can be at most 63 characters and the whole hostname at most 253 characters.
 
 ## Related
 

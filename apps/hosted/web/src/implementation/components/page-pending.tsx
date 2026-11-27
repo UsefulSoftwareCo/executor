@@ -177,8 +177,9 @@ export function PagePending({
         view={
           action === "setup"
             ? "accounts"
-            : (selected.view ?? (selected.tool === undefined ? "overview" : "tools"))
+            : (selected.view ?? (selected.tool === undefined ? undefined : "tools"))
         }
+        appScreen="pending"
         actions={<Skeleton className="h-9 w-28 max-[740px]:h-11" />}
         selectedTool={action === "setup" ? undefined : selected.tool}
         back={

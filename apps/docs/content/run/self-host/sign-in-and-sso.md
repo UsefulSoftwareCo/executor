@@ -70,6 +70,14 @@ You'll know it worked when container logs show no `SSO is unavailable:` discover
 - `BETTER_AUTH_URL` must match the exact scheme, host, and port users open; a mismatch can break browser sign-in or redirect to the wrong origin.
 - `BETTER_AUTH_SECRET` overrides the auto-generated `/app/data/auth-secret.key` session secret (must be at least 32 characters). Rotating `BETTER_AUTH_SECRET` invalidates current session cookies.
 
+## Dashboard cookie migration
+
+Every HTTPS hosted deployment now uses `__Host-executor-hosted.<cookie>` for Better Auth cookies, including session and plugin cookies. The browser requires `Secure`, `Path=/` and no Domain attribute for these names. An app on a sibling origin cannot inject a parent-domain cookie under the dashboard's new name.
+
+This applies even when embedding is off. Existing HTTPS browser sessions require one sign-in after upgrading because Executor no longer reads the old `__Secure-executor-hosted.<cookie>` names. Database sessions and bearer credentials are unchanged. Self-host deployments served over HTTP retain their existing unprefixed cookie names and do not require re-sign-in for this migration.
+
+Last-organization memory, time-zone preferences, passkey enrollment and anonymous visitor cookies also become host-only on HTTPS. Anonymous signup attribution no longer crosses subdomains; same-origin attribution remains available.
+
 ## Example
 
 Replace `https://executor.example.com` with your browser-facing HTTPS origin. Route it to the loopback container through a TLS reverse proxy, and restrict access to yourself until setup finishes. Register that origin's `/api/auth/callback/sso` URL with your IdP. Replace the discovery URL, client ID, client secret, and allowed domains before starting the container:

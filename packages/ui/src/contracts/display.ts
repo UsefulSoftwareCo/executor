@@ -4,7 +4,7 @@ import { Atom } from "effect/reactivity";
 export const DisplayFormat = Schema.Struct({ locale: Schema.String, timeZone: Schema.String });
 export type DisplayFormat = typeof DisplayFormat.Type;
 
-export const timeZoneCookie = "executor-tz";
+export const timeZoneCookie = (secure = false) => `${secure ? "__Host-" : ""}executor-tz`;
 
 const supported = (format: DisplayFormat): boolean => {
   try {

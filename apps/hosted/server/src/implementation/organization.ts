@@ -28,6 +28,7 @@ import { readOrganizationIconUpload } from "./organization-icons.ts";
 import { OrganizationTombstones } from "../contracts/organization-removal.ts";
 import { requireOrganizationAdmin } from "./access.ts";
 import { appLinkedAccounts, callerLinkedAccounts } from "./app-accounts.ts";
+import { appUiIndicators } from "./app-ui.ts";
 import { CurrentPrincipal, CurrentUserId } from "../contracts/auth.ts";
 import {
   recordCaller,
@@ -281,7 +282,8 @@ export const inventory = (owner: OwnerId) =>
     const policy = yield* CurrentPolicy;
     const listedApps = yield* executor.apps.list({ owner, ids: permittedAppIds(policy) });
     const actor = yield* currentResourceAuthority;
-    const apps = yield* visibleAppsAs(actor, listedApps);
+    const visibleApps = yield* visibleAppsAs(actor, listedApps);
+    const apps = yield* appUiIndicators(visibleApps);
     const accounts = permitsAction(policy, "read")
       ? yield* executor.accounts
           .list({ owner })

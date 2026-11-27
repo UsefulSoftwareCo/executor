@@ -238,7 +238,7 @@ export const cloudAuthOptions = (
             return Effect.runPromise(
               Effect.sync(() => {
                 if (context?.path !== emailCodeSignInPath) return;
-                context.setCookie(passkeyEnrollmentCookie.name, user.id, {
+                context.setCookie(passkeyEnrollmentCookie.name(settings.url), user.id, {
                   ...passkeyEnrollmentCookie.attributes,
                   secure: new URL(settings.url).protocol === "https:",
                 });
@@ -252,15 +252,11 @@ export const cloudAuthOptions = (
           after: async (session, context) => {
             if (onLogin !== undefined) await onLogin(session.userId);
             if (!context) return;
-            context.setCookie(siteVisitorCookie, "", {
+            context.setCookie(siteVisitorCookie(settings.url), "", {
               path: "/",
               maxAge: 0,
               sameSite: "lax",
               secure: new URL(settings.url).protocol === "https:",
-              ...Option.match(settings.hosts.sharedCookieDomain, {
-                onNone: () => ({}),
-                onSome: (domain) => ({ domain }),
-              }),
             });
             context.setCookie(signInOriginCookie, "", {
               path: "/",

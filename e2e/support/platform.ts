@@ -12,6 +12,7 @@ export class Target extends Context.Service<
   {
     readonly metadata: typeof RunMetadata.Type;
     readonly directory: string;
+    readonly tlsCertificate?: string;
     readonly apiKey: Redacted.Redacted<string>;
     readonly rows: number;
     readonly observeUI: boolean;

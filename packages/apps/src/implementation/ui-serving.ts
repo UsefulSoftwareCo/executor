@@ -68,6 +68,8 @@ export const appDocument = <E, R>(options: {
   readonly version: string;
   /** Which of the app's pages to render; the main page when absent. */
   readonly document?: AppUiDocument | undefined;
+  /** Notify the embedding dashboard after the page has loaded. */
+  readonly parentOrigin?: string | undefined;
   /** The account IDs the page runs with, by requirement. */
   readonly accountIds?: Readonly<Record<string, readonly string[]>> | undefined;
   readonly accounts?: UiAccountNotice | undefined;
@@ -100,7 +102,11 @@ export const appDocument = <E, R>(options: {
       telemetry === undefined
         ? ""
         : `<meta name="executor-build" content="${attribute(telemetry.version)}"><meta name="executor-environment" content="${attribute(telemetry.environment)}">`;
-    const boot = `${metadata}<script type="application/json" id="executor-context">${context}</script>${appFailureBootstrap}${notice === undefined || notice.problems.length === 0 ? "" : accountNoticeBootstrap(notice)}<script type="module">${appWatchSource}</script>`;
+    const ready =
+      options.parentOrigin === undefined
+        ? ""
+        : `<script>addEventListener("load",()=>parent.postMessage({type:"executor:app-ready"},${JSON.stringify(options.parentOrigin).replaceAll("<", "\\u003c")}))</script>`;
+    const boot = `${ready}${metadata}<script type="application/json" id="executor-context">${context}</script>${appFailureBootstrap}${notice === undefined || notice.problems.length === 0 ? "" : accountNoticeBootstrap(notice)}<script type="module">${appWatchSource}</script>`;
     return HttpServerResponse.text(
       versionDocument(new TextDecoder().decode(document.body), options.version).replace(
         "<!--executor-ui-->",

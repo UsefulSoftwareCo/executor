@@ -108,13 +108,17 @@ export const main = Effect.scoped(
     if (!("port" in address)) return yield* Effect.die("Self-host requires a TCP listener");
     const base = yield* ConfigProvider.ConfigProvider;
     const overrides: Record<string, string> = { PORT: String(address.port) };
-    for (const key of ["BETTER_AUTH_URL", "EXECUTOR_OAUTH_CALLBACK_URL"]) {
+    for (const key of [
+      "BETTER_AUTH_URL",
+      "EXECUTOR_OAUTH_CALLBACK_URL",
+      "EXECUTOR_APP_UI_BASE_URL",
+    ]) {
       const value = yield* Config.String(key).pipe(Config.option);
       if (Option.isSome(value)) {
         const url = URL.parse(value.value);
         if (url !== null && url.port === "0") {
           url.port = String(address.port);
-          overrides[key] = key === "BETTER_AUTH_URL" ? url.origin : url.href;
+          overrides[key] = key === "EXECUTOR_OAUTH_CALLBACK_URL" ? url.href : url.origin;
         }
       }
     }

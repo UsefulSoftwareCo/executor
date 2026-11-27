@@ -19,6 +19,7 @@ export const resolveCloudEntry = (
   page: "login" | "login/sso" | "create",
   redirect: string,
   headers: Headers,
+  origin: string,
 ) =>
   Effect.gen(function* () {
     const current = yield* session(headers);
@@ -37,7 +38,7 @@ export const resolveCloudEntry = (
       .some(
         (cookie) =>
           cookie.trim() ===
-          `${passkeyEnrollmentCookie.name}=${encodeURIComponent(current.user.id)}`,
+          `${passkeyEnrollmentCookie.name(origin)}=${encodeURIComponent(current.user.id)}`,
       );
     if (page !== "create") {
       if (enrollment)
@@ -114,7 +115,7 @@ export const cloudEntryDocument = <E, R, E2, R2>(
     ),
   );
 
-export const cloudEntryApi = (session: Parameters<typeof resolveCloudEntry>[0]) =>
+export const cloudEntryApi = (session: Parameters<typeof resolveCloudEntry>[0], origin: string) =>
   Effect.gen(function* () {
     const request = yield* HttpServerRequest.HttpServerRequest;
     const url = new URL(request.url, "https://entry.invalid");
@@ -126,6 +127,7 @@ export const cloudEntryApi = (session: Parameters<typeof resolveCloudEntry>[0]) 
       page,
       browserReturnTo(url.searchParams.get("redirect")),
       new Headers(request.headers),
+      origin,
     );
     return yield* HttpServerResponse.json(result, { headers: privateHeaders });
   });

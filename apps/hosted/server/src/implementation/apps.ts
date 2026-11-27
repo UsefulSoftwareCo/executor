@@ -1,6 +1,7 @@
 import { sourceDisplay, sourceDisplayFile } from "@executor-js/app-management/source-display";
 import { requireAppAccess } from "./resource-policy.ts";
 import { CatalogImportFailed, deployedCopy, type CustomAppInput } from "@executor-js/catalog";
+import { appUiIndicator } from "./app-ui.ts";
 import {
   scopeGeneratedPackage,
   type AppId,
@@ -82,7 +83,7 @@ export const getApp = (owner: OwnerId, input: { readonly app: AppId }) =>
     const executor = yield* Effect.flatten(HostedExecutor);
     yield* requireAppAccess(input.app, "read");
     const app = yield* executor.apps.get({ ...input, owner });
-    return app;
+    return yield* appUiIndicator(app);
   });
 export const appVersions = (owner: OwnerId, app: AppId) =>
   Effect.gen(function* () {
