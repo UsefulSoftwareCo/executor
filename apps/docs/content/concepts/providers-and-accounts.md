@@ -61,7 +61,7 @@ An interactive account is an exception to reuse: its opaque reference belongs
 to the app that acquired it. Matching provider definitions do not let another
 app link it. The app keeps the service's tokens and handles their lifecycle;
 Executor retains only the reference, ownership and links. See
-[app-owned sign-in](/author-an-app#app-owned-sign-in).
+[app-owned sign-in](/docs/build/accounts#app-owned-sign-in).
 
 A provider reference is also not permission. Knowing it does not let an app read
 an account. Access is authorized separately.
