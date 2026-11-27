@@ -347,9 +347,14 @@ layer(HostedLive, { excludeTestServices: true })("MCP Apps", (it) => {
         );
         expect(moved.isError).not.toBe(true);
         expect(yield* host.elicitationCount).toBe(1);
+        const helper = yield* host.use("Call the app's tool that has no UI", (client) =>
+          client.callTool({ name: "plain_tool", arguments: {} }),
+        );
+        expect(helper.isError).not.toBe(true);
         expect(fixture.seen.calls).toEqual([
           { name: "show_board", arguments: { boardId: "b1" }, authorization: `Bearer ${token}` },
           { name: "move_card", arguments: { cardId: "c1" }, authorization: `Bearer ${token}` },
+          { name: "plain_tool", arguments: {}, authorization: `Bearer ${token}` },
         ]);
 
         const silent = yield* mcp.connect(key.key, "mcp-apps-no-elicitation", {
@@ -366,6 +371,7 @@ layer(HostedLive, { excludeTestServices: true })("MCP Apps", (it) => {
         expect(fixture.seen.calls.map(({ arguments: args }) => args)).toEqual([
           { boardId: "b1" },
           { cardId: "c1" },
+          {},
         ]);
       }).pipe(Effect.provide(McpClient.layer)),
     ),

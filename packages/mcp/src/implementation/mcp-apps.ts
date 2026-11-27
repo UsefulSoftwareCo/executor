@@ -77,6 +77,7 @@ interface UiTool {
   readonly name: string;
   readonly accountId?: string;
   readonly resourceUri?: string;
+  readonly listed: boolean;
   readonly descriptor: McpSchema.Tool;
 }
 
@@ -92,8 +93,7 @@ const upstreamName = (entry: Entry) => {
 
 const project = (entry: Entry) =>
   Effect.gen(function* () {
-    const meta = uiOf(entry.tool._meta);
-    if (meta === undefined) return undefined;
+    const meta = uiOf(entry.tool._meta) ?? { ui: undefined, resourceUri: undefined };
     const name = upstreamName(entry);
     const bound = binding(entry);
     if (bound === undefined) {
@@ -114,7 +114,9 @@ const project = (entry: Entry) =>
         ...(flat === undefined || resourceUri === undefined
           ? {}
           : { "ui/resourceUri": resourceUri }),
-        ui: { ...meta.ui, ...(resourceUri === undefined ? {} : { resourceUri }) },
+        ...(meta.ui === undefined
+          ? {}
+          : { ui: { ...meta.ui, ...(resourceUri === undefined ? {} : { resourceUri }) } }),
       },
     });
     if (Option.isNone(descriptor)) {
@@ -126,6 +128,7 @@ const project = (entry: Entry) =>
       name,
       ...(bound.accountId === undefined ? {} : { accountId: bound.accountId }),
       ...(meta.resourceUri === undefined ? {} : { resourceUri: meta.resourceUri }),
+      listed: meta.ui !== undefined,
       descriptor: descriptor.value,
     } satisfies UiTool;
   });
@@ -134,6 +137,12 @@ const reserved: ReadonlySet<string> = new Set(Object.keys(McpToolkit.tools));
 
 const uiTools = (backend: McpBackend<Error>) =>
   listedTools(backend, "all").pipe(
+    Effect.map((entries) => {
+      const withUi = new Set(
+        entries.flatMap((entry) => (uiOf(entry.tool._meta) === undefined ? [] : [entry.target.id])),
+      );
+      return entries.filter((entry) => withUi.has(entry.target.id));
+    }),
     Effect.flatMap((entries) => Effect.forEach(entries, project)),
     Effect.flatMap((projected) =>
       Effect.gen(function* () {
@@ -143,11 +152,15 @@ const uiTools = (backend: McpBackend<Error>) =>
           byName.set(tool.name, [...(byName.get(tool.name) ?? []), tool]);
         }
         const tools = new Map<string, UiTool>();
-        for (const [name, found] of [...byName].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))) {
+        for (const [name, all] of [...byName].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))) {
+          const listed = all.filter((tool) => tool.listed);
+          const found = listed.length > 0 ? listed : all;
           const [only] = found;
-          if (reserved.has(name)) yield* leftOut("executor-tool-name", name);
-          else if (found.length > 1 || only === undefined) yield* leftOut("shared-name", name);
-          else tools.set(name, only);
+          if (reserved.has(name)) {
+            if (listed.length > 0) yield* leftOut("executor-tool-name", name);
+          } else if (found.length > 1 || only === undefined) {
+            if (listed.length > 0) yield* leftOut("shared-name", name);
+          } else tools.set(name, only);
         }
         return tools;
       }),
@@ -217,7 +230,9 @@ export const uiToolCatalog = (
 ): McpServer.ToolCatalog<McpSchema.McpRequestContext> => ({
   list: Effect.gen(function* () {
     if (!(yield* negotiated)) return [];
-    return [...(yield* uiTools(backend)).values()].map((tool) => tool.descriptor);
+    return [...(yield* uiTools(backend)).values()]
+      .filter((tool) => tool.listed)
+      .map((tool) => tool.descriptor);
   }),
   call: (name, args) =>
     Effect.gen(function* () {
