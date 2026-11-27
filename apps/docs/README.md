@@ -112,6 +112,26 @@ those directives only from there. Blume's block already carries the `/docs`
 prefix, and it is what gives `/docs/*.md` a `text/markdown` content type and
 `/docs/llms.txt` a `text/plain` one.
 
+## Release reference
+
+The CLI, self-host environment, MCP, skills and changelog pages use the release
+inputs checked into `reference/release.json`. The reference generator works
+offline and checks the output against `reference/pages.json`.
+
+After Executor publishes, run this from the repository root with the new version.
+The command needs an authenticated GitHub CLI, Docker Buildx and the release's
+source commit in the local clone.
+
+```sh
+bun apps/docs/reference/capture.ts <published-version>
+```
+
+Review and commit the updated `reference/release.json` and `reference/pages.json`.
+If the new release adds or removes a self-host setting or skill file, update the
+corresponding entries in `reference/self-host-meanings.ts` or `reference/skills.ts`
+and rerun the command. For changes to the renderer alone, run
+`bun apps/docs/reference/generate.ts --update` and review the manifest.
+
 ## Analytics
 
 The documentation reports to the same PostHog project as the marketing site and

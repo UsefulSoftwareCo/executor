@@ -1,8 +1,10 @@
 ---
 import CodeBlock from "blume/components/content/CodeBlock.astro";
-import { releaseCommands, type ReleaseCommandProduct } from "../release-commands.ts";
+import { releaseCommandLanguage, releaseCommands, type ReleaseCommandProduct } from "../release-commands.ts";
 interface Props { product: typeof ReleaseCommandProduct.Type }
-const { description, command } = releaseCommands[Astro.props.product];
+const { product } = Astro.props;
+const { description, command } = releaseCommands[product];
+const lang = releaseCommandLanguage(product);
 ---
 <p>{description}</p>
-<CodeBlock code={command} lang="bash" title="Bash" />
+<CodeBlock code={command} lang={lang} title={lang === "powershell" ? "PowerShell" : "Bash"} />

@@ -17,6 +17,7 @@ import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import { testStagePrefix } from "../infrastructure/stage.ts";
 import {
   canDeployTestStage,
+  isEvictableTestStage,
   isTestStageDue,
   stagesToEvict,
   testStageLimit,
@@ -158,12 +159,26 @@ interface DestroyOptions {
   readonly automatic: boolean;
   readonly expectedOwner: Option.Option<string>;
   readonly byName: boolean;
+  readonly evicting?: TestStageLease;
 }
 const destroy = (stageSlug: string, options: DestroyOptions) =>
   withStageAdmin((admin) =>
     Effect.gen(function* () {
       yield* admin.lock(stageSlug);
       const lease = yield* admin.get(stageSlug);
+      const chosen = options.evicting;
+      if (
+        chosen !== undefined &&
+        lease !== undefined &&
+        (lease.createdAt !== chosen.createdAt ||
+          lease.owner !== chosen.owner ||
+          lease.database !== chosen.database ||
+          lease.retention !== chosen.retention ||
+          !isEvictableTestStage(lease))
+      )
+        return yield* failure(
+          `test-${stageSlug}'s registry record changed since eviction chose it: its creation time, owner, database or retention differs, or it is no longer evictable. Nothing was torn down.`,
+        );
       if (
         options.automatic &&
         (lease === undefined || !isTestStageDue(lease, yield* Clock.currentTimeMillis))
@@ -232,9 +247,8 @@ const annotation = (text: string) =>
   text.replaceAll("%", "%25").replaceAll("\r", "%0D").replaceAll("\n", "%0A");
 const withoutIds = (text: string) =>
   text.replaceAll(/\/(accounts|zones|projects)\/[^/\s]+/gu, "/$1/…");
-const reportEvictionFailure = (stage: TestStageLease, reason: string, total: number) =>
+const warnNotEvicted = (message: string) =>
   Effect.gen(function* () {
-    const message = `Could not evict ${stage.slug} (${stage.owner}): ${reason.replace(/\.?$/u, ".")} Its record remains, so a later destroy retries it, and this deploy continues with ${total} test stages, over the limit of ${testStageLimit}.`;
     const line = oneLine(withoutIds(message));
     yield* Console.error(line);
     const actions = yield* Config.String("GITHUB_ACTIONS").pipe(Config.withDefault(""));
@@ -248,6 +262,14 @@ const reportEvictionFailure = (stage: TestStageLease, reason: string, total: num
         .writeFileString(summary, `- **Test stage not evicted:** ${line}\n`, { flag: "a" })
         .pipe(Effect.ignore);
   });
+const reportEvictionFailure = (
+  stage: TestStageLease,
+  reason: string,
+  after: ReadonlyArray<TestStageLease>,
+) =>
+  warnNotEvicted(
+    `Could not evict ${stage.slug} (${stage.owner}): ${reason.replace(/\.?$/u, ".")} ${after.some((lease) => lease.slug === stage.slug) ? "Its record remains, so a later destroy retries it. " : ""}With ${after.length} test stages registered now, this deploy is projected to make ${after.length + 1}${after.length + 1 > testStageLimit ? `, over the limit of ${testStageLimit}` : ""}, before any further eviction or quota check.`,
+  );
 const operation = (name: "deploy" | "plan") =>
   Command.make(
     name,
@@ -291,11 +313,26 @@ const operation = (name: "deploy" | "plan") =>
             return yield* failure(
               "A preview's database and retention cannot change on redeploy. Use a new slug.",
             );
-          const evictions =
-            existing === undefined ? stagesToEvict(yield* admin.list, input.slug) : [];
-          if ("noEvict" in input && input.noEvict === true && evictions.length > 0)
+          if (
+            existing !== undefined &&
+            existing.retention === "retained" &&
+            isEvictableTestStage(existing) &&
+            metadata.owner !== existing.owner
+          )
             return yield* failure(
-              `Deploying ${input.slug} would evict ${evictions.length} test stage${evictions.length === 1 ? "" : "s"} to stay within ${testStageLimit}: ${evictions.map((stage) => `${stage.slug} (${oneLine(stage.owner)})`).join(", ")}. --no-evict refuses it, so nothing was reserved, deployed or destroyed. Destroy test stages you own, then deploy again.`,
+              `test-${input.slug} is registered as ${oneLine(existing.owner)}, a PR preview that eviction may remove. Deploying it as ${oneLine(metadata.owner)} would leave that registration in place, so nothing was reserved, deployed or destroyed. Deploy under a new slug instead.`,
+            );
+          const { needed, evictions } =
+            existing === undefined
+              ? stagesToEvict(yield* admin.list, input.slug)
+              : { needed: 0, evictions: [] };
+          const kept =
+            evictions.length < needed
+              ? `${input.slug} needs ${needed} test stage${needed === 1 ? "" : "s"} evicted to stay within ${testStageLimit}, but ${evictions.length === 0 ? "no other registered stage is" : `only ${evictions.length} other registered stage${evictions.length === 1 ? " is" : "s are"}`} a PR preview or temporary stage, and eviction keeps every other stage.`
+              : undefined;
+          if ("noEvict" in input && input.noEvict === true && needed > 0)
+            return yield* failure(
+              `Deploying ${input.slug} would evict ${evictions.length} test stage${evictions.length === 1 ? "" : "s"} ${kept === undefined ? `to stay within ${testStageLimit}` : `and still go past ${testStageLimit}`}${evictions.length === 0 ? "" : `: ${evictions.map((stage) => `${stage.slug} (${oneLine(stage.owner)})`).join(", ")}`}. --no-evict refuses it, so nothing was reserved, deployed or destroyed. Destroy test stages you own, then deploy again.`,
             );
           const usage = existing === undefined ? yield* accountUsage : undefined;
           const limits = yield* accountLimits;
@@ -314,13 +351,14 @@ const operation = (name: "deploy" | "plan") =>
           if (existing === undefined)
             for (const stage of evictions) {
               yield* Console.log(
-                `${name === "deploy" ? "Evicting" : "Deploying will evict"} the oldest test stage, ${stage.slug} (${oneLine(stage.owner)}), to stay within ${testStageLimit}.`,
+                `${name === "deploy" ? "Evicting" : "Deploying will evict"} the oldest evictable test stage, ${stage.slug} (${oneLine(stage.owner)}), to stay within ${testStageLimit}.`,
               );
               if (name !== "deploy") continue;
               const outcome = yield* destroy(stage.slug, {
                 automatic: false,
                 expectedOwner: Option.none(),
                 byName: false,
+                evicting: stage,
               }).pipe(Effect.result);
               if (Result.isSuccess(outcome)) {
                 evicted.push(stage.slug);
@@ -331,7 +369,7 @@ const operation = (name: "deploy" | "plan") =>
                   Schema.is(TestStageFailed)(outcome.failure)
                     ? outcome.failure.message
                     : "its teardown failed",
-                  (yield* admin.list).length + 1,
+                  yield* admin.list,
                 );
             }
           if (name === "deploy" && usage !== undefined && evicted.length < evictions.length) {
@@ -340,6 +378,10 @@ const operation = (name: "deploy" | "plan") =>
             if (again.warning !== undefined && capacity?.warning === undefined)
               yield* Console.error(again.warning);
           }
+          if (kept !== undefined)
+            yield* warnNotEvicted(
+              `${kept} ${name === "deploy" ? `Unless other stages leave the registry first, this deploy is projected to go over the limit of ${testStageLimit}.` : `A deploy is projected to go past the limit of ${testStageLimit}.`}`,
+            );
           const lease =
             name === "deploy"
               ? yield* admin.reserve(metadata)

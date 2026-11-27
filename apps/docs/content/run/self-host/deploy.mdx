@@ -1,0 +1,138 @@
+---
+title: Deploy, proxy, and tune self-host
+description: "Deploy self-hosted Executor on Railway, Tailscale, a LAN, without Docker, or from source, and configure reverse proxies, app UIs, and runtime limits."
+---
+
+Deploy self-hosted Executor behind your own domain or private network using Railway, Tailscale, plain HTTP on a LAN, a reverse proxy, a native Bun checkout, or Docker Compose from source (**Self-host** only).
+
+Set `BETTER_AUTH_URL` to the exact origin users open (scheme, host, and non-default port) for remote access. Keep every route to a new instance restricted to you until **Set up Executor** finishes. The first successful setup creates the organization and its owner without a pre-existing setup secret.
+
+**Prerequisites:** A Railway project and a restricted setup route for Railway. For Docker commands on a machine you administer, use Docker on Linux AMD64 or ARM64 (or Docker Desktop running Linux containers on macOS/Windows). To build with Compose, install Git and Docker Compose. To run without Docker, use a `2.0.0-beta.79` checkout with Bun, Node.js, and the telemetry build prerequisites (Rust/Cargo). On Tailscale, you need a connected Tailscale node with HTTPS enabled on the tailnet and host administrator rights for `tailscale serve`. Behind a reverse proxy, you need permission to configure routing and TLS.
+
+**You'll know it worked when** `<BETTER_AUTH_URL>/health` returns HTTP `200` with `{"status":"ok"}` and you can sign in at `<BETTER_AUTH_URL>` after private setup.
+
+## Deploy on Railway
+
+<ReleaseCommand product="docker-image" />
+
+Keep Railway public networking off on the Executor service until setup is complete. Route all setup traffic through your restricted origin.
+
+1. Attach a persistent volume at `/app/data` and keep one replica. Set the service's `PORT` (for example, `8080`) and set `HOST=::` for Railway private networking. Set the healthcheck path to `/health` and the startup timeout to `300` seconds.
+2. Use a private route you alone can open in your browser. For example, configure an access-restricted TLS reverse proxy that forwards to the Executor service on Railway's private network at its `PORT`. Set `BETTER_AUTH_URL` to the exact HTTPS origin you open for setup.
+3. Deploy the service with public networking still off. Open the restricted origin and finish [first-run setup](/docs/run/self-host/sign-in-and-sso#first-run-setup). Verify that you can sign in as the owner before proceeding.
+4. Generate the Railway domain and route it to the same `PORT`. Set `BETTER_AUTH_URL` to the exact public HTTPS origin and redeploy with the same volume. If you use a custom domain, set `BETTER_AUTH_URL` to its exact HTTPS origin instead.
+
+You'll know it worked when Railway marks the `/health` check green and your public domain displays the sign-in screen.
+
+## Private access with Tailscale
+
+On a connected Tailscale node with HTTPS enabled on your tailnet (and configured clients on the same tailnet), Tailscale Serve gives Executor a private HTTPS address with no public DNS, port forwarding, or certificate management. Keep Docker bound to `127.0.0.1:4400`. Before starting Serve, restrict access to your own devices until you complete setup. The example uses port `4443` when `443` is already taken:
+
+```bash
+TAILNET_HOST="my-host.tail1234.ts.net" # replace with your Tailscale machine and tailnet
+docker run -d --name executor-v2 --init --restart unless-stopped \
+  -p 127.0.0.1:4400:4400 -v executor-v2-data:/app/data \
+  -e "BETTER_AUTH_URL=https://${TAILNET_HOST}:4443" \
+  ghcr.io/usefulsoftwareco/executor-selfhost:2.0.0-beta.79
+tailscale serve --bg --https=4443 http://127.0.0.1:4400
+```
+
+Run `tailscale serve status` to verify the address. Open the exact configured origin, including any non-default port, and complete setup before allowing other tailnet users to connect. Changing Serve requires host administrator rights (on Synology, run over SSH with `sudo`). Every device opening the dashboard or connecting an MCP client must be on the tailnet, using `https://<machine>.<tailnet>.ts.net:4443/mcp`:
+
+```bash
+codex mcp add executor --url "https://${TAILNET_HOST}:4443/mcp"
+codex mcp login executor
+```
+
+| Feature | Tailnet only (Serve) |
+| --- | --- |
+| Dashboard, MCP endpoint, and client sign-in | Yes |
+| Connecting a provider account by OAuth | Yes (your browser on the tailnet handles the `/api/oauth/callback` redirect) |
+| Public OAuth client metadata (`EXECUTOR_OAUTH_CLIENT_METADATA_URL`) | No (external OAuth servers fetch the metadata document from the public internet) |
+| Public app webhooks | No (external senders must reach your origin; senders on the same tailnet can reach Serve) |
+| App web pages | No (requires a wildcard domain and certificate; Tailscale certificates cover only the machine's name) |
+
+If you need public internet reachability for public webhooks or public OAuth client metadata, complete **Set up Executor** over the restricted Serve route before enabling Tailscale Funnel (Funnel supports only ports `443`, `8443`, and `10000`).
+
+You'll know it worked when `tailscale serve status` lists your HTTPS URL and opening it from a tailnet device loads **Set up Executor** or the login screen.
+
+## Plain HTTP on a LAN
+
+On a trusted private LAN, restrict the port to your device until setup finishes. Bind the port on your LAN interface and set `BETTER_AUTH_URL` to the exact origin you open, for example `http://192.168.1.20:4400`. Plain HTTP carries browser traffic without TLS.
+
+## Reverse proxies and `EXECUTOR_TRUSTED_PROXIES`
+
+Put TLS on the reverse proxy before public access and set `BETTER_AUTH_URL` to the exact public origin. Keep all routes restricted to you until setup finishes.
+
+For rate-limited auth routes, the Docker host trusts `X-Forwarded-For` only from peers listed in `EXECUTOR_TRUSTED_PROXIES`. Set it to a comma-separated list of your actual proxy IPs or CIDRs. Executor reads the header from the right past trusted hops. Configure each proxy to append the address of its connecting peer.
+
+- **Host proxy**. If your host proxy connects from the Docker network gateway, verify that peer address and trust it only if it represents proxies you control.
+- **Proxy container:** Assign a fixed container IP and list only that IP.
+- **Cloudflare Tunnel:** List the exact address `cloudflared` connects from.
+
+List only addresses used by your proxies.
+
+## Serving app web pages
+
+Apps that ship a web UI need `EXECUTOR_APP_UI_BASE_URL` set to an HTTPS origin with no trailing slash:
+
+```bash
+EXECUTOR_APP_UI_BASE_URL=https://apps.example.net
+```
+
+With `EXECUTOR_APP_UI_BASE_URL=https://apps.example.net`, Executor serves each app page at `<app-slug>.<organization-slug>.apps.example.net` (two labels before the configured base). For the default `executor` organization, configure wildcard DNS and a matching TLS certificate for `*.executor.apps.example.net` (a wildcard certificate for `*.apps.example.net` alone does not cover two subdomain levels). Preserve the requested `Host` header when forwarding to the container's configured `PORT` (default `4400`). Each slug can be at most 63 characters, and the whole hostname can be at most 253 characters. On `localhost` or `127.0.0.1`, a localhost app base is derived automatically.
+
+## Private network fetch, Worker, and MCP client limits
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `EXECUTOR_APPS_ALLOW_PRIVATE_FETCH` | `false` | Set to `true` to allow private-network app fetches and off-registry private build downloads. Same-origin Executor requests use an internal binding, and the configured npm registry origin has its own download exception. |
+| `EXECUTOR_APP_WORKERS` | `64` | Target number of resident app and data Workers kept in memory. Executor evicts least-recently-used idle Workers when over this target; active Workers are never evicted, so concurrent active Workers can exceed it. Apps with a database can keep two Workers loaded (app + data). |
+| `EXECUTOR_APP_WORKER_IDLE_SECONDS` | `300` | Unload an idle Worker after this many seconds even below the target (`0` keeps idle Workers loaded until the target is exceeded). |
+| `EXECUTOR_MCP_CLIENTS` | `512` | Maximum kept MCP client handlers in memory. Idle client handlers expire after 30 minutes (on a one-minute sweep). When full, the least-recently-used eligible idle client handler is evicted — discarded protocol sessions receive `404` and must re-initialize. Active calls and paused approvals are not evicted (`503` with `Retry-After: 1` when no eligible idle handler can be evicted). |
+| `EXECUTOR_MCP_CLIENTS_PER_USER` | `256` | Maximum kept MCP client handlers one member can hold before their own least-recently-used eligible idle handler is evicted. |
+| `EXECUTOR_ENVIRONMENT` | `self-host` | Environment label for this instance. |
+| `EXECUTOR_CATALOG_URL` | `https://catalog.executor.sh/index.json` | Official app catalog feed; set to `off` for air-gapped instances to list only the built-in Executor app (independent of other outbound calls). |
+| `EXECUTOR_REGISTRY_URL` | `https://api.executor.sh` | Public app registry origin. |
+| `EXECUTOR_NPM_REGISTRY` | `https://registry.npmjs.org` | npm registry used for app package installs and daily update checks. |
+| `EXECUTOR_TOOL_LISTING_FRESH_SECONDS` | `30` | Reuse an app's evaluated tool list for this long before background refresh. |
+| `EXECUTOR_TOOL_LISTING_RENEW_SECONDS` | `86400` | Renew cached tool lists in the background once this old. |
+| `EXECUTOR_TOOL_LISTING_MAX_AGE_SECONDS` | `604800` | Maximum age of a cached tool list (`0` re-evaluates every time). |
+| `EXECUTOR_TOOL_LISTING_LOAD_SECONDS` | `45` | Stop background tool-list evaluation after this many seconds when no request is waiting (capped by `EXECUTOR_TOOL_LISTING_MAX_AGE_SECONDS`). |
+| `EXECUTOR_EVALUATION_MEMORY_MB` | `256` | Memory budget for kept tool lists and app declarations. |
+
+## Running without Docker
+
+For source development, keep the development endpoint restricted to you through first-run setup. Install the checkout's Bun, Node.js, and telemetry build prerequisites (the build compiles the bundled Rust collector and viewer). In a `2.0.0-beta.79` repository checkout, run without Docker or a separate Postgres server:
+
+```bash
+bun install --frozen-lockfile
+bun run hosted:dev
+```
+
+`hosted:dev` builds the app framework and telemetry, starts the internal Bun API on a dynamically allocated `127.0.0.1` port, and serves the HTTPS dashboard and `/health` through Portless — open the HTTPS URL printed on the `Executor self-host:` line (normally `https://self-host.executor.localhost:5394`). Development data persists under `.local/hosted` (`hosted.pglite`, override with `EXECUTOR_DATA_DIR`). The published Docker image runs on `workerd`, whereas `hosted:dev` runs natively on Bun.
+
+You'll know it worked when `/health` on the printed `Executor self-host:` URL returns `{"status":"ok"}`.
+
+## Build from source
+
+Compose binds the server port to host loopback. Complete setup there before enabling any public route.
+
+<ReleaseCommand product="source" />
+
+Use the same `EXECUTOR_BUILD_VERSION` for the build and for `docker compose up`. Compose passes the value from your shell to the running container. The Compose service uses a project-scoped named volume (`pglite-data`), separate from the standalone `docker run` command's `executor-v2-data`. To pass additional runtime settings not listed in `apps/hosted/self-host/compose.yaml` (such as `EXECUTOR_NPM_REGISTRY`, stall-watchdog settings, or tool-listing and declaration limits), add them to the service's `environment:` section in `compose.yaml`.
+
+You'll know it worked when `docker compose -f apps/hosted/self-host/compose.yaml ps` shows the container healthy and `http://localhost:4400` opens the setup page.
+
+## Limits
+
+- Raising `EXECUTOR_MCP_CLIENTS` well above the default increases memory use and can slow tool execution under heavy concurrency.
+- With `EXECUTOR_APP_UI_BASE_URL`, each app hostname uses two labels before the base (`<app-slug>.<organization-slug>.<base>`): each label can be at most 63 characters and the whole hostname at most 253 characters.
+
+## Related
+
+- [Self-host with Docker](/docs/run/self-host)
+- [Sign-in and OIDC SSO](/docs/run/self-host/sign-in-and-sso)
+- [Operator OAuth clients](/docs/run/self-host/oauth-clients)
+- [Storage, backups, and updates](/docs/run/self-host/storage-and-updates)
+- [Tracing](/docs/run/tracing)

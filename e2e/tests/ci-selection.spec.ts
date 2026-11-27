@@ -4432,7 +4432,7 @@ layer(NodeServices.layer)("CI E2E selection", (it) => {
   );
 
   it.effect(
-    "each release lane runs its release job's steps for one platform, minus publishing",
+    "each release lane runs its release job's steps for one platform, minus publishing and the release image's own Docker store",
     () =>
       Effect.gen(function* () {
         const fs = yield* FileSystem.FileSystem;
@@ -4448,7 +4448,15 @@ layer(NodeServices.layer)("CI E2E selection", (it) => {
           });
         const own = "Read the release identity";
         const lanes = [
-          ["release-docker", "docker", ["Push the tested architecture without moving a channel"]],
+          [
+            "release-docker",
+            "docker",
+            [
+              "Restart Docker on an empty store of this job's own",
+              "Push the tested architecture without moving a channel",
+              "Put Docker back on the runner's own store",
+            ],
+          ],
           [
             "release-local-cli",
             "checks",

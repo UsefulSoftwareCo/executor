@@ -1,5 +1,6 @@
 {
   "extends": "astro/tsconfigs/strict",
+  "compilerOptions": { "exactOptionalPropertyTypes": true },
   "include": [".blume/.astro/types.d.ts", "**/*"],
   "exclude": ["dist", ".blume", ".blume-verify"]
 }
