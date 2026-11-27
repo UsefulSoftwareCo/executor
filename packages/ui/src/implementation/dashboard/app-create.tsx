@@ -1,4 +1,3 @@
-/** One naming and mutation lifecycle for copied apps and generated catalog apps. */
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { useAtomSet, useAtomValue } from "@effect/atom-react";
 import { Exit } from "effect";
@@ -8,7 +7,6 @@ import type { MutationProps } from "../../contracts/dashboard.ts";
 import { Button } from "../components/button.tsx";
 import { Input } from "../components/input.tsx";
 
-/** Prevent duplicate submits and late navigation when the form has been left. */
 export function AppCreateForm<Input, E, A extends App = App>({
   mutation,
   Failure,

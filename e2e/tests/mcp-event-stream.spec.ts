@@ -1,4 +1,3 @@
-/** A remote MCP server that refuses the optional event stream still serves its tools. */
 import { expect, layer } from "@effect/vitest";
 import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
 import { Deferred, Effect, Layer, Ref, Schema } from "effect";
@@ -19,11 +18,6 @@ const JsonRpcRequest = Schema.Struct({
   params: Schema.optional(Schema.Struct({ protocolVersion: Schema.optional(Schema.String) })),
 });
 
-/**
- * An MCP server that answers every POST but refuses the standalone GET event stream with a 401
- * and a JSON-RPC error, as some hosted servers do instead of the 405 the spec asks for. It holds
- * `tools/list` until that GET has arrived, so the refusal reaches the client during discovery.
- */
 const refusedStreamMcpServer = Effect.gen(function* () {
   const requests = yield* Ref.make<ReadonlyArray<string>>([]);
   const streamRequested = yield* Deferred.make<void>();
@@ -143,7 +137,6 @@ layer(HostedLive, { excludeTestServices: true })("MCP event stream", (it) => {
         yield* evidence.json("call.json", called);
         expect(called.status, JSON.stringify(called.body)).toBe(200);
         expect(called.body).toMatchObject({ structuredContent: { reply: "pong" } });
-        // The server did refuse the stream during the session; the tools were listed regardless.
         const requests = yield* server.requests;
         yield* evidence.json("upstream-requests.json", requests);
         expect(requests).toContain("GET 401");

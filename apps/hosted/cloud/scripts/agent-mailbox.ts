@@ -1,7 +1,3 @@
-/**
- * Read agent inboxes through the Cloudflare API. The namespace comes from the agent mail stack's
- * shared Alchemy output; the caller supplies the same Cloudflare credentials used to deploy it.
- */
 import { layer } from "alchemy/Alchemist/Runtime";
 import { store } from "alchemy/Alchemist/routes/state";
 import { Clock, Config, Effect, Schedule, Schema } from "effect";
@@ -29,7 +25,6 @@ const KeyList = Schema.Struct({
   result: Schema.Array(Schema.Struct({ name: Schema.String })),
 });
 
-/** A full inbox address for a synthetic agent, such as `alice@agents.executor.engineering`. */
 export const agentAddress = (local: string) =>
   Schema.decodeUnknownEffect(AgentMailLocalPart)(local).pipe(
     Effect.map((valid) => `${valid}@${agentMailDomain}`),
@@ -38,7 +33,6 @@ export const agentAddress = (local: string) =>
     ),
   );
 
-/** Resolve the deployed namespace and return a reader bound to it. */
 export const agentMailbox = Effect.gen(function* () {
   const output = yield* store({ backend: "cloudflare" }).pipe(
     Effect.flatMap((state) => state.getOutput({ stack: agentMailStack, stage: agentMailStage })),
@@ -57,7 +51,6 @@ export const agentMailbox = Effect.gen(function* () {
   );
   const base = `https://api.cloudflare.com/client/v4/accounts/${output.accountId}/storage/kv/namespaces/${output.namespaceId}`;
 
-  /** Messages for one address, oldest first, optionally only those received after a time. */
   const list = (address: string, after?: string) =>
     Effect.gen(function* () {
       const keys = yield* http
@@ -79,7 +72,6 @@ export const agentMailbox = Effect.gen(function* () {
       Effect.mapError(() => new AgentMailUnavailable({ reason: "Could not read the mailbox" })),
     );
 
-  /** Wait for the first message after `after` whose subject matches. */
   const waitFor = (address: string, after: string, subject: RegExp, timeoutSeconds = 90) =>
     list(address, after).pipe(
       Effect.map((messages) => messages.find((message) => subject.test(message.subject))),

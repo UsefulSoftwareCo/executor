@@ -1,4 +1,3 @@
-/** A real provider boundary whose registration can pause, fail, and recover. */
 import { createServer } from "node:http";
 import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
 import { Deferred, Effect, Layer, Ref, Schema } from "effect";
@@ -7,7 +6,6 @@ class RegistrationFixtureFailed extends Schema.TaggedError<RegistrationFixtureFa
   "RegistrationFixtureFailed",
   {},
 ) {}
-/** The test scope owns the listener and releases any held registration on every exit. */
 export const webhookRegistrationFixture = Effect.gen(function* () {
   const received = yield* Deferred.make<void>(),
     release = yield* Deferred.make<void>(),

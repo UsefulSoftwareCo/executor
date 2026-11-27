@@ -133,7 +133,6 @@ export const splitSource = (files: SourceFiles) => {
   const served: SourceFile[] = [];
   for (const file of files) {
     if (isPublicSourcePath(file.path)) served.push(file);
-    // SourceFiles admits only text outside ui/public/.
     else if (isTextFile(file)) code.push(file);
   }
   return { code, public: served };
@@ -297,7 +296,6 @@ export type SourcePathNotUnicode = typeof SourcePathNotUnicode.Type;
  * valid Unicode, or a file's path that is also a folder of another file.
  */
 export const sourcePathsFit = (files: ReadonlyArray<SourceFile>) => {
-  // With the `u` flag, a surrogate pair is one code point, so this matches only a lone surrogate.
   const lone = files.find((file) => /\p{Cs}/u.test(file.path));
   if (lone !== undefined) return Effect.fail(new SourcePathNotUnicode({ path: lone.path }));
   const paths = new Set(files.map((file) => file.path));
@@ -348,7 +346,6 @@ export const removedPaths = (
   const kept = new Set(files.map((file) => file.path));
   const removed = [...previous].filter((path) => !kept.has(path)).sort();
   const paths: string[] = [];
-  // Measure the JSON the list is sent as, where an escaped character can take six bytes.
   let bytes = "[]".length;
   for (const path of removed.slice(0, removalLimits.paths)) {
     bytes += new TextEncoder().encode(JSON.stringify(path)).length + (paths.length > 0 ? 1 : 0);
@@ -395,6 +392,16 @@ export const Branch = Schema.String.check(
  * read lists by their blob (`SourceStoredFile`) are not held and do not count here.
  */
 export const sourceLimits = { files: 4096, bytes: 16 * 1024 * 1024 } as const;
+/**
+ * The most bytes one of the app's own files the build compiles as JavaScript or TypeScript may
+ * hold. Files of the npm packages it imports are not limited and compile however large they are.
+ * esbuild compiles each file in a single synchronous stretch on the thread that serves the host's
+ * requests; this bounds the work it does on any one of the app's files, not a whole build, which
+ * with several large files, or a large package file, can still hold that thread for seconds. JSON files are outside this limit on purpose: the app's own server JSON imports
+ * become modules of their own, and JSON in packages or the browser build goes through esbuild's
+ * JSON loader. `ui/public/` files are never compiled. `sourceLimits` still bounds the whole source.
+ */
+export const compiledFileLimit = 2_000_000;
 /**
  * Public files under `ui/public/`, which builds never load and deploys copy one at a time:
  *

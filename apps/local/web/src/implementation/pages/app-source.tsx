@@ -10,7 +10,6 @@ import { sourceAtom, sourceFileAtom } from "../../contracts/api.ts";
 import { AppVersions as SharedAppVersions } from "@executor-js/ui/dashboard/app-versions";
 import { Failure } from "../components/common.tsx";
 
-/** Inspect immutable source versions; choosing a version never changes the active version. */
 export function AppVersions({ data }: { readonly data: DashboardApp }) {
   const [selectedVersion, setSelectedVersion] = useState<VersionId | undefined>(undefined);
   const version = selectedVersion ?? data.app.activeVersion;
@@ -37,7 +36,6 @@ export function AppVersions({ data }: { readonly data: DashboardApp }) {
   );
 }
 
-/** Local app source uses shared read-only inspection and the existing live app inventory. */
 export function AppSource({
   data,
   view,

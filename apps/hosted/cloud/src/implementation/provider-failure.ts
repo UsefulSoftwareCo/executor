@@ -1,4 +1,3 @@
-/** Classify native provider failures without recording messages, object keys or payloads. */
 export const providerFailureCode = (error: unknown): string => {
   if (!(error instanceof Error)) return "non_error";
   const message = error.message;

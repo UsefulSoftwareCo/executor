@@ -16,12 +16,10 @@ import {
   SelectValue,
 } from "../components/select.tsx";
 
-/** A consent form needs at least one usable selection, or explicit all-app access. */
 export const hasGrantSelection = (policy: GrantPolicy) =>
   policy.kind === "all" ||
   policy.apps.some(({ tools }) => tools.kind !== "selected" || tools.names.length > 0);
 
-/** Both hosts display the same permissions; each host supplies its authorized catalog and navigation. */
 export function GrantPicker<E>({
   policy,
   onChange,

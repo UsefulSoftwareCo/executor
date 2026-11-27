@@ -31,16 +31,10 @@ const supportLinks = [
   },
 ] as const;
 
-/** A support channel whose link the user followed. */
 export type SupportLink = (typeof supportLinks)[number]["label"];
 
 const optionClass = buttonVariants({ variant: "outline", className: "justify-start" });
 
-/**
- * A "Get support" entry for the sidebar's resource links, opening the ways to reach
- * the team. `trigger` replaces the sidebar entry where another element opens it. The owning
- * product records usage; this view does not choose an analytics sink.
- */
 export function SupportDialog({
   onOpen,
   onLinkClick,
@@ -93,7 +87,6 @@ export function SupportDialog({
             type="button"
             className={optionClass}
             aria-expanded={slackOpen}
-            // The note exists only while expanded, so it is controlled only then.
             aria-controls={slackOpen ? slackId : undefined}
             onClick={() => setSlackOpen((open) => !open)}
           >

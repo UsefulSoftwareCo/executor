@@ -1,11 +1,5 @@
 import { useEffect, useRef, useState, type RefObject } from "react";
 
-/**
- * Render long lists in slices. A sentinel after the last rendered row reveals the next slice
- * when it scrolls into view, so thousands of rows never mount at once. Changing `reset`
- * (for example a search query) returns to the first slice. A list that scrolls inside its own
- * container passes it as `root`, so the next slice loads as the container nears its end.
- */
 export function useIncrementalList(
   total: number,
   reset: string,

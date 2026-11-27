@@ -4,7 +4,6 @@ import { BrowserApprovalCard } from "@executor-js/ui/dashboard/browser-approval"
 import { pendingApprovalsAtom, scheduledReviewAtoms } from "../../contracts/schedules.ts";
 import { Failure } from "../components/common.tsx";
 
-/** Pending runs are reviewed by a signed-in human through the product's normal auth boundary. */
 export function ApprovalsPage() {
   return (
     <SharedApprovalsPage
@@ -18,7 +17,6 @@ export function ApprovalsPage() {
     />
   );
 }
-/** Scheduled answers continue in the background; no MCP client is required. */
 export function ScheduledApprovalPage({ runId }: { readonly runId: string }) {
   return (
     <main className="mx-auto w-full max-w-2xl p-4 md:p-6">

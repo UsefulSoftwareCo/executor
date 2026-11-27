@@ -1,16 +1,3 @@
-/**
- * Bound how many builds one compiler isolate runs at once.
- *
- * Every request an isolate serves shares its memory, and esbuild's WebAssembly heap keeps its
- * peak. When several builds that install npm packages ran together, the isolate exceeded its
- * memory limit and the runtime failed every build in flight: as memory failures, as lost
- * connections, or as builds that never answered.
- *
- * Waiting uses promises, not an Effect semaphore. A promise settled by another request resumes
- * its waiter in the waiter's own I/O context (Workers' cross-request promise handling), so its
- * timers and fetches stay its own. A request can be cancelled while it holds a slot, without
- * running its finalizers, so each slot is a lease: after `lease` a waiter takes the slot over.
- */
 import { Duration, Effect } from "effect";
 
 interface Slot {
@@ -48,7 +35,6 @@ export const makeBuildAdmission = (slots: number, lease: Duration.Input) => {
       clearTimeout(timer);
     }
   };
-  /** Run a build once a slot is free, and free the slot when the build ends. */
   return <A, E, R>(build: Effect.Effect<A, E, R>) =>
     Effect.acquireUseRelease(
       Effect.promise(acquire).pipe(Effect.withSpan("compiler.admission")),

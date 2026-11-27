@@ -1,44 +1,15 @@
-/**
- * Coverage of the code a product process runs inside workerd, for `E2E_COVERAGE=1`; see
- * `e2e/coverage.ts`.
- *
- * workerd's isolates log their function events to files (`workerdCoverageFlags`, V8's
- * `--log-function-events`, passed through `ALCHEMY_WORKERD_V8_FLAGS`). Nothing connects to the
- * product: workerd's inspector is never opened. With it open, workerd registers each isolate by
- * name and refuses a second isolate under a name it has not yet forgotten, so an app Worker the
- * runtime unloaded and loads again fails ("inserted row already exists in table").
- *
- * A function ran when V8 compiled it lazily, which a call does, or logged its first execution; the
- * functions that enclose it ran too. Every other function V8 parsed counts as not run. Like V8's
- * best-effort coverage this counts functions, not blocks: a branch a function skipped counts as
- * run. Functions V8 compiled eagerly and ran without logging a first execution count as not run.
- *
- * V8 names each isolate's file after the isolate's address, and opens it truncated, so an isolate
- * at the address of an unloaded one would overwrite its log. The recorder renames each new file
- * within 100 milliseconds; V8 keeps writing to the renamed file. Only an isolate that started and
- * was replaced within that window loses its log.
- */
 import { Effect, FileSystem, Path, Schedule, Semaphore } from "effect";
 
-/** The file name V8 gives each isolate's log, from `--logfile=<directory>/workerd.log`. */
 const live = /^isolate-0x[0-9a-f]+-\d+-workerd\.log$/;
 const renamed = /^v8-\d+\.log$/;
 
-/** V8 flags that make workerd's isolates log their function events to `directory`. */
 export const workerdCoverageFlags = (directory: string) => {
-  // The runtime splits `ALCHEMY_WORKERD_V8_FLAGS` on whitespace.
   if (/\s/.test(directory)) throw new Error(`Coverage directory has whitespace: ${directory}`);
   return `--log-function-events --logfile=${directory}/workerd.log`;
 };
 
 type Range = { start: number; end: number; ran: boolean };
 
-/**
- * One isolate's log as V8 coverage of each product script: its parsed functions, counted 1 when
- * they ran and 0 when not. Only modules `e2e/coverage.ts` can map: the host bundle's, and the app
- * framework's. An app's own bundle, workerd's built-in modules and Alchemy's Workers are not
- * product code.
- */
 const readLog = (text: string) => {
   const urls = new Map<string, string>();
   const lengths = new Map<string, number>();
@@ -69,12 +40,10 @@ const readLog = (text: string) => {
     const length = lengths.get(id);
     if (url === undefined || length === undefined) return [];
     if (!url.startsWith("file:///bundle/") && !url.startsWith("node_modules/apps/")) return [];
-    // A module that was parsed was evaluated, so its top level ran.
     const top = script.get(`0:${length}`) ?? { start: 0, end: length, ran: true };
     top.ran = true;
     script.set(`0:${length}`, top);
     const ranges = [...script.values()].sort((a, b) => a.start - b.start || b.end - a.end);
-    // A function can run only after the function that encloses it ran.
     const open: Range[] = [];
     for (const range of ranges) {
       while (open.length > 0 && open[open.length - 1]!.end < range.end) open.pop();
@@ -87,12 +56,6 @@ const readLog = (text: string) => {
   });
 };
 
-/**
- * Keep the function logs of the workerd that logs to `directory` (see `workerdCoverageFlags`)
- * while the scope is open. `save` reads the logs, once workerd has stopped, and writes their
- * coverage as `workerd-<n>.json`; the host bundle it names maps the host Worker's coverage to its
- * sources. The scope's end saves too.
- */
 export const recordWorkerdCoverage = (options: {
   readonly directory: string;
   readonly bundle: string;
@@ -114,7 +77,6 @@ export const recordWorkerdCoverage = (options: {
       }).pipe(Effect.ignore),
     );
     yield* keep.pipe(Effect.repeat(Schedule.spaced("100 millis")), Effect.forkScoped);
-    /** Each script's functions, by script and position, run if any isolate ran them. */
     const save = Effect.gen(function* () {
       yield* keep;
       yield* lock.withPermits(1)(
@@ -123,8 +85,6 @@ export const recordWorkerdCoverage = (options: {
           for (const name of yield* fs.readDirectory(options.directory)) {
             if (!renamed.test(name)) continue;
             const file = path.join(options.directory, name);
-            // The same module text in several isolates, such as the app framework in each app
-            // Worker, or in an isolate that replaced an unloaded one, is one script.
             for (const { url, length, ranges } of readLog(yield* fs.readFileString(file))) {
               const key = `${url}#${length}`;
               let entry = scripts.get(key);

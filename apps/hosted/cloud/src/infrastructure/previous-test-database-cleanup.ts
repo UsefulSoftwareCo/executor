@@ -1,4 +1,3 @@
-/** Delete-only support for previews deployed before the isolated-branch cutover. */
 import { Resource } from "alchemy";
 import * as Provider from "alchemy/Provider";
 import { Stage } from "alchemy/Stage";
@@ -17,7 +16,6 @@ const PreviousDatabase = Resource<
   >
 >("Executor.LogicalDatabase");
 
-/** No new resource uses this provider. Keep interrupted deletion of pre-cutover state retryable. */
 export const PreviousTestDatabaseCleanup = () =>
   Provider.succeed(PreviousDatabase, {
     read: ({ output }) => Effect.succeed(output),

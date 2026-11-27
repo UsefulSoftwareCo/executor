@@ -1,4 +1,3 @@
-/** Real product checks with durable markers for timed-out step writes and observable sleep windows. */
 import { expect, layer } from "@effect/vitest";
 import { Clock, Config, Effect, Schema } from "effect";
 import { randomUUID } from "node:crypto";
@@ -30,9 +29,7 @@ const fixture = Effect.gen(function* () {
       const response = yield* api.request(actors.owner, "GET", `${path}/workflow-runs`);
       expect(response.status).toBe(200);
       const runs = yield* body(Page, response);
-      // Retain terminal states before cleanup can replace them with termination.
       yield* evidence.json("workflow-durability-runs.json", runs);
-      // Include the marker runs started inside mutations, even if an assertion failed early.
       for (const run of runs.items)
         yield* api.request(actors.owner, "POST", `${path}/workflow-runs/${run.id}/terminate`);
       expect((yield* api.request(actors.owner, "DELETE", path)).status).toBe(200);
@@ -121,7 +118,6 @@ layer(HostedLive, { excludeTestServices: true })("Workflow durability", (it) => 
         expect(saved.output).toBe(control.row);
         expect(yield* app.rows()).toEqual([{ id: control.row, label: "committed" }]);
 
-        // The step's transaction commits before its slow outside work; both attempts time out.
         const timed = yield* app.start("write", { key: "timed-out", wait: 10000 });
         const marker = yield* evidence.step(
           "Confirm inserted row through a separate durable run",
@@ -135,7 +131,6 @@ layer(HostedLive, { excludeTestServices: true })("Workflow durability", (it) => 
           { id: marker.row, label: "timed-out" },
         ];
         expect(yield* app.rows()).toEqual(once);
-        // Let the authored bodies reach their natural return time; the retry wrote nothing more.
         const remaining = observed + 11000 - (yield* Clock.currentTimeMillis);
         if (remaining > 0) yield* Effect.sleep(remaining);
         expect(yield* app.rows()).toEqual(once);

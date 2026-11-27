@@ -1,4 +1,3 @@
-/** Encrypt Workflows step and final results with the deployment's credential key. */
 import * as Cloudflare from "alchemy/Cloudflare";
 import {
   aesGcmCredentials,
@@ -29,22 +28,18 @@ const WorkflowResultInput = Schema.Struct({
 const engineFailure = () => new WorkflowFailure({ reason: "engine", retryable: false });
 const encryptedInstancePrefix = "executor-wfr-v1-";
 
-/** Enable only after every dispatcher runs the marker-aware revision. Fresh installs can enable immediately. */
 export const workflowEncryptionEnabled = Config.Boolean("EXECUTOR_ENCRYPTED_WORKFLOW_STARTS").pipe(
   Config.withDefault(false),
   Effect.orDie,
 );
 
-/** The native instance identity fixes its result format independently of the returned value. */
 export const encryptedWorkflowInstance = (run: string) => `${encryptedInstancePrefix}${run}`;
 export const isEncryptedWorkflowInstance = (instance: string) =>
   instance.startsWith(encryptedInstancePrefix);
 
-/** New instances carry their journal format in their native parameters. Old instances have none. */
 export const encryptedWorkflowParams = <A>(params: A, enabled = true) =>
   enabled ? { __executorWorkflowResults: 1 as const, params } : params;
 
-/** Keep markerless instances on their original step names and replay behavior. */
 export const workflowResultInput = (input: unknown) =>
   Effect.gen(function* () {
     if (
@@ -72,7 +67,6 @@ const failureCiphertext = (error: unknown, prefix: string) => {
   return Result.isSuccess(decoded) ? Option.some(decoded.success) : Option.some(new Uint8Array());
 };
 
-/** Resolve the existing key resource once; read its value inside every Worker invocation. */
 export const workflowEncryptionKey = Effect.gen(function* () {
   const keyEffect = yield* cloudEncryptionKey;
   const context = yield* Effect.context<never>();
@@ -80,7 +74,6 @@ export const workflowEncryptionKey = Effect.gen(function* () {
 }).pipe(Effect.orDie);
 export type WorkflowEncryptionKey = Effect.Success<typeof workflowEncryptionKey>;
 
-/** Read the captured key effect inside this workflow invocation. */
 export const workflowResults = (run: string, keyEffect: WorkflowEncryptionKey) =>
   Effect.gen(function* () {
     const credentials = yield* keyEffect.pipe(
@@ -207,10 +200,6 @@ export const workflowResults = (run: string, keyEffect: WorkflowEncryptionKey) =
 
 export type WorkflowResults = Effect.Success<ReturnType<typeof workflowResults>>;
 
-/**
- * Cloudflare sees only ciphertext in its durable journal. The per-invocation sequence keeps
- * repeated step names separate while keeping their hashed journal names stable on replay.
- */
 export const encryptedWorkflowTask = <A, R>(input: {
   readonly results: WorkflowResults;
   readonly name: string;
@@ -287,7 +276,6 @@ export const encryptedWorkflowTask = <A, R>(input: {
     }),
   );
 
-/** Encrypt the Workflow's terminal value or error before the engine records it. */
 export const encryptedWorkflowResult = <A, R>(input: {
   readonly results: WorkflowResults;
   readonly work: Effect.Effect<A, unknown, R>;

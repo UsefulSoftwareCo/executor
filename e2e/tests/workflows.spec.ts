@@ -1,6 +1,5 @@
 import { saveAndDeploy } from "../support/app-authoring.ts";
 import { connectionsPath, linkedAccountIds } from "../support/app-accounts.ts";
-/** Real HTTP coverage for durable app workflows, pinned execution, and product permissions. */
 import { expect, layer } from "@effect/vitest";
 import { Clock, Effect, Schema } from "effect";
 import { randomUUID } from "node:crypto";
@@ -61,7 +60,6 @@ const workflowFixture = Effect.gen(function* () {
       label: name,
       fields: { token },
     });
-  /** Connecting from the app also links the account for the owner. */
   const connect = () =>
     Effect.gen(function* () {
       const pending = yield* api.request(
@@ -137,7 +135,6 @@ const workflowFixture = Effect.gen(function* () {
   };
 });
 
-/** Starts the held `process` run and waits until its first step saved with the original account. */
 const startPinnedRun = (fixture: Effect.Success<typeof workflowFixture>) =>
   Effect.gen(function* () {
     const run = yield* fixture.start("process", { label: "pinned" }, fixture.name);
@@ -216,8 +213,6 @@ layer(HostedLive, { excludeTestServices: true })("App workflows", (it) => {
         expect(
           (yield* submit((yield* body(Resource, reconnect)).id, "synthetic-refreshed")).status,
         ).toBe(200);
-        // A second account connected from the app replaces the first's link: new calls use it,
-        // while the run keeps its pinned account.
         const second = yield* connect();
         expect(second).not.toBe(account);
         expect(yield* linkedAccountIds(actors.owner, path)).toEqual([second]);
@@ -225,7 +220,6 @@ layer(HostedLive, { excludeTestServices: true })("App workflows", (it) => {
           files: files("v2"),
         });
         expect(updated.status, JSON.stringify(updated.body)).toBe(200);
-        // The original run may proceed only after credentials and the version have changed.
         expect((yield* call("release", { label: "pinned" })).status).toBe(200);
         const completed = yield* wait(run.id, "complete");
         expect(completed.version).toBe(app.activeVersion);
@@ -334,7 +328,6 @@ layer(HostedLive, { excludeTestServices: true })("App workflows", (it) => {
       context,
       Effect.gen(function* () {
         const { start, wait } = yield* workflowFixture;
-        // Errored runs name the failing step and carry the app's own error.
         const [fatal, exploded, leaked] = yield* Effect.forEach(
           ["fatal", "explodeRun", "leak"],
           (workflow) => Effect.flatMap(start(workflow), (run) => wait(run.id, "errored")),
@@ -350,7 +343,6 @@ layer(HostedLive, { excludeTestServices: true })("App workflows", (it) => {
           errorName: "TypeError",
           message: "Synthetic mutation failure",
         });
-        // Account credentials never appear in a recorded message.
         expect(leaked?.failure).toEqual({
           step: "leak",
           errorName: "NonRetryableError",

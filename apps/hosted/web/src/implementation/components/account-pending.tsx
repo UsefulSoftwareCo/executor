@@ -12,20 +12,16 @@ import { Skeleton } from "@executor-js/ui/components/skeleton";
 import { PageFrame, PageHeader } from "@executor-js/ui/dashboard/page";
 import { organizationSettingClass } from "./organization-settings-pending.tsx";
 
-/** The page headings and copy are the same on every visit. */
 export const profileTitle = "Profile";
 export const profileDescription = "How you appear across every organization.";
 export const securityTitle = "Security";
 export const securityDescription = "How you sign in, and where you are signed in.";
 
-/** Account forms share the organization settings geometry. */
 export const accountSettingClass = organizationSettingClass;
 
-/** A locked value must not look like a field waiting for input. */
 export const readOnlyInputClass =
   "w-[min(100%,_520px)] h-9 rounded-[6px] border-dashed bg-transparent text-muted-foreground shadow-none cursor-default focus-visible:ring-0 max-[640px]:h-10 max-[640px]:text-[16px]";
 
-/** A settings card whose copy is known; only the stored value is a placeholder. */
 export function AccountSettingPending({
   title,
   description,
@@ -70,7 +66,6 @@ export function AccountSettingPending({
   );
 }
 
-/** Lazy route loading keeps the profile page identity and its static controls. */
 export function ProfilePending() {
   return (
     <PageFrame>
@@ -94,7 +89,6 @@ export function ProfilePending() {
   );
 }
 
-/** The sessions card while the list loads; host sign-in sections render their own copy. */
 export function SessionsPending() {
   return (
     <AccountSettingPending
@@ -107,7 +101,6 @@ export function SessionsPending() {
   );
 }
 
-/** Lazy route loading keeps the security page identity and its static controls. */
 export function SecurityPending({ children }: { readonly children?: ReactNode }) {
   return (
     <PageFrame>

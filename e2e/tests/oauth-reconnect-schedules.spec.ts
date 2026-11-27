@@ -1,7 +1,3 @@
-/**
- * A schedule whose account must reconnect, or whose member has no linked account, waits instead of
- * failing every occurrence.
- */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Schedule, Schema } from "effect";
 import { FetchHttpClient, HttpClient } from "effect/http";
@@ -50,7 +46,6 @@ const Runs = Schema.Array(
   }),
 );
 const Failure = Schema.Struct({ _tag: Schema.String });
-/** More than the schedule's one-minute interval, so each restart makes it due once. */
 const occurrence = 61_000;
 
 layer(HostedLive, { excludeTestServices: true })("OAuth reconnect schedules", (it) => {
@@ -67,7 +62,6 @@ layer(HostedLive, { excludeTestServices: true })("OAuth reconnect schedules", (i
             http = yield* HttpClient.HttpClient;
           const issuer = yield* oauthSetupIssuer;
           const prefix = `/api/organizations/${actors.organization.id}`;
-          // Tokens issued inside the host's renewal window renew on every use.
           yield* issuer.configure({ refreshTokens: true, expiresIn: 20 });
           const name = `Reconnect schedule ${randomUUID().slice(0, 8)}`;
           const deployed = yield* api.request(actors.owner, "POST", `${prefix}/apps/deploy`, {
@@ -97,7 +91,6 @@ export default defineApp(requirements, async () => ({
             api.request(actors.owner, "DELETE", path).pipe(Effect.orDie),
           );
 
-          /** Complete the issuer's consent for a connection, creating or reconnecting the account. */
           const signIn = (connection: string, label = "Synthetic scheduled account") =>
             Effect.gen(function* () {
               const started = yield* api.request(
@@ -127,7 +120,6 @@ export default defineApp(requirements, async () => ({
               expect(completed.status, JSON.stringify(completed.body)).toBe(200);
               return yield* body(Resource, completed);
             });
-          /** Connect an account from the app, which links it to the app. */
           const connect = (label?: string) =>
             Effect.gen(function* () {
               const connection = yield* body(
@@ -145,9 +137,6 @@ export default defineApp(requirements, async () => ({
                   .request(actors.owner, "DELETE", `${prefix}/accounts/${account.id}`)
                   .pipe(Effect.orDie),
               );
-              // Linking the account sets it up as the app's webhook source in the background, which
-              // resolves, and so may renew, the account. Let it finish so each renewal below belongs to
-              // the call or run the scenario makes.
               yield* settleWebhookSources(actors.owner, path, (sources) =>
                 sources.some(
                   (source) => source.account === account.id && source.status !== "pending",
@@ -164,7 +153,6 @@ export default defineApp(requirements, async () => ({
           const runs = api
             .request(actors.owner, "GET", `${prefix}/scheduled-runs?app=${app.id}`)
             .pipe(Effect.flatMap((response) => body(Runs, response)));
-          /** Wait until the scheduler records a run with this outcome. */
           const runWith = (status: string, count: number) =>
             runs.pipe(
               Effect.flatMap((rows) =>
@@ -174,7 +162,6 @@ export default defineApp(requirements, async () => ({
               ),
               Effect.retry({ schedule: Schedule.spaced("200 millis"), times: 100 }),
             );
-          /** Let one occurrence fall due while the product is stopped, then start it again. */
           const nextOccurrence = Effect.gen(function* () {
             yield* serverControl("stop");
             yield* serverControl("clock/advance", 200, { milliseconds: occurrence });
@@ -189,16 +176,12 @@ export default defineApp(requirements, async () => ({
           expect(started.status, JSON.stringify(started.body)).toBe(200);
           yield* runWith("succeeded", 1);
 
-          // Connecting a second account from the app replaces the first there, which stays saved.
-          // The schedule saved no account, so it now runs with the second.
           const other = yield* connect("Synthetic second scheduled account");
           expect(yield* linkedAccountIds(actors.owner, path)).toEqual([other.id]);
           expect(
             (yield* api.request(actors.owner, "GET", `${prefix}/accounts/${account.id}`)).status,
           ).toBe(200);
           expect((yield* settings)?.accountRequired).toBeUndefined();
-          // Unlinking it leaves the owner no account for the requirement. The schedule stays
-          // enabled and due occurrences are skipped.
           yield* unlinkAccount(actors.owner, path, "service", other.id);
           const unlinked = yield* settings;
           if (unlinked?.nextAt == null) return yield* Effect.die("The schedule has no next run");
@@ -221,14 +204,12 @@ export default defineApp(requirements, async () => ({
             "An occurrence without a linked account records no run",
           ).toEqual(["succeeded"]);
           expect((yield* issuer.metrics).resourceRequests.POST).toBe(unlinkedPosts);
-          // Linking the first account again resolves the wait.
           yield* linkAccount(actors.owner, path, "service", account.id);
           expect((yield* settings)?.accountRequired).toBeUndefined();
           expect(
             (yield* api.request(actors.owner, "GET", `${prefix}/accounts/${other.id}`)).status,
           ).toBe(200);
 
-          // The service ends the grant; the next use of the account marks it for reconnecting.
           yield* issuer.configure({
             tokenError: { status: 400, body: { error: "invalid_grant" } },
           });
@@ -245,8 +226,6 @@ export default defineApp(requirements, async () => ({
           const before = yield* settings;
           if (before?.nextAt == null) return yield* Effect.die("The schedule has no next run");
 
-          // A due occurrence is skipped: no run, no token request, no call to the service. The
-          // schedule stays enabled and shows the account it waits on.
           yield* nextOccurrence;
           const waiting = yield* settings.pipe(
             Effect.flatMap((current) =>
@@ -260,8 +239,6 @@ export default defineApp(requirements, async () => ({
             Effect.retry({ schedule: Schedule.spaced("200 millis"), times: 100 }),
           );
           expect(waiting).toMatchObject({ enabled: true, reconnectAccount: account.id });
-          // The skip consumes the occurrence as a claim does. A dispatch that scanned the same due
-          // occurrence cannot claim it later, even once the account has reconnected.
           expect(
             waiting.revision,
             "A skipped occurrence can no longer be claimed with its scanned revision",
@@ -272,7 +249,6 @@ export default defineApp(requirements, async () => ({
           ).toEqual([]);
           expect((yield* issuer.metrics).refreshes).toBe(refreshes);
           expect((yield* issuer.metrics).resourceRequests.POST).toBe(posts);
-          // The schedule's discovery reports the same account state to the owner.
           const definitions = yield* api.request(
             actors.owner,
             "GET",
@@ -281,7 +257,6 @@ export default defineApp(requirements, async () => ({
           expect(definitions.status, JSON.stringify(definitions.body)).toBe(409);
           expect((yield* body(Failure, definitions))._tag).toBe("OAuthReconnectRequired");
 
-          // The owner's schedule tab shows why the schedule does not run.
           yield* browser.login(actors.owner);
           yield* browser.use("Open the schedule waiting for a reconnect", (page) =>
             page.goto(`/org/${actors.organization.slug}/apps/${app.id}?view=schedules`),
@@ -294,7 +269,6 @@ export default defineApp(requirements, async () => ({
           );
           yield* evidence.attach("schedule-waiting-for-reconnect.png", "image/png", screenshot);
 
-          // Reconnecting the same account resumes the schedule without re-enabling it.
           const reconnect = yield* body(
             Resource,
             yield* api.request(actors.owner, "POST", connectionsPath(path, "user", "service"), {
@@ -313,8 +287,6 @@ export default defineApp(requirements, async () => ({
             "No occurrence failed while the account was reconnecting",
           ).toEqual([]);
 
-          // A genuine failure on the same path is still an error: the token endpoint is down, so
-          // the occurrence's run cannot renew the grant and fails without ending it.
           yield* issuer.configure({ tokenError: { status: 503, body: {} } });
           yield* nextOccurrence;
           yield* runWith("failed", 1);

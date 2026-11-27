@@ -1,16 +1,15 @@
-/** Real OAuth and MCP setup shared by the two framework authoring journeys. */
-import { Effect, Redacted, Schema } from "effect";
+import { Effect, Schema } from "effect";
 import { Actors } from "./actors.ts";
 import { Browser } from "./browser.ts";
 import { managementApp } from "./management-app.ts";
 import { McpOAuth } from "./mcp-oauth.ts";
 import { McpClient } from "./mcp-client.ts";
+import { reveal, secret } from "./failure-text.ts";
 
 const Completed = Schema.Struct({
   status: Schema.Literal("completed"),
   execution: Schema.Struct({ ok: Schema.Literal(true), value: Schema.Unknown }),
 });
-/** Open a scoped client with the actor's linked Executor key and live tool execution. */
 export const frameworkSession = Effect.gen(function* () {
   const actors = yield* Actors,
     browser = yield* Browser;
@@ -21,7 +20,7 @@ export const frameworkSession = Effect.gen(function* () {
   const grant = yield* oauth.authorize;
   yield* Effect.addFinalizer(() => oauth.revoke(grant).pipe(Effect.orDie));
   const client = yield* mcp.connect(
-    Redacted.make(Redacted.value(grant.tokens).access_token),
+    secret(reveal(grant.tokens).access_token),
     "framework-authoring",
   );
   const execute = (code: string) =>

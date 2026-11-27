@@ -1,4 +1,3 @@
-/** Account cache scopes survive token renewal and start empty after a reconnect. */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Schema } from "effect";
 import { FetchHttpClient, HttpClient } from "effect/http";
@@ -27,7 +26,6 @@ layer(HostedLive, { excludeTestServices: true })("OAuth cache scope", (it) => {
           http = yield* HttpClient.HttpClient;
         const issuer = yield* oauthSetupIssuer;
         const prefix = `/api/organizations/${actors.organization.id}`;
-        // Tokens issued inside the host's 30-second renewal window renew on the next use.
         yield* issuer.configure({ refreshTokens: true, expiresIn: 20 });
         const name = `Cache scope ${randomUUID().slice(0, 8)}`;
         const deployed = yield* api.request(actors.owner, "POST", `${prefix}/apps/deploy`, {
@@ -57,7 +55,6 @@ export default defineApp({ user: { accounts: { service } } }, async ({ user: { a
           api.request(actors.owner, "DELETE", `${prefix}/apps/${app.id}`).pipe(Effect.orDie),
         );
 
-        /** Complete the issuer's sign-in for a connection and return the saved account. */
         const signIn = (connection: string) =>
           Effect.gen(function* () {
             const started = yield* api.request(
@@ -103,9 +100,6 @@ export default defineApp({ user: { accounts: { service } } }, async ({ user: { a
             .request(actors.owner, "DELETE", `${prefix}/accounts/${account.id}`)
             .pipe(Effect.orDie),
         );
-        // Linking the account sets it up as the app's webhook source in the background, which
-        // resolves, and so may renew, the account. Let it finish so each renewal below belongs to
-        // the call the scenario makes.
         yield* settleWebhookSources(actors.owner, `${prefix}/apps/${app.id}`, (sources) =>
           sources.some((source) => source.account === account.id && source.status !== "pending"),
         );
@@ -129,12 +123,10 @@ export default defineApp({ user: { accounts: { service } } }, async ({ user: { a
         const renewedOnce = yield* refreshes;
         expect(renewedOnce).toBeGreaterThan(before);
 
-        // Each call renews the short-lived token. The account's cached value stays.
         expect(yield* call).toBe(first);
         expect(yield* call).toBe(first);
         expect(yield* refreshes).toBeGreaterThan(renewedOnce);
 
-        // Reconnecting may sign in as someone else upstream, so the account starts a new scope.
         const reconnect = yield* body(
           Resource,
           yield* api.request(
