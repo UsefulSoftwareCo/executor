@@ -62,7 +62,7 @@ export const startLocalProduct = (environment: Readonly<Record<string, string>> 
             : Effect.fail(new Error(`${route}: HTTP ${response.status} ${response.text}`)),
         ),
       );
-    return { directory: yield* fs.realPath(directory), json, request };
+    return { directory: yield* fs.realPath(directory), origin: server.origin, json, request };
   });
 
 type OpenFiles = ReadonlyMap<
