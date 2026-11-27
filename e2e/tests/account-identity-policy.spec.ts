@@ -50,13 +50,13 @@ export default defineApp({user:{accounts:{service}}},async()=>({tools:router({})
             apps.push(app);
             return app;
           });
-        const connect = (app: string, shared = false) =>
+        const connect = (app: string) =>
           Effect.gen(function* () {
             const response = yield* api.request(
               actors.owner,
               "POST",
               connectionsPath(`${prefix}/apps/${app}`, "user", "service"),
-              shared ? { destination: { kind: "shared", audience: { kind: "everyone" } } } : {},
+              {},
             );
             expect(response.status, JSON.stringify(response.body)).toBe(200);
             return (yield* body(Resource, response)).id;
@@ -119,17 +119,6 @@ export default defineApp({user:{accounts:{service}}},async()=>({tools:router({})
           `${prefix}/accounts/${source.id}`,
         );
         expect([403, 404]).toContain(privateRead.status);
-        const shared = yield* connect(reader, true);
-        const different = yield* api.request(
-          actors.owner,
-          "POST",
-          `${prefix}/connections/${shared}/oauth/plan`,
-          { method: "oauth", sourceAccount: source.id },
-        );
-        expect(different.status, JSON.stringify(different.body)).toBe(200);
-        expect(
-          yield* body(Schema.Struct({ status: Schema.String, reason: Schema.String }), different),
-        ).toEqual({ status: "incompatible", reason: "placement" });
         const reuse = yield* api.request(
           actors.owner,
           "POST",

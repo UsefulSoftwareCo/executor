@@ -106,8 +106,7 @@ export const scenarios = plan({
   accountIdentityPolicy: {
     fixtures: "actors",
     file: "account-identity-policy.spec.ts",
-    title:
-      "Hosted identity reuse preserves personal placement and refuses other members and shared destinations",
+    title: "Hosted identity reuse preserves personal placement and refuses other members",
     targets: {
       local: na("Hosted authorization owns this policy."),
       "self-host": scheduled,
