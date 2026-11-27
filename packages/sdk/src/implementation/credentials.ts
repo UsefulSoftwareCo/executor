@@ -1,10 +1,8 @@
-/** Reusable AES-GCM credential encryption; the configured key stays outside the database and app runtime. */
 import { CredentialsError, JsonObject } from "../contracts/shared.ts";
 import type { Credentials } from "../contracts/storage.ts";
 import { Effect, Redacted, Result, Schema } from "effect";
 import { Hex } from "effect/encoding";
 
-/** Import a configured 256-bit key. Envelopes bind ciphertext to its stable resource ID. */
 export const aesGcmCredentials = (
   secret: Redacted.Redacted<string>,
   crypto: Crypto,
@@ -23,8 +21,6 @@ export const aesGcmCredentials = (
         ]),
       catch: () => new CredentialsError(),
     });
-    // Fingerprints use their own key, HMAC-derived from the configured one, so no digest is ever
-    // made under the encryption key itself.
     const fingerprintKey = yield* Effect.tryPromise({
       try: async () => {
         const root = await crypto.subtle.importKey(

@@ -47,7 +47,6 @@ export const protocolOperations = (
       ...(operation.output === undefined ? {} : { output: operation.output }),
       run: operation.run,
     };
-    // Copy the property itself: an adapter may build a large output schema only when it is read.
     const output = Object.getOwnPropertyDescriptor(operation, "outputSchema");
     const withOutput = <T extends object>(target: T): T =>
       operation.output !== undefined ||

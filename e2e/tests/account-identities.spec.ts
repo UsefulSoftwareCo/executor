@@ -23,11 +23,10 @@ layer(TestLive, { excludeTestServices: true })("Verified account identities", (i
         expect(before.identity).toBeUndefined();
         yield* legacyStorage([
           ...beforeAccountIdentities(),
-          { sql: "UPDATE private_executor_settings SET value = '4.0.16' WHERE key = 'version'" },
+          { sql: "UPDATE private_executor_settings SET value = '4.0.17' WHERE key = 'version'" },
         ]);
         yield* serverControl("start");
         expect((yield* product.read(app)).status).toBe(200);
-        // Adding identity discovery preserves the exact provider reference and the saved binding.
         expect(yield* product.deploy(issuer.origin, "Retained identity", ["read"], {}, app)).toBe(
           app,
         );
@@ -42,7 +41,7 @@ layer(TestLive, { excludeTestServices: true })("Verified account identities", (i
         const storage = yield* legacyStorage([
           { sql: "SELECT value FROM private_executor_settings WHERE key = 'version'" },
         ]);
-        expect(storage).toEqual([[{ value: "4.0.24" }]]);
+        expect(storage).toEqual([[{ value: "4.0.18" }]]);
         yield* serverControl("start");
         expect((yield* product.read(app)).status).toBe(200);
         const again = yield* body(
@@ -110,7 +109,6 @@ layer(TestLive, { excludeTestServices: true })("Verified account identities", (i
         expect(reused.account.id).not.toBe(first.id);
         expect(reused.account.identity?.id).toBe(first.identity?.id);
         expect((yield* issuer.metrics).authorizations).toBe(before.authorizations);
-        // Both invocations resolve one refresh lock, including the first token's early-renewal window.
         const results = yield* Effect.all([product.read(firstApp), product.read(secondApp)], {
           concurrency: 2,
         });
@@ -119,7 +117,6 @@ layer(TestLive, { excludeTestServices: true })("Verified account identities", (i
         yield* serverControl("restart");
         expect((yield* product.read(firstApp)).status).toBe(200);
         expect((yield* product.read(secondApp)).status).toBe(200);
-        // Reconnecting one binding as another subject must leave its sibling on the old grant.
         yield* issuer.configure({ subject: "person-two", expiresIn: 3600 });
         const reconnect = yield* product.connection(firstApp, first.id);
         const changed = yield* product.consent(reconnect);
@@ -173,7 +170,6 @@ layer(TestLive, { excludeTestServices: true })("Verified account identities", (i
           status: "consent-required",
           reason: "resource",
         });
-        // A failed authenticated profile lookup cannot overwrite a working binding.
         yield* issuer.configure({ subject: "person-two", profileFails: true });
         const reconnect = yield* product.connection(readApp, read.id);
         expect((yield* product.consent(reconnect)).status).not.toBe(200);
@@ -197,7 +193,6 @@ layer(TestLive, { excludeTestServices: true })("Verified account identities", (i
         const reader = yield* product.deploy(issuer.origin, "Narrowed reader", ["read"]);
         expect((yield* product.reuse(reader, source.id)).status).toBe("completed");
         yield* issuer.configure({ scopes: ["read"] });
-        // The first refresh result must enforce its new scope set before the app receives credentials.
         expect((yield* product.read(narrowing)).status).not.toBe(200);
         expect((yield* product.read(reader)).status).toBe(200);
       }),

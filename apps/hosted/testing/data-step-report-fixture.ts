@@ -1,12 +1,3 @@
-/**
- * Local-only restart of one data step's Cloud report run, as a deploy that sets a new
- * `CLOUD_DATA_STEPS_REPORT` label restarts it: the old run's rows keep their outcomes under an
- * archived label, and the Worker's next tick starts the step's first pass over every app that
- * exists then. A scenario can then observe a run whose items include its own apps, which a run
- * the managed Cloud started before the scenario never does. Only report runs are restarted, and
- * only while no pass holds the run; otherwise it restarts nothing and says whether a pass holds it.
- * Never installed in the HTTP server.
- */
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { Pool } from "pg";
@@ -14,11 +5,6 @@ import { Config, Console, Effect, FileSystem, Redacted, Schema } from "effect";
 import { Command, Flag } from "effect/cli";
 import { LocalDatabaseUrl } from "../cloud/src/contracts/database.ts";
 
-/**
- * In one statement: lock the run unless a pass holds its lease, then move its outcomes and its
- * journal row to the archived label. A tick that claims the run meanwhile waits for the lock and
- * then finds no row under the Worker's label, so the next tick starts a first pass.
- */
 const restart = `
 WITH held AS (
   SELECT name, run FROM private_hosted_data_steps
@@ -43,7 +29,6 @@ const command = Command.make("data-step-report-fixture", {
         yield* Config.String("NODE_ENV").pipe(
           Effect.flatMap(Schema.decodeUnknownEffect(Schema.Literal("test"))),
         );
-        // An apply run writes to apps; only a report, which writes nothing, may start over.
         if (!/^\d+_[a-z0-9_]+$/.test(args.step) || !/^report:[\w.-]+$/.test(args.run))
           return yield* Effect.die("Expected a data step name and one of its report runs");
         const fs = yield* FileSystem.FileSystem;

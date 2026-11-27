@@ -1,11 +1,9 @@
-/** Address construction and parsing share one configured suffix; forwarding headers never select an app. */
 import { AppSlug, HttpUrl, type App } from "@executor-js/sdk/core";
 import { UiFailed } from "apps/ui/contracts";
 import { Effect, Option, Schema } from "effect";
 import { AppUiAddressInvalid, AppUiHostnameLabel, type AppUiBaseUrl } from "../contracts/app-ui.ts";
 import { OrganizationSlug } from "../contracts/organization.ts";
 
-/** Hosted app.organization addresses resolve current names before authorizing immutable identities. */
 export const appAddresses = (dashboardOrigin: string, baseUrl: AppUiBaseUrl | undefined) => {
   const base = baseUrl === undefined ? undefined : new URL(baseUrl);
   const dashboardHost = new URL(dashboardOrigin).host;

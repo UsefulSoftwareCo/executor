@@ -82,8 +82,6 @@ const unsubscribe = (token: string, secret: Redacted.Redacted<string>) =>
       catch: () => new InvalidUnsubscribeLink(),
     });
     if (!valid) return yield* new InvalidUnsubscribeLink();
-    // The address guard also covers an email change racing verification. Repeat POSTs
-    // preserve the original opt-out time and never enable optional mail again.
     const saved =
       yield* sql`insert into cloud_email_preferences (user_id, optional_emails_unsubscribed_at)
     select id, now() from "user" where id = ${recipient.id} and email = ${Redacted.value(recipient.email)}
@@ -93,7 +91,6 @@ const unsubscribe = (token: string, secret: Redacted.Redacted<string>) =>
     if (saved.length === 0) return yield* new InvalidUnsubscribeLink();
   });
 
-/** GET/HEAD never mutate: only a signed, explicit form POST can save an opt-out. */
 export const unsubscribeHandler = (
   origin: string,
   secret: Effect.Effect<Redacted.Redacted<string>>,

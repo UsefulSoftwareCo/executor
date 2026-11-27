@@ -8,10 +8,17 @@ access those resources.
 **Provider**:
 A service/auth definition authored in app code, with named authentication
 methods. Matching normalized definitions have the same provider reference and
-can reuse accounts. It has no separately registered owner or slug.
+can reuse accounts; hosts and setup help are not compared. It has no separately
+registered owner or slug.
 
 **Authentication method**:
 One named way to connect an account, such as OAuth or API-key fields.
+
+**Setup help**:
+What an app version tells people connecting an account: a secrets method's
+`guide`, an OAuth method's `clientGuide`, and each field's `title` and
+`description`. It belongs to the version, not the provider.
+_Avoid_: Setup guide for the whole; onboarding uses it for assistant setup.
 
 **Account**:
 An independently owned, reusable saved instance of a provider method.
@@ -84,7 +91,7 @@ its background work.
 
 **App link**:
 One `(app, requirement, account)` with no subject, set by someone who can edit
-the app and use the account. It fills an app requirement for everyone.
+the app, with an account of their own. It fills an app requirement for everyone.
 
 **User link**:
 One `(app, requirement, account)` for one member, set by that member. It fills a
@@ -102,22 +109,15 @@ configured app's accounts and the service's current capabilities.
 ## Hosted access
 
 **Group**:
-A named set of current members of one organization, used to share apps and accounts.
+A named set of current members of one organization, used to share apps and OAuth clients.
+Accounts are never shared.
 
 **App access**:
 Who can use a hosted app: its creator only, selected groups, or everyone in the organization.
 
 **Personal account**:
-A saved provider account whose metadata and use are private to one organization member.
-
-**Shared account**:
-An organization account with its own group or Everyone access, independent of app access.
-
-**Account offer**:
-A saved account made available for an app requirement, with a default for members who have access.
-
-**Member choice**:
-An explicit On or Off for an offered account. No choice means follow its default.
+A saved provider account owned by one organization member. Every hosted account is personal;
+only its owner, while still a member, can use or manage it.
 
 **Management access**:
 Permission to configure a resource. It does not grant permission to use its credentials.

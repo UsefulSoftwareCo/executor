@@ -1,8 +1,3 @@
-/**
- * App events: subscriptions, fan-out and signed webhook delivery. Products authorize; this module
- * stores, matches, signs and retries. Deliveries are at least once: a receiver deduplicates on the
- * event ID, which stays the same across retries.
- */
 import { Clock, Data, Effect, Option, Redacted, Schema } from "effect";
 import { Base64 } from "effect/encoding";
 import { traceFailure } from "@executor-js/telemetry/failed-span";
@@ -24,6 +19,7 @@ import {
   type CallbackFailure,
   type EventOptions,
   type EventSubscriptionKey,
+  type EventTarget,
   type ExecutorEvents,
 } from "../contracts/events.ts";
 import { AccountId, AppId, StorageError } from "../contracts/shared.ts";
@@ -32,12 +28,10 @@ import type { BackgroundWork } from "../contracts/declarations.ts";
 import { query, transaction, type Query } from "./database.ts";
 import { Validator } from "@cfworker/json-schema";
 
-/** The private part of a subscription: its secret, and the one it replaced while both sign. */
 const SubscriptionSecrets = Schema.Struct({
   secret: Schema.String,
   previous: Schema.optionalKey(Schema.Struct({ secret: Schema.String, until: Schema.Number })),
 });
-/** The private part of an occurrence. */
 const EventBody = Schema.Struct({
   data: Schema.Json,
   filters: Schema.Record(Schema.String, Schema.Json),
@@ -45,10 +39,8 @@ const EventBody = Schema.Struct({
 
 const encoder = new TextEncoder();
 
-/** Another write changed the subscription while this one was computed; it starts again. */
 class SubscriptionChanged extends Data.TaggedError("SubscriptionChanged") {}
 
-/** Key order carries no meaning, so equal arguments always give the same identity. */
 const canonical = (value: unknown): string => {
   if (Array.isArray(value)) return `[${value.map(canonical).join(",")}]`;
   if (value !== null && typeof value === "object")
@@ -65,13 +57,15 @@ const hex = (bytes: ArrayBuffer) =>
 const digest = (text: string) =>
   Effect.promise(() => crypto.subtle.digest("SHA-256", encoder.encode(text))).pipe(Effect.map(hex));
 
-/** The deterministic ID of a subscription key. */
 export const subscriptionId = (key: EventSubscriptionKey) =>
-  digest(canonical([key.principal, key.callbackUrl, key.name, key.arguments])).pipe(
-    Effect.map((value) => EventSubscriptionId.make(`evs_${value.slice(0, 32)}`)),
-  );
+  digest(
+    canonical(
+      key.selection === undefined
+        ? [key.principal, key.callbackUrl, key.name, key.arguments]
+        : [key.principal, key.callbackUrl, key.name, key.arguments, key.selection],
+    ),
+  ).pipe(Effect.map((value) => EventSubscriptionId.make(`evs_${value.slice(0, 32)}`)));
 
-/** A Standard Webhooks secret is `whsec_` and the base64 of 24 to 64 random bytes. */
 const secretKey = (secret: string) => {
   if (!secret.startsWith("whsec_")) return Option.none();
   const decoded = Base64.decode(secret.slice("whsec_".length));
@@ -80,7 +74,6 @@ const secretKey = (secret: string) => {
   return bytes.byteLength >= 24 && bytes.byteLength <= 64 ? Option.some(bytes) : Option.none();
 };
 
-/** `v1,<base64 HMAC-SHA256(key, "<id>.<timestamp>.<body>")>`, per Standard Webhooks. */
 const sign = (secret: string, id: string, timestamp: number, body: string) =>
   Effect.gen(function* () {
     const key = Option.getOrThrow(secretKey(secret));
@@ -99,7 +92,6 @@ const sign = (secret: string, id: string, timestamp: number, body: string) =>
     return `v1,${Base64.encode(new Uint8Array(signature))}`;
   });
 
-/** Constant-time comparison of two strings' UTF-8 bytes. */
 const sameText = (left: string, right: string) => {
   const a = encoder.encode(left);
   const b = encoder.encode(right);
@@ -115,10 +107,6 @@ const randomToken = () =>
     .replaceAll("/", "_")
     .replaceAll("=", "");
 
-/**
- * Arguments fit the event's filters: its own schema with every filter optional, so a subscriber
- * may name any of them and nothing else.
- */
 const fitsFilters = (filters: Readonly<Record<string, unknown>>, args: EventArguments) => {
   const { required: _required, ...optional } = filters;
   return new Validator({ ...optional, additionalProperties: false }, "2020-12", false).validate(
@@ -126,7 +114,6 @@ const fitsFilters = (filters: Readonly<Record<string, unknown>>, args: EventArgu
   ).valid;
 };
 
-/** Whether an occurrence's filter values satisfy a subscription's arguments. */
 const matches = (args: EventArguments, filters: Readonly<Record<string, unknown>>) =>
   Object.entries(args).every(
     ([key, value]) => Object.hasOwn(filters, key) && filters[key] === value,
@@ -154,7 +141,6 @@ export const makeEvents = (input: {
       const version = yield* query(() =>
         db.findFirst("deployments", { where: (b) => b("id", "=", row.activeDeployment) }),
       );
-      // Requirements of builds before events have no `events`; they declare none.
       const parsed = Schema.decodeUnknownOption(
         Schema.Struct({ events: Schema.optional(DeclaredEvents) }),
       )(version?.requirements);
@@ -183,7 +169,6 @@ export const makeEvents = (input: {
       Effect.mapError(() => new StorageError()),
     );
 
-  /** Signed headers for one request. Both secrets sign while a rotation overlaps. */
   const headers = (
     subscription: EventSubscriptionId,
     secrets: typeof SubscriptionSecrets.Type,
@@ -205,7 +190,6 @@ export const makeEvents = (input: {
       };
     });
 
-  /** Prove the receiver wants deliveries: it must echo a fresh, single-use challenge. */
   const verify = (id: EventSubscriptionId, url: string, secrets: typeof SubscriptionSecrets.Type) =>
     Effect.gen(function* () {
       if (options === undefined) return yield* new EventsUnavailable();
@@ -275,32 +259,48 @@ export const makeEvents = (input: {
         });
       const id = yield* subscriptionId(request.key);
       const existing = yield* readSubscription(id);
-      // A saved subscription keeps the app and event it was created for, so its refreshes keep
-      // working after the app's slug changes. Its event and arguments are checked against the
-      // current declaration: a refresh is how a client learns that they no longer exist.
-      const target = existing?.metadata ?? request.target;
+      const target: EventTarget | undefined =
+        existing === null
+          ? request.target
+          : existing.metadata.app === null
+            ? { owner: existing.metadata.owner, app: null, event: null }
+            : { app: existing.metadata.app, event: existing.metadata.event };
       if (target === undefined) return yield* new EventNotFound({ kind: "event" });
-      const app = target.app;
-      const event = "event" in target ? target.event : request.target!.event;
-      const { owner, events } = yield* declared(app);
-      const definition =
-        owner !== undefined && Object.hasOwn(events, event) ? events[event] : undefined;
+      const { app, event } = target;
+      const resolved =
+        app === null
+          ? { owner: target.owner, exists: true, filters: undefined }
+          : yield* declared(app).pipe(
+              Effect.map(({ owner, events }) => ({
+                owner,
+                exists: owner !== undefined && (event === null || Object.hasOwn(events, event)),
+                filters:
+                  event !== null && Object.hasOwn(events, event)
+                    ? events[event]!.filters
+                    : undefined,
+              })),
+            );
+      const owner = resolved.owner;
       const fits =
-        definition !== undefined && fitsFilters(definition.filters, request.key.arguments);
+        resolved.exists &&
+        (resolved.filters === undefined
+          ? Object.keys(request.key.arguments).length === 0
+          : fitsFilters(resolved.filters, request.key.arguments));
       if (existing !== null && !fits) {
-        // Deliveries could never match it again; stop it so nothing waits on it.
         yield* stopWith(id, "changed");
-        return yield* definition === undefined
-          ? new EventNotFound({ kind: "event" })
-          : new EventDefinitionChanged();
+        return yield* resolved.exists
+          ? new EventDefinitionChanged()
+          : new EventNotFound({ kind: "event" });
       }
-      if (owner === undefined || definition === undefined)
+      if (owner === undefined || !resolved.exists)
         return yield* new EventNotFound({ kind: "event" });
       if (!fits)
         return yield* new EventSubscriptionInvalid({
           field: "arguments",
           message:
-            "The arguments must be filters this event declares, each with a value its schema accepts.",
+            resolved.filters === undefined
+              ? "A selection of several events takes no filter arguments; select one event to filter it."
+              : "The arguments must be filters this event declares, each with a value its schema accepts.",
         });
       const time = yield* now;
       const current = existing === null ? undefined : yield* secretsOf(id, existing.row.encrypted);
@@ -312,9 +312,6 @@ export const makeEvents = (input: {
         : current !== undefined && current.previous !== undefined && current.previous.until > time
           ? { secret, previous: current.previous }
           : { secret };
-      // A callback this principal verified within the reuse window is not challenged again,
-      // whichever of its subscriptions the challenge was for. Reuse keeps the challenge's time,
-      // so the window never extends without a new challenge.
       const windowStart = new Date(time - limits.verificationReuseMs);
       const verifiedBefore =
         active && !rotated && existing.row.verifiedAt > windowStart
@@ -331,7 +328,6 @@ export const makeEvents = (input: {
                 orderBy: ["verifiedAt", "desc"],
               }),
             ))?.verifiedAt;
-      // A changed secret is always proven against the receiver before it signs anything.
       const reuse = verifiedBefore !== undefined && !rotated;
       if (!reuse) yield* verify(id, request.key.callbackUrl, secrets);
       const encrypted = yield* credentials.encrypt(
@@ -348,8 +344,6 @@ export const makeEvents = (input: {
         encrypted,
       };
       const revision = crypto.randomUUID();
-      // Write only over the row this attempt computed from. Another refresh or a concurrent
-      // first subscribe that won makes this attempt start again from the row it left.
       yield* transaction(db, () =>
         existing === null
           ? query(() =>
@@ -360,6 +354,7 @@ export const makeEvents = (input: {
                 event,
                 name: request.key.name,
                 arguments: request.key.arguments,
+                selection: request.key.selection ?? null,
                 callbackUrl: request.key.callbackUrl,
                 principal: request.key.principal,
                 createdAt: new Date(time),
@@ -376,7 +371,6 @@ export const makeEvents = (input: {
       ).pipe(
         Effect.catchTag("StorageError", (error) =>
           Effect.gen(function* () {
-            // A concurrent first subscribe inserted the row; start again from it.
             if (existing === null && (yield* readSubscription(id)) !== null)
               return yield* new SubscriptionChanged();
             return yield* error;
@@ -394,10 +388,6 @@ export const makeEvents = (input: {
       Effect.withSpan("sdk.events.subscribe"),
     );
 
-  /**
-   * Whether every account an occurrence used is one of the accounts the scope allows. An
-   * occurrence that used no account is within any scope.
-   */
   const withinAccounts = (allowed: readonly AccountId[], stored: unknown) =>
     Effect.gen(function* () {
       const accounts = yield* Schema.decodeUnknownEffect(Schema.Array(AccountId))(stored).pipe(
@@ -410,11 +400,6 @@ export const makeEvents = (input: {
   const stopWith = (
     id: EventSubscriptionId,
     reason: "unsubscribed" | "revoked" | "expired" | "changed",
-    /**
-     * For a revocation found by a delivery attempt: the subscription revision it authorized and
-     * the lease it holds. A stale verdict leaves a refreshed subscription, or a delivery another
-     * runner took over, untouched.
-     */
     guard?: {
       readonly revision: string;
       readonly delivery: { readonly id: string; readonly lease: string };
@@ -425,8 +410,6 @@ export const makeEvents = (input: {
       yield* transaction(db, () =>
         Effect.gen(function* () {
           if (guard !== undefined) {
-            // A conditional write locks the delivery row until this transaction commits, so no
-            // runner can take the lease over between this check and the stop below.
             yield* query(() =>
               db.updateMany("eventDeliveries", {
                 where: (b) =>
@@ -450,11 +433,9 @@ export const makeEvents = (input: {
                 b.and(
                   b("id", "=", id),
                   b("status", "=", "active"),
-                  // Expiry stops only what is still lapsed: a refresh may have committed since.
                   reason === "expired" ? b("expiresAt", "<=", time) : true,
                   guard === undefined ? true : b("revision", "=", guard.revision),
                 ),
-              // A refresh computed from the active row then starts again from the stopped one.
               set: { status: "stopped", stopped: reason, revision: crypto.randomUUID() },
             }),
           );
@@ -483,18 +464,30 @@ export const makeEvents = (input: {
     Effect.gen(function* () {
       if (events.length === 0) return;
       const time = yield* now;
+      const appRow = yield* query(() =>
+        db.findFirst("apps", { select: ["owner"], where: (b) => b("id", "=", app) }),
+      );
       const subscriptions = yield* query(() =>
         db.findMany("eventSubscriptions", {
           where: (b) =>
             b.and(
-              b("app", "=", app),
               b("status", "=", "active"),
               b("expiresAt", ">", new Date(time)),
-              b("event", "in", [...new Set(events.map((occurrence) => occurrence.name))]),
+              b.or(
+                b.and(
+                  b("app", "=", app),
+                  b.or(
+                    b("event", "in", [...new Set(events.map((occurrence) => occurrence.name))]),
+                    b("event", "is", null),
+                  ),
+                ),
+                appRow === null
+                  ? false
+                  : b.and(b("app", "is", null), b("owner", "=", appRow.owner)),
+              ),
             ),
         }),
       );
-      // Encrypt first: no I/O to an outside service happens inside the transaction.
       const prepared = yield* Effect.forEach(events, (occurrence) =>
         Effect.gen(function* () {
           const id = StoredEventId.make(`evr_${crypto.randomUUID()}`);
@@ -504,7 +497,7 @@ export const makeEvents = (input: {
           );
           const matching = subscriptions.filter(
             (row) =>
-              row.event === occurrence.name &&
+              (row.event === occurrence.name || row.event === null) &&
               Option.match(Schema.decodeUnknownOption(EventArguments)(row.arguments), {
                 onNone: () => false,
                 onSome: (args) => matches(args, occurrence.filters),
@@ -513,12 +506,10 @@ export const makeEvents = (input: {
           return { id, encrypted, occurrence, matching };
         }),
       );
-      // One invocation's events are saved together or not at all.
       const queued = yield* transaction(db, () =>
         Effect.gen(function* () {
           let queued = false;
           for (const { id, encrypted, occurrence, matching } of prepared) {
-            // A repeated upstream delivery carries the same event ID; it was recorded already.
             const seen = yield* query(() =>
               db.findFirst("events", {
                 where: (b) =>
@@ -565,7 +556,6 @@ export const makeEvents = (input: {
           return queued;
         }),
       );
-      // Deliver at once instead of waiting for the next wake. A failure leaves them due.
       if (queued && input.background !== undefined)
         yield* input.background(
           deliver({ maxDeliveries: 16 }).pipe(
@@ -575,7 +565,6 @@ export const makeEvents = (input: {
         );
     }).pipe(Effect.withSpan("sdk.events.record", { attributes: { "executor.app.id": app } }));
 
-  /** Claim one due delivery for this attempt; another runner's claim wins. */
   const claim = (id: string) =>
     Effect.gen(function* () {
       const lease = crypto.randomUUID();
@@ -586,7 +575,6 @@ export const makeEvents = (input: {
             b.and(
               b("id", "=", id),
               b("status", "=", "pending"),
-              // Another pass may have attempted it since it was selected and set its next try.
               b("nextAt", "<=", new Date(time)),
               b("leaseUntil", "<=", new Date(time)),
             ),
@@ -599,7 +587,6 @@ export const makeEvents = (input: {
       return row !== null && row.lease === lease ? { ...row, lease } : null;
     });
 
-  /** Settle a claimed delivery. An attempt whose lease another runner took writes nothing. */
   const finish = (
     delivery: { readonly id: string; readonly lease: string },
     set: {
@@ -648,10 +635,8 @@ export const makeEvents = (input: {
         found.metadata.expiresAt.getTime() <= time
       )
         return yield* finish(delivery, { status: "dropped" }, time);
-      // An event past its maximum age is abandoned, not sent late.
       if (occurrence.createdAt.getTime() < time - limits.retentionMs)
         return yield* finish(delivery, { status: "dropped", lastError: "expired" }, time);
-      // Backoff counts from when the failure is seen, after any wait for the receiver.
       const retry = (reason: string) =>
         Effect.gen(function* () {
           const failedAt = yield* now;
@@ -675,8 +660,9 @@ export const makeEvents = (input: {
       const authorized = yield* options!
         .authorize({
           subscription: found.metadata,
+          app: AppId.make(occurrence.app),
+          event: occurrence.name,
           account: occurrence.account,
-          // Unreadable account lists fail closed: the delivery is retried, never sent unchecked.
           accounts: yield* Schema.decodeUnknownEffect(Schema.Array(AccountId))(
             occurrence.accounts,
           ).pipe(Effect.mapError(() => new StorageError())),
@@ -710,11 +696,24 @@ export const makeEvents = (input: {
           Effect.flatMap((value) => Schema.decodeUnknownEffect(EventBody)(Redacted.value(value))),
           Effect.mapError(() => new StorageError()),
         );
+      const source =
+        found.metadata.selection === null
+          ? undefined
+          : yield* query(() =>
+              db.findFirst("apps", {
+                select: ["slug"],
+                where: (b) => b("id", "=", occurrence.app),
+              }),
+            );
+      if (source === null) return yield* finish(delivery, { status: "dropped" }, time);
       const text = JSON.stringify({
         eventId: occurrence.eventId,
         name: found.metadata.name,
         timestamp: occurrence.occurredAt.toISOString(),
-        data: body.data,
+        data:
+          source === undefined
+            ? body.data
+            : { app: source.slug, event: occurrence.name, data: body.data },
         cursor: null,
       });
       if (encoder.encode(text).byteLength > limits.maxBodyBytes)
@@ -736,7 +735,6 @@ export const makeEvents = (input: {
           { status: "delivered", attempts: delivery.attempts + 1, lastError: null },
           time,
         );
-      // The receiver refused this delivery for good; the subscription itself continues.
       if (status === 410 || status === 413)
         return yield* finish(
           delivery,
@@ -746,11 +744,6 @@ export const makeEvents = (input: {
       return yield* retry(failureOf(status));
     }).pipe(Effect.withSpan("sdk.events.attempt"));
 
-  /**
-   * Retention. An event lives for `retentionMs`: after that it is deleted, and a delivery of it
-   * still pending, which only an outage longer than every retry can leave, is abandoned. Finished
-   * deliveries go after the same time. Each step is one indexed statement, whatever the backlog.
-   */
   const cleanup = (time: number) =>
     Effect.gen(function* () {
       const cutoff = new Date(time - limits.retentionMs);
@@ -778,14 +771,12 @@ export const makeEvents = (input: {
     Effect.gen(function* () {
       if (options === undefined) return false;
       const time = yield* now;
-      // Lapsed subscriptions stop, and their pending deliveries with them.
       const lapsed = yield* query(() =>
         db.findMany("eventSubscriptions", {
           where: (b) => b.and(b("status", "=", "active"), b("expiresAt", "<=", new Date(time))),
           limit: 100,
         }),
       );
-      // A host may poll without tracing; the work a pass finds is traced all the same.
       for (const row of lapsed)
         yield* stopWith(EventSubscriptionId.make(row.id), "expired").pipe(
           Effect.withTracerEnabled(true),
@@ -816,7 +807,6 @@ export const makeEvents = (input: {
           ),
         { concurrency: 8, discard: true },
       );
-      // Retention never blocks delivery: it runs after, and its own failure is recorded, not raised.
       yield* cleanup(time).pipe(
         traceFailure("sdk.events.retention"),
         Effect.catch(() => Effect.logWarning("Event retention cleanup failed")),

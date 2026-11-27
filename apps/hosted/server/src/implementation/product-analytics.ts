@@ -1,4 +1,3 @@
-/** Product analytics at the shared hosted Executor boundary, used by Cloud and self-host. */
 import type { Executor, ToolCallResult, ToolResumeResult } from "@executor-js/sdk/core";
 import { toolCompletion } from "@executor-js/telemetry/product-analytics";
 import { Clock, Effect, Exit } from "effect";
@@ -9,7 +8,6 @@ import {
   type UsageProperties,
 } from "../contracts/product-analytics.ts";
 
-/** Instrument completed tool work while keeping approval pauses out of completion counts. */
 const observeTool = <A extends ToolCallResult | ToolResumeResult, E, R>(
   properties: UsageProperties,
   work: Effect.Effect<A, E, R>,
@@ -46,7 +44,6 @@ const observeTool = <A extends ToolCallResult | ToolResumeResult, E, R>(
     );
   }).pipe(Effect.withSpan("product.tool.execution"));
 
-/** Product host boundaries cover API/MCP work and private app queries without inspecting payloads. */
 export const withExecutorAnalytics = (executor: Executor): Executor => ({
   ...executor,
   tools: {

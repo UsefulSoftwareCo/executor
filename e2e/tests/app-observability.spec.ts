@@ -1,4 +1,3 @@
-/** Verify the exported request-to-DOM graph through a real authored app and collector. */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Schedule, Schema } from "effect";
 import { randomUUID } from "node:crypto";
@@ -95,7 +94,6 @@ const navigationTiming = () => {
   };
 };
 
-/** Each journey owns a deployed app, signed-in browser and fresh organization. */
 const observedApp = Effect.gen(function* () {
   const api = yield* Api,
     actors = yield* Actors,
@@ -161,8 +159,6 @@ layer(HostedLive, { excludeTestServices: true })("App observability", (it) => {
           (page) =>
             Promise.all([
               page
-                // This crosses the app-origin sign-in round trip and asset loading,
-                // not a single browser action. The suite's total deadline still applies.
                 .waitForRequest((request) => request.url().endsWith("/_executor/api/subscribe"), {
                   timeout: 60_000,
                 })
@@ -344,8 +340,6 @@ layer(HostedLive, { excludeTestServices: true })("App observability", (it) => {
         );
         const spans = exported.data.map((row) => row.span);
         expect(spans.some((span) => span.operationName === "sdk.apps.source")).toBe(false);
-        // The live query's runtime spans name its app and the signed-in caller's organization, so
-        // one app's failing subscriptions can be told from the runtime's.
         if (target.metadata.target === "cloud")
           for (const name of ["runtime.cloud.query", "runtime.cloud.changes.connect"])
             expect(spans.find((span) => span.operationName === name)?.tags, name).toMatchObject({
@@ -380,8 +374,6 @@ layer(HostedLive, { excludeTestServices: true })("App observability", (it) => {
             assetTrace.data.filter((row) => row.span.operationName === "sql.connect"),
             "An authenticated asset shares one SQL connection between app and permission reads",
           ).toHaveLength(1);
-          // A statement records one span: the FumaDB operation that ran it and its wire timing
-          // are attributes of its `sql.execute`, not spans around and under it.
           const statements = assetTrace.data.filter(
             (row) => row.span.operationName === "sql.execute",
           );
@@ -482,8 +474,6 @@ layer(HostedLive, { excludeTestServices: true })("App observability", (it) => {
               page.evaluate(navigationTiming),
             ),
           );
-          // Browser and server spans reach the collector separately, and the server's request
-          // span ends only with the stream. Close it and wait for the whole trace.
           yield* browser.use(`Close normal reload ${sample}`, (page) => page.goto("about:blank"));
           const reloadTrace = yield* telemetry.query(reloadTraceId).pipe(
             Effect.flatMap((result) => {
@@ -591,8 +581,6 @@ layer(HostedLive, { excludeTestServices: true })("App observability", (it) => {
           to: previous.traceId,
           parent: previous.spanId,
         });
-        // Motel's read API omits native links. The outgoing OTLP assertion above
-        // covers managed targets; the deployed Axiom adapter also exposes stored links.
         if (target.metadata.target === "cloud" && target.metadata.mode === "attached") {
           const deliveredRetry = yield* telemetry.query(retrySpan.traceId).pipe(
             Effect.flatMap((result) =>
@@ -650,8 +638,6 @@ layer(HostedLive, { excludeTestServices: true })("App observability", (it) => {
           }),
         );
         yield* browser.login(actors.member);
-        // Test the query stream's own authorization heartbeat. The independent
-        // version watcher otherwise reloads to a 403 page first.
         let blockedVersions = 0;
         yield* browser.use("Keep revocation observable in the query stream", (page) =>
           page.route("**/_executor/version", (route) => {

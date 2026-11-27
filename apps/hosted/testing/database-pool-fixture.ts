@@ -1,28 +1,3 @@
-/**
- * Local-only probe of the patched `@effect/sql-pg` pool that Cloud's session objects use
- * (`multiplex` with `multiplexConcurrency` 1, statement groups, `PgPool.held`). Each case opens its
- * own pools against the local database, under its own application name, and prints what it saw as
- * JSON for `cloud-database-placement.spec.ts` to judge. Cases that need a cancel that never lands
- * connect through a proxy here that drops every `CancelRequest`. Never installed in the HTTP server.
- *
- * - `use-once`: a `PgPool.use` callback that already sent a statement is not run again when a
- *   later statement of it is refused; one that sent nothing is.
- * - `held-nested`: a hold inside a hold uses the outer hold's connection.
- * - `held-shared`: `PgPool.isHeld` is true only on a pool that leases connections exclusively.
- * - `held-unawaited`: a hold that wrote a statement nobody awaits keeps the connection until that
- *   statement finishes, longer than the cancellation bound (but within the 30 s bound below), and
- *   does not break it.
- * - `held-hung`: a statement nobody awaits that is still running 30 s after its hold returned is
- *   cancelled and its connection closed as broken; the pool opens another.
- * - `drain`: an abandoned statement whose cancel never lands breaks its connection after the 5 s
- *   cancellation bound, and the pool replaces it; with the cancel delivered, the connection is kept.
- * - `sibling`: a statement of a group that finishes while another statement of the group drains
- *   returns at once.
- * - `batch`: a `PgConnection.pipelined` batch with `BEGIN` runs on one held connection in one
- *   snapshot inside `PgPool.held`, and refuses to write `BEGIN` outside a hold. A batch whose
- *   pool cannot connect (both attempts closed at once, as by a restarting pooler) returns each
- *   leaf's failure rather than failing itself.
- */
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { PgClient } from "@effect/sql-pg";
@@ -38,10 +13,12 @@ import {
   Cause,
   Context,
   Deferred,
+  Duration,
   Exit,
   Fiber,
   FileSystem,
   Layer,
+  Option,
   Redacted,
   Schedule,
   Schema,
@@ -60,15 +37,13 @@ const cases = [
   "drain",
   "sibling",
   "batch",
+  "connect-abandoned",
+  "commit-unanswered",
+  "commit-rollback",
 ] as const;
 
-/** The protocol code of a `CancelRequest`, the first message on its own connection. */
 const cancelRequestCode = 80877102;
 
-/**
- * A TCP proxy to the database that counts `CancelRequest`s and, with `dropCancels`, closes their
- * connections without passing them on, as a cancel lost on the way does.
- */
 const proxy = (target: URL, dropCancels: boolean) =>
   Effect.acquireRelease(
     Effect.callback<{ readonly server: Net.Server; readonly cancels: { count: number } }>(
@@ -113,6 +88,70 @@ const proxy = (target: URL, dropCancels: boolean) =>
       }),
   );
 
+const commitHoldingProxy = (target: URL, holdMillis: number) =>
+  Effect.acquireRelease(
+    Effect.callback<{ readonly server: Net.Server; readonly behindCommit: { count: number } }>(
+      (resume) => {
+        const behindCommit = { count: 0 };
+        const sockets = new Set<Net.Socket>();
+        const server = Net.createServer((client) => {
+          sockets.add(client);
+          const upstream = Net.connect(Number(target.port || 5432), target.hostname);
+          sockets.add(upstream);
+          let holding = false;
+          let held: Array<Buffer> = [];
+          let rest = Buffer.alloc(0);
+          upstream.on("data", (chunk: Buffer) => {
+            rest = Buffer.concat([rest, chunk]);
+            while (rest.length >= 5) {
+              const length = rest.readInt32BE(1) + 1;
+              if (rest.length < length) break;
+              const message = rest.subarray(0, length);
+              rest = rest.subarray(length);
+              const tag =
+                message[0] === 0x43 ? message.subarray(5, length - 1).toString("latin1") : "";
+              const commit = tag === "COMMIT" || tag === "ROLLBACK";
+              if (commit && !holding) {
+                holding = true;
+                setTimeout(() => {
+                  holding = false;
+                  const out = Buffer.concat(held);
+                  held = [];
+                  if (!client.destroyed) client.write(out);
+                }, holdMillis);
+              }
+              if (holding) held.push(Buffer.from(message));
+              else client.write(message);
+            }
+          });
+          client.on("data", (chunk) => {
+            if (holding) behindCommit.count++;
+            upstream.write(chunk);
+          });
+          upstream.once("close", () => {
+            sockets.delete(upstream);
+            client.destroy();
+          });
+          client.once("close", () => {
+            sockets.delete(client);
+            upstream.destroy();
+          });
+          upstream.on("error", () => client.destroy());
+          client.on("error", () => upstream.destroy());
+        });
+        server.on("close", () => {
+          for (const socket of sockets) socket.destroy();
+        });
+        server.listen(0, "127.0.0.1", () => resume(Effect.succeed({ server, behindCommit })));
+      },
+    ),
+    ({ server }) =>
+      Effect.callback<void>((resume) => {
+        server.close(() => resume(Effect.void));
+        server.emit("close");
+      }),
+  );
+
 const command = Command.make("database-pool-fixture", {
   configuration: Flag.String("configuration"),
   case: Flag.Literals("case", cases),
@@ -137,13 +176,10 @@ const command = Command.make("database-pool-fixture", {
           Redacted.make(configuration.database),
         );
         const target = new URL(Redacted.value(database));
-        // This run's own name, table and lock, so parallel scenarios on the shared database are
-        // untouched.
         const run = randomBytes(6).toString("hex");
         const applicationName = `e2e pool ${run}`;
         const table = `e2e_pool_${run}`;
         const lockKey = Number.parseInt(run.slice(0, 7), 16);
-        // A second lock of the run's, above every run's first.
         const gateKey = lockKey + 2 ** 28;
 
         const admin = yield* Effect.acquireRelease(
@@ -153,7 +189,6 @@ const command = Command.make("database-pool-fixture", {
         const adminQuery = (text: string, values: ReadonlyArray<unknown> = []) =>
           Effect.promise(() => admin.query(text, [...values]));
 
-        /** A pool of the given shape, through a proxy when `cancels` is set. */
         const pool = (options: {
           readonly multiplexConcurrency?: number;
           readonly multiplex?: boolean;
@@ -201,7 +236,6 @@ const command = Command.make("database-pool-fixture", {
               Effect.orDie,
             );
 
-        /** Holds the advisory lock `key` on its own connection until the scope closes. */
         const holdLock = (key: number) =>
           Effect.acquireRelease(
             Effect.promise(async () => {
@@ -215,14 +249,12 @@ const command = Command.make("database-pool-fixture", {
                 client.release();
               }),
           );
-        /** A statement that waits on the run's lock, given up on after `millis`. */
         const lockWait = (pool: PgPool.PgPool, millis: number) =>
           pool
             .use((connection) =>
               connection.query("SELECT pg_advisory_xact_lock($1)", [lockKey], false),
             )
             .pipe(Effect.timeoutOption(`${millis} millis`), Effect.exit);
-        /** Waits until a statement of the run's pools waits on an advisory lock. */
         const waitingOnLock = adminQuery(
           "SELECT count(*)::int AS waiting FROM pg_stat_activity WHERE application_name = $1 AND wait_event = 'advisory'",
           [applicationName],
@@ -249,12 +281,7 @@ const command = Command.make("database-pool-fixture", {
               yield* adminQuery(`CREATE TABLE ${table} (id serial PRIMARY KEY)`);
               yield* Effect.addFinalizer(() => adminQuery(`DROP TABLE IF EXISTS ${table}`));
               yield* holdLock(lockKey);
-              // Cancels never land, so the abandoned lock wait keeps its connection refusing.
               const { pool: shared } = yield* pool({ maxConnections: 4, cancels: "dropped" });
-              // One group: a callback inserts, then reads after its sibling on the same connection
-              // has given up on a lock wait. The read is refused unsent; the insert was sent. Each
-              // sibling starts once its callback has the group's connection, so its lock wait goes
-              // out on that connection, behind what the callback sent.
               const inserted = yield* Deferred.make<void>();
               const gaveUp = yield* Deferred.make<void>();
               const [twoStatements, sibling] = yield* PgPool.grouped(
@@ -279,7 +306,6 @@ const command = Command.make("database-pool-fixture", {
                   { concurrency: "unbounded" },
                 ),
               );
-              // Another group: the same, but the callback sends nothing before its read is refused.
               const leased = yield* Deferred.make<void>();
               const otherGaveUp = yield* Deferred.make<void>();
               const [firstRead, otherSibling] = yield* PgPool.grouped(
@@ -338,20 +364,15 @@ const command = Command.make("database-pool-fixture", {
               };
             }
             case "held-unawaited": {
-              // One connection, so the next statement can only run once the hold gave it back.
               const { pool: single } = yield* pool({ maxConnections: 1 });
               const before = yield* pid(single);
               const start = Date.now();
-              // The hold writes a 6 s statement (longer than the 5 s cancellation bound) that a
-              // detached fiber, not the hold, awaits, as a batch's `COMMIT` nobody awaits.
               const sleeper = yield* PgPool.held(
                 single.use((connection) =>
                   connection.query("SELECT pg_backend_pid() AS pid, pg_sleep(6)", [], false).pipe(
                     Effect.map(() => since(start)),
                     Effect.exit,
                     Effect.forkDetach,
-                    // The detached fiber writes the statement asynchronously: let it reach the wire
-                    // while the hold still has the connection.
                     Effect.tap(() => Effect.sleep("50 millis")),
                   ),
                 ),
@@ -372,7 +393,6 @@ const command = Command.make("database-pool-fixture", {
               const { pool: single } = yield* pool({ maxConnections: 1 });
               const before = yield* pid(single);
               const start = Date.now();
-              // As `held-unawaited`, but the statement outlives the 30 s bound on what nobody awaits.
               const sleeper = yield* PgPool.held(
                 single.use((connection) =>
                   connection.query("SELECT pg_sleep(45)", [], false).pipe(
@@ -388,7 +408,6 @@ const command = Command.make("database-pool-fixture", {
               const next = since(start);
               const slept = yield* Fiber.join(sleeper);
               const sleeperEnded = since(start);
-              // The cancel sent before the close stops the old backend's statement.
               yield* Effect.sleep("500 millis");
               const stillRunning = yield* adminQuery(
                 "SELECT count(*)::int AS running FROM pg_stat_activity WHERE pid = $1 AND state = 'active'",
@@ -429,9 +448,120 @@ const command = Command.make("database-pool-fixture", {
                 );
               return { dropped: yield* arm("dropped"), delivered: yield* arm("delivered") };
             }
+            case "connect-abandoned": {
+              const silent = yield* Effect.acquireRelease(
+                Effect.callback<{
+                  readonly server: Net.Server;
+                  readonly sockets: { accepted: number; open: number };
+                  readonly held: Set<Net.Socket>;
+                }>((resume) => {
+                  const sockets = { accepted: 0, open: 0 };
+                  const held = new Set<Net.Socket>();
+                  const server = Net.createServer((socket) => {
+                    sockets.accepted++;
+                    sockets.open++;
+                    held.add(socket);
+                    socket.on("close", () => {
+                      sockets.open--;
+                      held.delete(socket);
+                    });
+                    socket.on("error", () => undefined);
+                    socket.resume();
+                  });
+                  server.listen(0, "127.0.0.1", () =>
+                    resume(Effect.succeed({ server, sockets, held })),
+                  );
+                }),
+                ({ server, held }) =>
+                  Effect.callback<void>((resume) => {
+                    for (const socket of held) socket.destroy();
+                    server.close(() => resume(Effect.void));
+                  }),
+              );
+              const address = silent.server.address();
+              if (address === null || typeof address === "string")
+                return yield* Effect.die("The silent server has no port");
+              const url = new URL(target.toString());
+              url.hostname = "127.0.0.1";
+              url.port = String(address.port);
+              const leftOpen = Effect.sleep("500 millis").pipe(
+                Effect.map(() => silent.sockets.open),
+              );
+              const timedOut = yield* Effect.exit(
+                Effect.scoped(
+                  PgConnection.make({
+                    url: Redacted.make(url.toString()),
+                    connectTimeout: Duration.millis(300),
+                    connectRetries: 1,
+                  }),
+                ),
+              );
+              const afterTimeout = { attempts: silent.sockets.accepted, open: yield* leftOpen };
+              const interrupted = yield* Effect.exit(
+                Effect.scoped(
+                  PgConnection.make({
+                    url: Redacted.make(url.toString()),
+                    connectTimeout: Duration.seconds(10),
+                  }),
+                ).pipe(Effect.timeout(Duration.millis(200))),
+              );
+              return {
+                timedOut:
+                  Exit.isFailure(timedOut) &&
+                  String(timedOut.cause).includes("Connection timed out")
+                    ? "timed out"
+                    : outcome(timedOut),
+                afterTimeout,
+                interrupted: outcome(interrupted),
+                afterInterrupt: {
+                  attempts: silent.sockets.accepted - afterTimeout.attempts,
+                  open: yield* leftOpen,
+                },
+              };
+            }
+            case "commit-unanswered":
+            case "commit-rollback": {
+              const holding = yield* commitHoldingProxy(target, 300);
+              const address = holding.server.address();
+              if (address === null || typeof address === "string")
+                return yield* Effect.die("The proxy has no port");
+              const url = new URL(target.toString());
+              url.hostname = "127.0.0.1";
+              url.port = String(address.port);
+              const client = yield* Layer.build(
+                PgClient.layer({
+                  url: Redacted.make(url.toString()),
+                  applicationName,
+                  maxConnections: 2,
+                  multiplex: true,
+                  multiplexConcurrency: 1,
+                  prepare: false,
+                }),
+              ).pipe(Effect.orDie);
+              const sql = Context.get(client, SqlClient.SqlClient);
+              let later = "not read";
+              const recheck = Effect.gen(function* () {
+                yield* sql`SELECT 1 AS first`;
+                const rows = yield* sql<{ readonly later: number }>`SELECT 2 AS later`;
+                later = rows[0]?.later === 2 ? "answered" : "wrong rows";
+              });
+              const inside = args.case === "commit-rollback" ? sql`SELECT 1 / 0` : sql`SELECT 3`;
+              const exits = yield* PgPool.held(
+                PgConnection.pipelined([recheck, inside, sql`SELECT 4`], {
+                  outside: 1,
+                  begin: "ISOLATION LEVEL REPEATABLE READ READ ONLY",
+                }),
+              ).pipe(Effect.timeoutOption("10 seconds"));
+              return {
+                leaves: Option.match(exits, {
+                  onNone: () => "timed out",
+                  onSome: (exits) => exits.map((exit) => (Exit.isSuccess(exit) ? "ok" : "failed")),
+                }),
+                behindCommit: holding.behindCommit.count,
+                later,
+              };
+            }
             case "batch": {
-              // A client of the session objects' shape: its statements go through the borrower
-              // that `pipelined` claims them from.
               const client = yield* Layer.build(
                 PgClient.layer({
                   url: Redacted.make(target.toString()),
@@ -460,14 +590,11 @@ const command = Command.make("database-pool-fixture", {
               const heldRows = yield* Schema.decodeUnknownEffect(
                 Schema.Array(Schema.Struct({ pid: Schema.Number, snapshot: Schema.String })),
               )(rows(held));
-              // Outside a hold the batch writes nothing and dies.
               const outside = yield* Effect.exit(batch);
               const refused =
                 Exit.isFailure(outside) &&
                 Cause.hasDies(outside.cause) &&
                 String(Cause.squash(outside.cause)).includes("must run inside PgPool.held");
-              // A server that closes every connection at once: each connect attempt, the first and
-              // its retry, fails before the batch has a connection.
               const closing = yield* Effect.acquireRelease(
                 Effect.callback<{
                   readonly server: Net.Server;
@@ -541,9 +668,6 @@ const command = Command.make("database-pool-fixture", {
             case "sibling": {
               yield* holdLock(lockKey);
               const { pool: shared } = yield* pool({ maxConnections: 4, cancels: "dropped" });
-              // The awaited statement waits on a second lock, the gate, so a sibling queued behind
-              // it gives up on its lock wait while it still runs. The sibling's cancel never lands,
-              // so draining it takes the 5 s bound. The gate opens once the sibling has given up.
               return yield* PgPool.grouped(
                 Effect.gen(function* () {
                   const { awaited, abandoned } = yield* Effect.scoped(

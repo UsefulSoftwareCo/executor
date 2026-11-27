@@ -185,10 +185,23 @@ export const defaultOpenapiResponseLimits = {
  */
 export const isOpenapiJsonSequence = (type: string): boolean =>
   /^application\/(?:x-)?(?:ndjson|jsonl|jsonlines|json-seq)\s*(?:;|$)/i.test(type);
+/** A type or subtype name, as RFC 6838 section 4.2 allows it. */
+const mediaName = "[a-z0-9][a-z0-9!#$&^_.+-]*";
+const jsonMedia = new RegExp(
+  `^(?:(?:application|text)/(?:x-)?json|application/x-amz-json-1\\.[01]|${mediaName}/${mediaName}\\+json)\\s*(?:;|$)`,
+  "i",
+);
+/**
+ * One JSON value: `application/json`, `text/json`, `application/x-json`, AWS's
+ * `application/x-amz-json-1.0` and `1.1`, or a structured `+json` type under any top-level type
+ * (RFC 6839). Not every type that contains "json": Tailscale's `application/hujson`, JSONC and
+ * JSON5 are text with comments, which encoding or parsing as JSON would break.
+ */
+export const isOpenapiJsonMedia = (type: string): boolean => jsonMedia.test(type);
 /** Media returned as text rather than a base64 file. JSON sequences remain unparsed text. */
 export const isOpenapiTextMedia = (type: string): boolean =>
   isOpenapiJsonSequence(type) ||
-  /^(?:text\/|application\/(?:[\w.-]+\+)?(?:json|xml)|application\/(?:javascript|x-www-form-urlencoded))/i.test(
+  /^(?:text\/|application\/(?:[\w.-]+\+)?(?:json|xml)|application\/(?:hujson|javascript|x-www-form-urlencoded))/i.test(
     type,
   );
 /** A form field that carries raw file bytes: OpenAPI 3.1 `contentMediaType` without an
@@ -209,7 +222,7 @@ export const openapiBinaryResultSchema: JsonObject = {
 
 /** Classify request media for JSON-safe tool arguments; Swagger owns wire serialization. */
 export const openapiMediaKind = (type: string) =>
-  type.includes("json") && !isOpenapiJsonSequence(type)
+  isOpenapiJsonMedia(type)
     ? "json"
     : type === "application/x-www-form-urlencoded"
       ? "form"

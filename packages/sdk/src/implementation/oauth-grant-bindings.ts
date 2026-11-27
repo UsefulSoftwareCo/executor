@@ -1,5 +1,4 @@
-/** Shared grants keep their encryption identity and renewal lock after individual bindings disappear. */
-import { Clock, type Crypto, Effect, Redacted, Schema } from "effect";
+import { Clock, Effect, Redacted, Schema } from "effect";
 import type { Credentials, StoredAccount } from "../contracts/storage.ts";
 import { AccountId, JsonObject, StorageError, type ProviderId } from "../contracts/shared.ts";
 import type { AccountIdentity } from "../contracts/account-identity.ts";
@@ -7,12 +6,12 @@ import type { ResourceLifecycle } from "../contracts/executor.ts";
 import type { OAuthGrant } from "../contracts/oauth.ts";
 import { accountGrantId, identityPlacement } from "./account-identities.ts";
 import { query, type Query } from "./database.ts";
+import type { HostCrypto } from "./host-crypto.ts";
 
-/** Promotion leaves the account ID free for a later independent reconnect. Call under the grant's row lock. */
 export const shareOAuthGrant = (
   db: Query,
   credentials: Credentials,
-  crypto: Crypto.Crypto,
+  crypto: HostCrypto,
   source: StoredAccount,
   record: { readonly status: string; readonly updatedAt: Date },
   grant: OAuthGrant,
@@ -21,7 +20,7 @@ export const shareOAuthGrant = (
     if (source.oauthGrantId !== null) return source.oauthGrantId;
     if (source.identityId === null) return yield* new StorageError();
     const id = AccountId.make(
-      `acc_grant_${yield* crypto.randomUUIDv4.pipe(Effect.mapError(() => new StorageError()))}`,
+      `acc_grant_${yield* crypto.random.uuidV4().pipe(Effect.mapError(() => new StorageError()))}`,
     );
     const json = yield* Schema.decodeUnknownEffect(JsonObject)({
       ...grant,
@@ -47,11 +46,10 @@ export const shareOAuthGrant = (
     return id;
   });
 
-/** A binding stores its own policy and no copied token. Hosts resolve its destination after insertion. */
 export const createSharedOAuthBinding = (
   db: Query,
   credentials: Credentials,
-  crypto: Crypto.Crypto,
+  crypto: HostCrypto,
   lifecycle: ResourceLifecycle | undefined,
   source: Pick<StoredAccount, "owner" | "identityId">,
   identity: AccountIdentity,
@@ -66,7 +64,7 @@ export const createSharedOAuthBinding = (
   Effect.gen(function* () {
     if (source.identityId === null) return yield* new StorageError();
     const id = AccountId.make(
-      `acc_${yield* crypto.randomUUIDv4.pipe(Effect.mapError(() => new StorageError()))}`,
+      `acc_${yield* crypto.random.uuidV4().pipe(Effect.mapError(() => new StorageError()))}`,
     );
     const account = {
       id,
@@ -103,14 +101,12 @@ export const grantBindings = (db: Query, grant: AccountId) =>
     }),
   );
 
-/** Call after the binding was deleted or detached, inside the same transaction. */
 export const releaseAccountGrant = (
   db: Query,
-  account: Pick<StoredAccount, "id" | "oauthGrantId" | "provider">,
+  account: Pick<StoredAccount, "id" | "oauthGrantId" | "owner" | "provider">,
 ) =>
   Effect.gen(function* () {
     const id = accountGrantId(account);
-    // Serializing shared releases makes the last concurrent removal responsible for cleanup.
     if (account.oauthGrantId !== null) {
       const saved = yield* query(() =>
         db.findFirst("oauthGrants", { where: (b) => b("id", "=", id) }),
@@ -131,5 +127,10 @@ export const releaseAccountGrant = (
     yield* query(() => db.deleteMany("oauthGrants", { where: (b) => b("id", "=", id) }));
     return grant === null
       ? undefined
-      : { account: id, provider: account.provider, encrypted: grant.encrypted };
+      : {
+          account: id,
+          owner: account.owner,
+          provider: account.provider,
+          encrypted: grant.encrypted,
+        };
   });

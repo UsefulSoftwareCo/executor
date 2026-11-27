@@ -1,9 +1,3 @@
-/**
- * A scheduled run's error cannot say who failed it: a mutation that throws and one whose reply
- * Executor's runtime lost both fail with `ToolCallFailed`. Its span records what the call failed
- * with. On Cloud, the coordinator's pass records how many schedules were due before it claimed
- * any, and how long the oldest had waited.
- */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Schedule, Schema } from "effect";
 import { randomUUID } from "node:crypto";
@@ -16,11 +10,6 @@ import { Evidence, Telemetry } from "../support/evidence.ts";
 import { Target } from "../support/platform.ts";
 import { appsManifest } from "../support/apps-release.ts";
 
-/**
- * `crash` throws. `lost` returns, but the app's isolate fails the runtime's read of its reply, so
- * no usable answer reaches Executor. Hourly schedules never fall due during the scenario; Run Now
- * makes each one due.
- */
 const source = `import { defineApp, mutation, userInterval, object, string, router } from "apps";
 const json = Response.prototype.json;
 Response.prototype.json = async function () {
@@ -104,14 +93,13 @@ layer(HostedLive, { excludeTestServices: true })("Schedule run telemetry", (it) 
           if (found === undefined) throw new Error(`No ${name} run`);
           return found;
         };
-        // The run's own error is the same for the app's failure and the runtime's.
         expect(names.map((name) => [run(name).status, run(name).failure])).toEqual([
           ["succeeded", null],
           ["failed", "ToolCallFailed"],
           ["failed", "ToolCallFailed"],
         ]);
 
-        const spans = yield* telemetry.search("schedule.run", { "executor.app.id": app.id }).pipe(
+        const spans = yield* telemetry.search("schedule.run", { app: app.id }).pipe(
           Effect.map((found) =>
             found.data.filter(({ span }) => span.operationName === "schedule.run"),
           ),
@@ -133,7 +121,6 @@ layer(HostedLive, { excludeTestServices: true })("Schedule run telemetry", (it) 
           if (found === undefined) throw new Error(`No span of the ${name} run`);
           return found;
         };
-        // Its span says what each call failed with, and a run that succeeded records no source.
         expect(spanOf("fine").span.tags).toMatchObject({ "executor.outcome": "completed" });
         expect(spanOf("fine").span.tags).not.toHaveProperty("executor.failure.source");
         expect(spanOf("crash").span.tags).toMatchObject({
@@ -148,8 +135,6 @@ layer(HostedLive, { excludeTestServices: true })("Schedule run telemetry", (it) 
         });
 
         if (target.metadata.target === "cloud") {
-          // Each run's trace holds the coordinator's pass that claimed it. That pass found the run
-          // due, at least, and the oldest due schedule it found waited at least as long as the run.
           for (const name of names) {
             const { traceId, span } = spanOf(name);
             const pass = yield* telemetry.query(traceId).pipe(

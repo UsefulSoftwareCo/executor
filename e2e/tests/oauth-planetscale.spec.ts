@@ -1,4 +1,3 @@
-/** Sign in to the PlanetScale emulator, whose Doorkeeper token endpoint compares Basic credentials literally. */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Schema } from "effect";
 import { FetchHttpClient, HttpClient, HttpClientRequest } from "effect/http";
@@ -55,8 +54,6 @@ layer(HostedLive, { excludeTestServices: true })("PlanetScale OAuth", (it) => {
             {},
           ),
         );
-        // No client is entered: Executor registers one, and PlanetScale issues IDs and secrets
-        // containing `_`, which form encoding would otherwise send as `%5F`.
         const started = yield* api.request(
           actors.owner,
           "POST",
@@ -68,7 +65,6 @@ layer(HostedLive, { excludeTestServices: true })("PlanetScale OAuth", (it) => {
         const authorization = new URL(authorizationUrl);
         expect(`${authorization.origin}${authorization.pathname}`).toBe(`${base}/oauth/authorize`);
 
-        // The consent page's user button posts the authorization parameters with its login.
         const callbackUrl = yield* Effect.scoped(
           Effect.gen(function* () {
             const consent = yield* HttpClient.withScope(http).execute(
@@ -87,7 +83,6 @@ layer(HostedLive, { excludeTestServices: true })("PlanetScale OAuth", (it) => {
           }),
         ).pipe(
           Effect.provideService(FetchHttpClient.RequestInit, { redirect: "manual" }),
-          // The consent request goes to the private instance's URL, which a client span would export.
           withoutEmulatorTracing,
         );
 
@@ -105,7 +100,6 @@ layer(HostedLive, { excludeTestServices: true })("PlanetScale OAuth", (it) => {
             .pipe(Effect.orDie),
         );
 
-        // The saved grant reaches PlanetScale's MCP server.
         const listed = yield* api.request(actors.owner, "GET", `${prefix}/apps/${app.id}/tools`);
         expect(listed.status, JSON.stringify(listed.body)).toBe(200);
         const tool = (yield* body(Tools, listed)).items.find((entry) =>

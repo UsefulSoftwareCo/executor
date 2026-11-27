@@ -1,8 +1,3 @@
-/**
- * The accounts linked to an app's requirements: app links, for everyone who uses the app, and the
- * caller's user links. Links are acknowledged before the view changes, and linking, unlinking or
- * connecting reads the app's discovery again.
- */
 import { hydrated } from "@executor-js/ui/contracts/http";
 import { pollingQuery } from "@executor-js/ui/contracts/polling";
 import { revalidated } from "@executor-js/ui/contracts/refresh";
@@ -38,7 +33,6 @@ class RequirementKey extends Data.Class<{
 class LinkKey extends Data.Class<{
   readonly organization: OrganizationReference;
   readonly app: AppId;
-  /** The version whose discovery the page shows, read again after the change. */
   readonly version: VersionId | null;
   readonly scope: AccountScope;
   readonly requirement: string;
@@ -58,21 +52,10 @@ const userLinks = Atom.family((key: AppKey) =>
   ),
 );
 const lists = { app: appLinks, user: userLinks };
-/** One account linked to one of the app's requirements, with its sign-in and checks. */
 export type AppAccountLink = Atom.Success<ReturnType<typeof appLinks>>[number];
-/**
- * Open pages reconcile the caller's links changed in another tab or by losing access to an
- * account. App links change only when someone who can edit the app changes them; the page reads
- * them again on its normal refresh and after the caller's own changes, without polling.
- */
 const liveUserLinks = Atom.family((key: AppKey) => pollingQuery(userLinks(key)));
-/**
- * The accounts linked to the app's own requirements, oldest first per requirement. Anyone who can
- * use the app reads them; only people who can edit it see the identity checks reported.
- */
 export const appLinksAtom = (key: { organization: OrganizationReference; app: AppId }) =>
   appLinks(new AppKey(key));
-/** The accounts the caller linked to the app's user requirements and can still use. */
 export const userLinksAtom = (key: { organization: OrganizationReference; app: AppId }) =>
   liveUserLinks(new AppKey(key));
 
@@ -95,10 +78,6 @@ const userChoices = Atom.family((key: RequirementKey) =>
   ).pipe(revalidated, protectedQuery),
 );
 const choices = (key: RequirementKey) => (key.scope === "app" ? appChoices(key) : userChoices(key));
-/**
- * One requirement's linked accounts, then the other accounts of its provider the caller could
- * link. Reading an app requirement needs edit access to the app.
- */
 export const requirementChoicesAtom = (key: ConstructorParameters<typeof RequirementKey>[0]) =>
   choices(
     new RequirementKey({
@@ -109,11 +88,6 @@ export const requirementChoicesAtom = (key: ConstructorParameters<typeof Require
     }),
   );
 
-/**
- * Read an app's links again, as after a connection for one of its requirements links the account
- * it saves, or an account's credentials change. A new account is also another choice for each of
- * the app's requirements of its provider, so their choices are read again too.
- */
 export const refreshAppLinks = (
   get: Atom.FnContext,
   key: {
@@ -133,7 +107,6 @@ export const refreshAppLinks = (
     );
 };
 
-/** Show a check's results in the app's links as soon as it finishes, then read them again. */
 export const acknowledgeLinkChecks = (
   get: Atom.FnContext,
   key: { readonly organization: OrganizationReference; readonly app: AppId },
@@ -147,11 +120,6 @@ export const acknowledgeLinkChecks = (
 const sameLink = (row: AppAccountLink, key: LinkKey) =>
   row.requirement === key.requirement && row.account.id === key.account;
 
-/**
- * Publish a confirmed link or unlink to the scope's list and the requirement's choices, which
- * reads both again for a plain requirement's replaced account, then read what else it changed: the
- * inventory's user links, the account's apps, and the app's discovery.
- */
 const linkChanged = (get: Atom.FnContext, key: LinkKey, saved: AppAccountLink | undefined) => {
   const app = new AppKey({ organization: key.organization, app: key.app });
   const requirement = new RequirementKey({
@@ -174,7 +142,7 @@ const linkChanged = (get: Atom.FnContext, key: LinkKey, saved: AppAccountLink | 
     const others = rows.filter((row) => !sameLink(row, key));
     return saved === undefined ? others : [...others, saved];
   });
-  if (key.scope === "user") refreshResourceDirectory(get, key.organization);
+  refreshResourceDirectory(get, key.organization);
   get.refresh(accountAtom({ organization: key.organization, account: key.account }));
   refreshAppDiscovery(get, key);
 };
@@ -209,10 +177,6 @@ const unlink = Atom.family((key: LinkKey) =>
     }).pipe(Effect.tap(() => Effect.sync(() => linkChanged(get, key, undefined)))),
   ),
 );
-/**
- * Link an account to one requirement. For a plain requirement the server replaces the account
- * linked before. Each link is its own mutation, so linking one account cannot cancel another.
- */
 export const linkAccountAtom = (key: ConstructorParameters<typeof LinkKey>[0]) =>
   link(new LinkKey(key));
 export const unlinkAccountAtom = (key: ConstructorParameters<typeof LinkKey>[0]) =>

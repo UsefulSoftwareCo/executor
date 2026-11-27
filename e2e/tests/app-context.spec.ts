@@ -1,4 +1,3 @@
-/** Real hosted HTTP checks for separately declared handlers and their invocation-owned context. */
 import { expect, layer } from "@effect/vitest";
 import { Clock, Effect, Schema } from "effect";
 import { randomUUID } from "node:crypto";
@@ -105,7 +104,6 @@ layer(HostedLive, { excludeTestServices: true })("App handler context", (it) => 
         const prefix = `/api/organizations/${actors.organization.id}`;
         const name = `Context ${randomUUID().slice(0, 8)}`;
         const created: { app?: string; account?: string; linked?: boolean } = {};
-        /** Wait until the linked account's webhook source is ready on the version. */
         const settleSource = (version: string) =>
           Effect.gen(function* () {
             const deadline = (yield* Clock.currentTimeMillis) + 15000;
@@ -133,7 +131,6 @@ layer(HostedLive, { excludeTestServices: true })("App handler context", (it) => 
               yield* Effect.sleep("100 millis");
             }
           });
-        /** Wait until unlinking the account has stopped its managed subscriptions. */
         const settleRemoval = Effect.gen(function* () {
           const deadline = (yield* Clock.currentTimeMillis) + 15000;
           for (;;) {
@@ -182,7 +179,6 @@ layer(HostedLive, { excludeTestServices: true })("App handler context", (it) => 
         expect(deployed.status).toBe(200);
         const app = (yield* body(App, deployed)).id;
         created.app = app;
-        // Connecting from the app links the account to it, so calls need no choice.
         const connection = yield* api.request(
           actors.owner,
           "POST",
@@ -235,8 +231,6 @@ layer(HostedLive, { excludeTestServices: true })("App handler context", (it) => 
           { body: "before", source: "first" },
           { body: "after", source: "second" },
         ]);
-        // Introduce the webhook only after the mutation assertions. The linked account's webhook
-        // source owns registration; racing it with manual registration creates two hooks.
         const updated = yield* api.request(actors.owner, "POST", `${prefix}/apps/${app}/deploy`, {
           files: files.map((file) =>
             file.path === "index.ts"

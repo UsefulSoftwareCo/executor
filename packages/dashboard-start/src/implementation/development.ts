@@ -1,5 +1,4 @@
-/** Node-backed development rendering shared by hosted dashboards. */
-import type { Server } from "node:http";
+import { IncomingMessage, ServerResponse, type Server } from "node:http";
 import * as NodeHttpServerRequest from "@effect/platform-node/NodeHttpServerRequest";
 import { DevelopmentDashboardFailed } from "../contracts/development.ts";
 import type { DocumentApi } from "../contracts/document.ts";
@@ -64,6 +63,8 @@ export const developmentDashboard = (
       const request = yield* HttpServerRequest.HttpServerRequest;
       const incoming = NodeHttpServerRequest.toIncomingMessage(request);
       const outgoing = NodeHttpServerRequest.toServerResponse(request);
+      if (!(incoming instanceof IncomingMessage) || !(outgoing instanceof ServerResponse))
+        return HttpServerResponse.empty({ status: 505 });
       return yield* Effect.callback<HttpServerResponse.HttpServerResponse>((resume) => {
         const cleanup = () => {
           outgoing.off("finish", done);

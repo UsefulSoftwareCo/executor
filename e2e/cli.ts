@@ -1,4 +1,5 @@
-/** Interactive CLI over the same SDK used by committed scenarios. */
+import "./support/connect-timeout.ts";
+import "./support/stage-connections.ts";
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { Console, Effect, FileSystem, Layer, Schedule, Schema } from "effect";

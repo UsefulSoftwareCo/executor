@@ -3,10 +3,6 @@ import { revalidated } from "@executor-js/ui/contracts/refresh";
 import { workflowBindings } from "./resources.ts";
 import type { HostedError } from "./errors.ts";
 import type { SkillBindings, WorkflowBindings } from "@executor-js/ui/contracts/app-browser";
-/**
- * One discovery cache per app and version. Linking or unlinking an account reads it again
- * (see `refreshAppDiscovery`), as does the page's normal refresh.
- */
 import type { App, AppId, VersionId } from "@executor-js/sdk";
 import { Data } from "effect";
 import { Atom } from "effect/reactivity";
@@ -40,7 +36,6 @@ const bundle = Atom.family((key: AppKey) =>
     }),
   ).pipe(revalidated, protectedQuery),
 );
-/** Product-owned query bindings share stable identities between overview and detail sections. */
 export function appBrowserBindings(
   organization: OrganizationReference,
   app: App,
@@ -56,7 +51,6 @@ export function appBrowserBindings(
     bundle: bundle(key),
   };
 }
-/** Read the app's skills again, as after the caller links or unlinks an account. */
 export const refreshSkillDiscovery = (
   get: Atom.FnContext,
   key: ConstructorParameters<typeof AppKey>[0],

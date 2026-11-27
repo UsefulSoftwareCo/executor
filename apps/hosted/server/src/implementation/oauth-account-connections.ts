@@ -1,4 +1,3 @@
-/** Each request keeps its recorded creator and destination when several apps share one authorization. */
 import type {
   Executor,
   OwnerId,
@@ -7,14 +6,13 @@ import type {
   AccountId,
 } from "@executor-js/sdk/core";
 import { Effect } from "effect";
+import { AccountTargets } from "../contracts/account-grants.ts";
 import { HostedExecutor } from "../contracts/executor.ts";
 import { ScheduleWakeup } from "../contracts/schedules.ts";
 import { ownedConnection } from "./access.ts";
 import { checkConnection } from "./connection-policy.ts";
-import { accountDestination } from "./resource-lifecycle.ts";
-import { requireAccountAccess } from "./resource-policy.ts";
+import { AccountGrants } from "./proofs/account-access.ts";
 
-/** Check every saved intent before discovery or exchange; hooks recheck them at the atomic commit. */
 export const checkOAuthConnections = (
   executor: Executor,
   owner: OwnerId,
@@ -26,13 +24,14 @@ export const checkOAuthConnections = (
 ) =>
   Effect.gen(function* () {
     const connection = yield* ownedConnection(executor, owner, input.connection);
-    const intent = yield* checkConnection(connection);
+    yield* checkConnection(connection);
     for (const selected of input.additionalConnections ?? connection.additionalConnections ?? [])
       yield* checkConnection(yield* ownedConnection(executor, owner, selected.connection));
     const source =
       input.sourceAccount === undefined ? connection.sourceAccount : input.sourceAccount;
-    if (source != null) yield* requireAccountAccess(source, "use");
-    return { connection, intent };
+    if (source != null)
+      yield* AccountGrants.use.pipe(Effect.provideService(AccountTargets.use, { account: source }));
+    return connection;
   });
 
 export const planOAuth = (
@@ -51,14 +50,13 @@ export const reuseOAuth = (
 ) =>
   Effect.gen(function* () {
     const executor = yield* Effect.flatten(HostedExecutor);
-    const { intent } = yield* checkOAuthConnections(executor, owner, {
+    yield* checkOAuthConnections(executor, owner, {
       ...input,
       sourceAccount: input.account,
     });
-    return yield* executor.accountConnections.reuseOAuth({ ...input, owner }).pipe(
-      accountDestination(intent.destination),
-      Effect.tap(() => Effect.flatten(ScheduleWakeup)),
-    );
+    return yield* executor.accountConnections
+      .reuseOAuth({ ...input, owner })
+      .pipe(Effect.tap(() => Effect.flatten(ScheduleWakeup)));
   });
 
 export const cancelConnection = (

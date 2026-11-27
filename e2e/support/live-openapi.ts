@@ -1,4 +1,3 @@
-/** A changing upstream document uses the public app runtime without redeployment. */
 import { expect } from "@effect/vitest";
 import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
 import { Effect, Layer } from "effect";
@@ -10,12 +9,6 @@ import { Api, body } from "./api.ts";
 import { App } from "./contracts.ts";
 import { appsManifest } from "./apps-release.ts";
 
-/**
- * Omit staleFor to use the framework default stale-while-revalidate window. With `retiring`, the
- * first document also has `/legacy`, which a published document drops and whose route then answers
- * 404, and every document has `/missing`, whose item never exists: it answers 404 with a body that
- * repeats the request's credential, which no failure may show.
- */
 export const liveOpenapiFixture = (
   freshFor: number,
   options: { staleFor?: number; retiring?: boolean } = {},
@@ -49,7 +42,6 @@ export const liveOpenapiFixture = (
             paths: {
               "/echo": {
                 get: {
-                  // Tools are grouped by the first tag; the repeated group prefix is dropped.
                   operationId: `echoes_${name}`,
                   tags: ["Echoes"],
                   parameters: [
@@ -93,7 +85,6 @@ export const liveOpenapiFixture = (
               ...(version === 1
                 ? {}
                 : {
-                    // Another origin is never called with this app's credentials.
                     "/evil": {
                       get: {
                         operationId: "evil",
@@ -101,7 +92,6 @@ export const liveOpenapiFixture = (
                         responses: { "200": { description: "OK" } },
                       },
                     },
-                    // Untagged and unnamed: grouped by its first resource path segment.
                     "/v1/status/{id}/health": {
                       get: {
                         parameters: [
@@ -186,11 +176,9 @@ export default defineApp({}, async ctx => ({ tools: liveOpenapiRouter({cache:ctx
     const app = (yield* body(App, deployed)).id;
     const path = `${prefix}/${app}`;
     yield* Effect.addFinalizer(() => api.request(actors.owner, "DELETE", path).pipe(Effect.orDie));
-    // Every operation in this document is a GET.
     const invoke = (tool: string, input: unknown) =>
       api.request(actors.owner, "POST", `${path}/tools/call`, { tool, kind: "query", input });
     const callTool = (tool: string, value: string) => invoke(tool, { query: { value } });
-    /** Call `/echo` by its grouped tool name, `echoes.<name>`. */
     const call = (name: string, value: string) => callTool(`echoes.${name}`, value);
     return {
       api,

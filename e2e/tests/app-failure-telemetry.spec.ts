@@ -1,14 +1,5 @@
-/**
- * An app can fail with any text: in its own error's name, code, fields, message and stack, outside
- * its error handling, in a reply the host cannot read, and in the spans and logs its isolate
- * returns, which its code can rewrite, in a reply naming an MCP status that is no HTTP status,
- * and in a workflow step. A caller's invalid input is described with its keys and paths and the
- * schema's keys and patterns. The app's own error and the input's problems reach the caller.
- * Executor's spans, logs and incident reports record only fixed descriptions and closed kinds,
- * never the app's or the caller's text.
- */
 import { expect, layer } from "@effect/vitest";
-import { Effect, FileSystem, Schedule, Schema } from "effect";
+import { Effect, Schedule, Schema } from "effect";
 import { randomUUID } from "node:crypto";
 import { scenarios } from "../test-plan.ts";
 import { Actors } from "../support/actors.ts";
@@ -17,22 +8,18 @@ import { HostedLive, withHostedCase } from "../support/case.ts";
 import { App, type SpanQuery } from "../support/contracts.ts";
 import { Evidence, Telemetry } from "../support/evidence.ts";
 import { Target } from "../support/platform.ts";
-import { awaitSentryEvents, traceEvents } from "../support/sentry-events.ts";
+import {
+  awaitSentryEvents,
+  sentryEventTextWholeEnvironment,
+  traceEvents,
+} from "../support/sentry-events.ts";
 import { appsManifest } from "../support/apps-release.ts";
+import { appLinksFixture, keyProvider } from "../support/app-links.ts";
+import { settleWebhookSubscriptions } from "../support/webhook-sources.ts";
 
-/** The app's error message: its text, then a line shaped like a stack frame. */
 const thrownMessage = (marker: string) =>
   `${marker}\n    at ${marker} (https://${marker}.example/app.js:1:1)`;
 
-/**
- * The app throws its own error class, named for the marker, with the marker as its code, a field,
- * its message and an eval frame in its stack, from a function named for the marker. Outside its
- * error handling, the RPC bridge reads each reply through `Response.prototype.json` and the
- * framework answers through `Response.json`: one reply then rejects the call with the app's text,
- * one fails decoding, one names an MCP failure whose status is the numeric marker, and one fails
- * after the tool returned, in the framework's request handler. After one successful call, the
- * runtime's cancel of the finished call throws the app's text from `AbortController#abort`.
- */
 const failing = (marker: string, status: number) => `
 const marker = ${JSON.stringify(marker)};
 class Failure extends Error {
@@ -50,7 +37,7 @@ const json = Response.prototype.json;
 Response.prototype.json = async function () {
   const value = await json.call(this);
   const text = JSON.stringify(value);
-  if (text.includes("reply-" + "rejected")) throw new Error(marker);
+  if (text.includes("reply-" + "rejected")) throw Object.assign(new Error(marker), { name: marker });
   if (text.includes("reply-" + "malformed"))
     return { ok: false, error: { _tag: "HostOperationFailed", source: marker, errorName: marker, message: marker } };
   if (text.includes("reply-" + "mcp"))
@@ -85,12 +72,6 @@ const released = async () => {
 };
 `;
 
-/**
- * Any code in the isolate can rewrite the records it returns. This app adds the marker to every
- * span as attributes, an event, an exception, a link, a status message and trace state, adds a
- * span named for it beside each call, and puts it in every log record's body, level and
- * attributes.
- */
 const hostile = `
 const stringify = JSON.stringify;
 const text = (value) => ({ stringValue: value });
@@ -179,6 +160,43 @@ export default defineApp({}, {
   appsManifest,
 ];
 
+const webhookSource = (
+  marker: string,
+) => `import { defineApp, defineProvider, secrets, query, object, string, router, ProviderError } from "apps";
+const marker = ${JSON.stringify(marker)};
+class Failure extends Error { constructor() { super(marker); this.name = marker; } }
+// The RPC bridge reads each reply through Response.prototype.json. A reply that answers with the
+// garble header has its encoded body replaced by text that is not base64.
+const read = Response.prototype.json;
+Response.prototype.json = async function () {
+  const value = await read.call(this);
+  if (!JSON.stringify(value).includes("x-garble")) return value;
+  const garble = (item) => {
+    if (item === null || typeof item !== "object") return;
+    if (typeof item.body === "string" && item.headers && "x-garble" in item.headers) item.body = "%%%" + marker;
+    for (const child of Object.values(item)) garble(child);
+  };
+  garble(value);
+  return value;
+};
+const team = ${keyProvider("Failure webhook fixture")};
+const incoming = { account: { app: "team" }, config: object({}), state: object({}),
+  register: async () => ({}), unregister: async () => {},
+  handle: async (ctx, { request }) => {
+    const kind = await request.text();
+    if (kind.includes("throw")) throw new Failure();
+    if (kind.includes("provider"))
+      throw new ProviderError({ reason: "forbidden", status: 403 });
+    if (kind.includes("garble")) return Response.json({ marker }, { headers: { "x-garble": "1" } });
+    return Response.json({ marker }, { status: 418, headers: { "x-marker": marker } });
+  } };
+// Once a second account is linked, evaluating the app fails with a provider error, as an app whose
+// provider refuses during evaluation does: the handler call then fails before the handler runs.
+export default defineApp({ app: { accounts: { team: team.many() } } }, async (ctx) => {
+  if (ctx.app.accounts.team.length > 1) throw new ProviderError({ reason: "forbidden", status: 403 });
+  return { tools: router({ ping: query({ input: object({}) }, async () => "pong") }), webhooks: { incoming } };
+});`;
+
 const ToolFailed = Schema.Struct({
   _tag: Schema.Literal("ToolCallFailed"),
   reason: Schema.String,
@@ -230,7 +248,6 @@ const DeliveredLogs = Schema.fromJsonString(
   }),
 );
 
-/** What the host records for an exception from an app isolate, whatever the isolate sent. */
 const appException = (type: string) => ({
   name: "exception",
   attributes: {
@@ -241,10 +258,6 @@ const appException = (type: string) => ({
 });
 type Delivered = (typeof SpanQuery.Type)["data"][number];
 
-/**
- * The resource the host supplies for every record it forwards from an app isolate, including the
- * build that ran and the ID of the app it invoked, from the host's own invocation.
- */
 const resource = [
   "service.name",
   "service.version",
@@ -269,12 +282,9 @@ layer(HostedLive, { excludeTestServices: true })("App failure telemetry", (it) =
           actors = yield* Actors,
           evidence = yield* Evidence,
           telemetry = yield* Telemetry,
-          target = yield* Target,
-          fs = yield* FileSystem.FileSystem;
+          target = yield* Target;
         const cloud = target.metadata.target === "cloud";
-        // Also a valid JavaScript identifier, so the app can name a function for it.
         const marker = `synthetic_app_secret_${randomUUID().replaceAll("-", "")}`;
-        // An MCP status no HTTP response can have, which released protocols still accept.
         const status = 800_000_000_000 + Math.floor(Math.random() * 99_999_999_999);
         const prefix = `/api/organizations/${actors.organization.id}/apps`;
         const deploy = (rewritesTelemetry: boolean) =>
@@ -288,17 +298,11 @@ layer(HostedLive, { excludeTestServices: true })("App failure telemetry", (it) =
             yield* Effect.addFinalizer(() =>
               api.request(actors.owner, "DELETE", `${prefix}/${app.id}`).pipe(Effect.orDie),
             );
-            // List its tools, as a caller discovering them does. Only the kept listing confirms
-            // that each query only reads, so its failures keep a read's classification.
             const listed = yield* api.request(actors.owner, "GET", `${prefix}/${app.id}/tools`);
             expect(listed.status, JSON.stringify(listed.body)).toBe(200);
             return app;
           });
 
-        /**
-         * Call a tool, then read its trace once the host has recorded the failed call and has
-         * forwarded the app isolate's spans and logs for it.
-         */
         const call = (app: string, tool: string, input: object = {}) =>
           Effect.gen(function* () {
             const response = yield* api.request(
@@ -315,7 +319,10 @@ layer(HostedLive, { excludeTestServices: true })("App failure telemetry", (it) =
             if (trace === undefined) return yield* Effect.die("The call's trace was not recorded");
             const delivered = Effect.gen(function* () {
               const spans = (yield* telemetry.query(trace)).data;
-              const logs = yield* telemetry.logs(trace, marker);
+              const logs = [
+                yield* telemetry.logs(trace),
+                yield* telemetry.logsWholeEnvironment(marker),
+              ];
               const appLogs = (yield* Schema.decodeUnknownEffect(DeliveredLogs)(
                 logs[0],
               )).data.filter(({ serviceName }) => serviceName === "executor-app");
@@ -326,11 +333,8 @@ layer(HostedLive, { excludeTestServices: true })("App failure telemetry", (it) =
                     span.operationName === "sdk.tools.call" &&
                     span.status === (tool === "released" ? "ok" : "error"),
                 ) &&
-                // The finished call's release runs after its response.
                 (!cloud || tool !== "released" || has("runtime.app.rpc.release")) &&
-                // Cloud's app runner joins the caller's trace; wait for its invocation too.
                 (!cloud || has("runtime.app.invoke")) &&
-                // A rejected or unreadable reply carries no telemetry from the isolate.
                 (tool !== "thrown" || has("app.call")) &&
                 (tool !== "invalid" || has("app.dispatch")) &&
                 (tool !== "unanswered" || (has("app.dispatch") && appLogs.length > 0));
@@ -355,8 +359,6 @@ layer(HostedLive, { excludeTestServices: true })("App failure telemetry", (it) =
         const unanswered = yield* call(ordinary.id, "unanswered");
         const mcp = yield* call(ordinary.id, "mcp");
         const released = yield* call(ordinary.id, "released");
-        // The input nests the schema's key in a caller's key, which its problem names as a
-        // place the key may have come from, and misses the schema's pattern.
         const callerKey = `in_${marker}`;
         const invalid = yield* call(ordinary.id, "invalid", {
           [callerKey]: { [marker]: "value" },
@@ -366,10 +368,6 @@ layer(HostedLive, { excludeTestServices: true })("App failure telemetry", (it) =
         const rewritten = yield* call(rewriting.id, "thrown");
         const rewrittenLog = yield* call(rewriting.id, "unanswered");
 
-        // A workflow step throws the app's error. The run's owner reads it; the run's spans and
-        // incident reports name only the failure's reason. Cloud carries the failure from the
-        // app's runner back to its own step as an error; self-host's runner hands the host the
-        // run's result as data, so no self-host span records a workflow failure.
         const runs = `${prefix}/${ordinary.id}/workflow-runs`;
         const started = yield* api.request(actors.owner, "POST", runs, {
           workflow: "failing",
@@ -388,7 +386,7 @@ layer(HostedLive, { excludeTestServices: true })("App failure telemetry", (it) =
         );
         const workflowTrace = Effect.gen(function* () {
           const traces = new Set(
-            (yield* telemetry.search("workflow.run", { "executor.run.id": runId })).data.map(
+            (yield* telemetry.search("workflow.run", { run: runId })).data.map(
               ({ traceId }) => traceId,
             ),
           );
@@ -399,7 +397,11 @@ layer(HostedLive, { excludeTestServices: true })("App failure telemetry", (it) =
             spans.some(({ span }) => span.operationName === name && span.status === "error");
           const [trace] = traces;
           return trace !== undefined && failedIn("workflow.run") && failedIn("workflow.step")
-            ? { trace, spans, logs: yield* telemetry.logs(trace, marker) }
+            ? {
+                trace,
+                spans,
+                logs: [yield* telemetry.logs(trace), yield* telemetry.logsWholeEnvironment(marker)],
+              }
             : yield* Effect.fail(new Error("The workflow run's spans have not been delivered"));
         }).pipe(Effect.retry({ schedule: Schedule.spaced("1 second"), times: 30 }));
         const workflowRun = cloud ? yield* workflowTrace : undefined;
@@ -416,18 +418,20 @@ layer(HostedLive, { excludeTestServices: true })("App failure telemetry", (it) =
           ...(workflowRun === undefined ? {} : { workflowRun }),
         };
         const sentry = cloud
-          ? yield* awaitSentryEvents((events) =>
-              Object.entries(calls).every(
-                ([name, { trace }]) =>
-                  name === "released" ||
-                  name === "invalid" ||
-                  traceEvents(events, trace).length > 0,
-              ),
+          ? yield* awaitSentryEvents(
+              Object.values(calls).map(({ trace }) => trace),
+              (events) =>
+                Object.entries(calls).every(
+                  ([name, { trace }]) =>
+                    name === "released" ||
+                    name === "invalid" ||
+                    traceEvents(events, trace).length > 0,
+                ),
             ).pipe(
               Effect.flatMap((events) =>
-                fs
-                  .readFileString(`${target.directory}/sentry.ndjson`)
-                  .pipe(Effect.map((raw) => ({ events, raw }))),
+                sentryEventTextWholeEnvironment.pipe(
+                  Effect.map((raw) => ({ events, raw: raw.join("\n") })),
+                ),
               ),
             )
           : undefined;
@@ -455,8 +459,6 @@ layer(HostedLive, { excludeTestServices: true })("App failure telemetry", (it) =
           logs: Object.fromEntries(Object.entries(calls).map(([name, { logs }]) => [name, logs])),
         });
 
-        // The app's own error reaches its caller, named as the app's: its name, code, field and
-        // message, with the line shaped like a frame.
         for (const failed of [thrown, rewritten]) {
           expect(failed.response.status).toBe(502);
           const toolFailure = yield* body(ToolFailed, failed.response);
@@ -471,11 +473,6 @@ layer(HostedLive, { excludeTestServices: true })("App failure telemetry", (it) =
             `The app threw ${marker} (${marker}): ${thrownMessage(marker)} Details: detail: "${marker}".`,
           );
         }
-        // A rejected call and a reply that fails decoding: the caller is told no usable result
-        // arrived, not that the app's tools could not load.
-        // Both runtimes match the rejection's text, which the app wrote, so a match is never
-        // stated as confirmed: a thrown read is unrecognized, a reply that fails decoding only
-        // matches an invalid reply.
         const lost = "Executor did not receive a usable result from this tool call.";
         for (const [failed, why] of [
           [rejected, "The runtime did not recognize why."],
@@ -490,9 +487,6 @@ layer(HostedLive, { excludeTestServices: true })("App failure telemetry", (it) =
           expect(result.message).toBe(`${result.reason} No further failure detail is available.`);
           expect(JSON.stringify(failed.response.body)).not.toContain(marker);
         }
-        // A failure after the tool returned, which the app's framework reports like an invalid
-        // declaration: the caller is told no usable result arrived, not that the app's tools
-        // could not load.
         for (const failed of [unanswered, rewrittenLog]) {
           expect(failed.response.status).toBe(502);
           expect(yield* body(ResultLost, failed.response)).toMatchObject({
@@ -503,12 +497,10 @@ layer(HostedLive, { excludeTestServices: true })("App failure telemetry", (it) =
           });
           expect(JSON.stringify(failed.response.body)).not.toContain(marker);
         }
-        // The MCP failure's caller reads the status the app's reply named.
         expect(mcp.response.status).toBe(502);
         const mcpFailure = yield* body(McpCallFailed, mcp.response);
         expect(mcpFailure.mcp).toEqual({ phase: "call", reason: "request", status });
         expect(mcpFailure.reason).toContain(`(HTTP ${status})`);
-        // The caller reads the input's problems, with its own key and the schema's pattern.
         expect(invalid.response.status, JSON.stringify(invalid.response.body)).toBe(422);
         const inputProblems = [
           `input.${marker}: Missing key. Expected string. The input has ${marker} at input.${callerKey}.${marker}; did you mean input.${marker}?`,
@@ -519,16 +511,12 @@ layer(HostedLive, { excludeTestServices: true })("App failure telemetry", (it) =
           problems: inputProblems,
           message: `Input failed validation: ${inputProblems.join("; ")}`,
         });
-        // A call whose release failed has already answered its caller.
         expect(released.response.status, JSON.stringify(released.response.body)).toBe(200);
-        // The run's owner reads the failing step and the app's own error.
         expect(failedRun).toMatchObject({
           error: "execution",
           failure: { step: "fails", errorName: "NonRetryableError", message: marker },
         });
 
-        // Each forwarded record names the app the host invoked: its evaluation, its calls and its
-        // logs, whatever app ran before it.
         const invoked = (name: string) =>
           name === "rewritten" || name === "rewrittenLog" ? rewriting.id : ordinary.id;
         for (const [name, { spans }] of Object.entries(calls))
@@ -554,7 +542,6 @@ layer(HostedLive, { excludeTestServices: true })("App failure telemetry", (it) =
           ).toEqual([invoked(name)]);
 
         for (const [name, { spans, logs }] of Object.entries(calls)) {
-          // Span events carry exception messages and stacks; Axiom also keeps status messages.
           expect(JSON.stringify(spans), `${name}: the spans omit the app's text`).not.toContain(
             marker,
           );
@@ -563,8 +550,6 @@ layer(HostedLive, { excludeTestServices: true })("App failure telemetry", (it) =
           );
           expect(logs.join("\n"), `${name}: the logs omit the app's text`).not.toContain(marker);
           if (name === "released") continue;
-          // Host spans record the error's name and fixed description, with no stack lines of its
-          // own: only the frames Effect appends for the operation's spans follow.
           const [failedCall] = named(
             spans,
             name === "workflowRun" ? "workflow.step" : "sdk.tools.call",
@@ -591,9 +576,6 @@ layer(HostedLive, { excludeTestServices: true })("App failure telemetry", (it) =
             expect(frame, `${name}: only span frames follow`).toMatch(
               /^ {4}at .+ \([^()\s]+:\d+:\d+\)$/,
             );
-          // Every record forwarded from the app isolate has only the host's vocabulary: its own
-          // attributes from closed sets, its owners and timing, and exceptions by kind with fixed
-          // text.
           for (const { span } of appSpans(spans)) {
             expect(
               Object.keys(span.tags).filter(
@@ -626,16 +608,12 @@ layer(HostedLive, { excludeTestServices: true })("App failure telemetry", (it) =
           }
         }
 
-        // The app's error: its name and code are not the framework's, so they are unrecognized.
-        // The rewritten records keep only what the framework sent, plus the added exception, by
-        // kind, and the added span under a fixed name.
         const appCall = (app: string) => ({
           ...resourceTags(app),
           "executor.clock.type": expect.any(String),
           "error.type": "unrecognized",
           "executor.failure.source": "app",
           "executor.failure.code": "unrecognized",
-          // How the call's time divided by owner: measured values, kept as numbers.
           "executor.upstream.wait_ms": expect.stringMatching(/^\d+(\.\d+)?$/),
           "executor.elicitation.wait_ms": expect.stringMatching(/^\d+(\.\d+)?$/),
           "executor.authored_ms": expect.stringMatching(/^\d+(\.\d+)?$/),
@@ -661,9 +639,6 @@ layer(HostedLive, { excludeTestServices: true })("App failure telemetry", (it) =
         ]);
         expect(named(thrown.spans, "app.unrecognized")).toEqual([]);
 
-        // A failure in the framework's request handler logs the framework's own sentence. A
-        // rewritten log keeps its level number but its text, level name and attributes are
-        // replaced.
         expect(
           unanswered.appLogs.map(({ severityText, body: text }) => ({ severityText, body: text })),
         ).toEqual([{ severityText: "Error", body: "The app's request failed unexpectedly" }]);
@@ -674,8 +649,23 @@ layer(HostedLive, { excludeTestServices: true })("App failure telemetry", (it) =
           for (const { attributes } of appLogs)
             expect(Object.keys(attributes).filter((key) => !resource.includes(key))).toEqual([]);
 
+        for (const { spans } of [rejected, malformed])
+          for (const { span } of spans)
+            expect(
+              Object.keys(span.tags).filter(
+                (key) =>
+                  key.startsWith("executor.runtime.rpc.") ||
+                  key.startsWith("executor.runtime.http."),
+              ),
+            ).toEqual([]);
+
         if (cloud) {
-          // Cloud's runner records the kind of each failed call, not its text.
+          const unrecognizedShape = (name: string) => ({
+            "executor.runtime.cause.call": "app",
+            "executor.runtime.cause.kind": "error",
+            "executor.runtime.cause.name": name,
+            "executor.runtime.cause.message_length": String(marker.length),
+          });
           const classified = (spans: typeof rejected.spans) =>
             spans.find(({ span }) => span.tags["executor.runtime.failure"] !== undefined)?.span
               .tags;
@@ -683,18 +673,19 @@ layer(HostedLive, { excludeTestServices: true })("App failure telemetry", (it) =
             "executor.runtime.failure": "unrecognized",
             "executor.runtime.cause":
               "The app's Worker failed for a reason the runtime did not recognize",
+            ...unrecognizedShape("other"),
           });
           expect(classified(malformed.spans)).toMatchObject({
             "executor.runtime.failure": "invalid-reply",
             "executor.runtime.cause": "The app's reply does not match its host protocol",
           });
-          // The release's rejection is classified like the call's own, by its fixed sentence.
           const [release] = named(released.spans, "runtime.app.rpc.release");
           expect(release?.status).toBe("error");
           expect(release?.tags).toMatchObject({
             "executor.runtime.failure": "unrecognized",
             "executor.runtime.cause":
               "The app's Worker failed for a reason the runtime did not recognize",
+            ...unrecognizedShape("Error"),
           });
           const releaseFailure = release?.events.find(({ name }) => name === "exception");
           expect(
@@ -703,9 +694,92 @@ layer(HostedLive, { excludeTestServices: true })("App failure telemetry", (it) =
             "RuntimeProtocolFailed: The app's Worker failed for a reason the runtime did not recognize",
           );
         }
+        const webhookApp = yield* appLinksFixture([
+          { path: "index.ts", content: webhookSource(marker) },
+        ]);
+        yield* webhookApp.connect(actors.owner, "app", "team", "webhook-key");
+        const [hook] = yield* settleWebhookSubscriptions(actors.owner, webhookApp.path, (rows) =>
+          rows.some((row) => row.status === "active"),
+        );
+        if (hook === undefined) return yield* Effect.die("The webhook subscription is missing");
+        type Kind = "throw" | "provider" | "garble" | "answer" | "oversize" | "evaluate";
+        const delivery = (kind: Kind, refusal?: string) =>
+          Effect.gen(function* () {
+            const response = yield* api.request(
+              yield* api.session(),
+              "POST",
+              new URL(hook.callbackUrl).pathname,
+              kind === "oversize" ? { pad: "x".repeat(1024 * 1024) } : { kind },
+            );
+            const trace = (yield* evidence.requests).at(-1)?.traceId;
+            if (trace === undefined)
+              return yield* Effect.die("The delivery's trace was not recorded");
+            const spans = yield* telemetry.settled(trace, (spans) =>
+              spans.some(({ operationName, tags }) =>
+                refusal === undefined
+                  ? operationName === "sdk.webhooks.deliver"
+                  : tags["executor.webhook.refusal"] === refusal,
+              ),
+            );
+            return { response, trace, spans };
+          });
+        const thrownDelivery = yield* delivery("throw");
+        const providerDelivery = yield* delivery("provider");
+        const answered = yield* delivery("answer");
+        expect(answered.response.status).toBe(418);
+        const oversized = yield* delivery("oversize", "body-too-large");
+        expect(oversized.response.status).toBe(413);
+        const garbled = yield* delivery("garble", "invalid-response-body");
+        yield* webhookApp.connect(actors.owner, "app", "team", "webhook-second-key");
+        const evaluated = yield* delivery("evaluate");
+        for (const failed of [thrownDelivery, providerDelivery, garbled, evaluated])
+          expect(Math.floor(failed.response.status / 100)).not.toBe(2);
+        const deliveredTags = (spans: ReadonlyArray<{ operationName: string; tags: object }>) =>
+          spans.find(({ operationName }) => operationName === "sdk.webhooks.deliver")?.tags;
+        expect(deliveredTags(answered.spans)).toMatchObject({
+          "executor.webhook.response_status": "418",
+        });
+        expect(deliveredTags(answered.spans)).not.toHaveProperty("executor.webhook.refusal");
+        expect(deliveredTags(thrownDelivery.spans)).toMatchObject({
+          "executor.webhook.refusal": "handler",
+          "executor.webhook.handler_error": "HostOperationFailed",
+        });
+        expect(deliveredTags(thrownDelivery.spans)).not.toHaveProperty(
+          "executor.webhook.response_status",
+        );
+        expect(deliveredTags(providerDelivery.spans)).toMatchObject({
+          "executor.webhook.refusal": "handler",
+          "executor.webhook.handler_error": "HostOperationFailed",
+        });
+        expect(deliveredTags(evaluated.spans)).toMatchObject({
+          "executor.webhook.refusal": "provider",
+          "executor.webhook.handler_error": "ProviderError",
+        });
+        expect(deliveredTags(garbled.spans)).toMatchObject({
+          "executor.webhook.response_status": "200",
+        });
+        expect(deliveredTags(garbled.spans)).not.toHaveProperty("executor.webhook.refusal");
+        expect(deliveredTags(oversized.spans)).toBeUndefined();
+        for (const [name, { spans, trace }] of Object.entries({
+          webhookThrown: thrownDelivery,
+          webhookProvider: providerDelivery,
+          webhookGarbled: garbled,
+          webhookAnswered: answered,
+          webhookOversized: oversized,
+          webhookEvaluated: evaluated,
+        })) {
+          expect(JSON.stringify(spans), `${name}: the spans omit the app's text`).not.toContain(
+            marker,
+          );
+          expect(
+            [yield* telemetry.logs(trace), yield* telemetry.logsWholeEnvironment(marker)].join(
+              "\n",
+            ),
+            `${name}: the logs omit the app's text`,
+          ).not.toContain(marker);
+        }
+
         if (sentry !== undefined) {
-          // The failures are still reported, by name with the fixed description and no stack of
-          // their own, and the app's text appears nowhere in the envelopes.
           for (const { trace } of [thrown, rewritten])
             expect(
               traceEvents(sentry.events, trace).flatMap(({ exception }) => exception?.values ?? []),
@@ -734,7 +808,6 @@ layer(HostedLive, { excludeTestServices: true })("App failure telemetry", (it) =
               type: "WorkflowFailure",
               value: "The workflow failed (execution); the app's error is not recorded",
             });
-          // Invalid input is the caller's to correct, so it is not reported as an incident.
           expect(traceEvents(sentry.events, invalid.trace)).toEqual([]);
           expect(sentry.raw, "incident reports omit the app's text").not.toContain(marker);
           expect(sentry.raw, "incident reports omit the app's status").not.toContain(

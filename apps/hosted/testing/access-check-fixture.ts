@@ -1,28 +1,15 @@
-/**
- * Test host only: a document's in-process organization access check refuses, reports an outage,
- * fails in transport, or refuses only after the render deadline, while the page's other reads run
- * normally. Both run the same organization middleware,
- * so no request from outside can produce that split. Production entry points never provide it.
- *
- * A second cookie stalls a document's in-process read of the sign-in settings while the browser's
- * own read of the same route answers at once.
- */
 import { Cookies, HttpRouter } from "effect/http";
 import { Effect, Schema } from "effect";
 import { InProcessReadFixture } from "@executor-js/dashboard-start/in-process";
 import { AuthenticationUnavailable } from "@executor-js/hosted-server";
 
-/** The browser cookie that selects the access check's answer for documents it requests. */
 export const accessCheckCookie = "executor-test-access-check";
 const Mode = Schema.Literals(["refuse", "unavailable", "fail", "stall"]);
 const accessPath = /^\/api\/organizations\/[^/]+\/access$/;
-/** The browser cookie that stalls the sign-in settings read of documents it requests. */
 export const signInSettingsCookie = "executor-test-sign-in-settings";
 const signInSettingsPath = "/api/auth/self-host/config";
-/** Past the dashboard's 10-second render deadline, as a read that never answers would be. */
 const stallMs = 12_000;
 
-/** Wait out a stall, or until the document gives up on the read. */
 const stall = (signal: AbortSignal) =>
   new Promise<void>((resolve) => {
     const timer = setTimeout(resolve, stallMs);
@@ -32,7 +19,6 @@ const stall = (signal: AbortSignal) =>
     });
   });
 
-/** No organization has this slug, so the product refuses it as it refuses any unknown one. */
 const refusedPath = "/api/organizations/access-check-refused/access";
 
 const fixture = (pipeline: (request: Request) => Promise<Response>) => {
@@ -56,10 +42,7 @@ const fixture = (pipeline: (request: Request) => Promise<Response>) => {
       void settled.then(() => reads.delete(settled));
       return response;
     }
-    // Past the dashboard's 10-second render deadline, so the page renders without an answer.
     if (mode.value === "stall") await new Promise((resolve) => setTimeout(resolve, stallMs));
-    // The page's reads start with this check. Answering once they have settled means a document
-    // that released them early would already hold their data.
     const answer = await pipeline(
       mode.value === "refuse" || mode.value === "stall"
         ? new Request(new URL(refusedPath + url.search, url), request)
@@ -67,7 +50,6 @@ const fixture = (pipeline: (request: Request) => Promise<Response>) => {
     );
     await Promise.all(reads);
     if (mode.value === "fail") throw new TypeError("The test host failed this access check");
-    // A declared failure that is not a refusal, encoded as the API encodes it.
     if (mode.value === "unavailable")
       return Response.json(
         Schema.encodeUnknownSync(AuthenticationUnavailable)(new AuthenticationUnavailable({})),
@@ -77,7 +59,6 @@ const fixture = (pipeline: (request: Request) => Promise<Response>) => {
   };
 };
 
-/** Provide the fixture to every request the test host serves. */
 export const accessCheckFixture = HttpRouter.middleware(
   (serve) => Effect.provideService(serve, InProcessReadFixture, fixture),
   { global: true },

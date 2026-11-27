@@ -1,4 +1,3 @@
-/** A small GitHub briefing app, shown as source in the homepage file viewer. */
 export const appFiles = [
   {
     path: "index.ts",
@@ -233,7 +232,6 @@ createRoot(root).render(<DailyBrief />);`,
   },
 ] as const;
 
-/** Copy shared by the homepage and its Markdown representation. */
 export const appStructure = {
   title: "It's just code",
   subtitle: "And you don't have to write it",

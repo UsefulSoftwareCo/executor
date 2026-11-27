@@ -1,24 +1,3 @@
-/**
- * Registry and publication results as a client reading an earlier wire revision sees them.
- *
- * Revision 0 reads a listing in a publishing scope by its organization's slug, `@acme/notes` for
- * `@acme.executor.community/notes`, as packages were named before scopes, and any other listing by
- * its own name. A registry may publish `@acme/notes` itself, so a name such a client sends is
- * resolved against the names the registry publishes, never rewritten by its form alone. When the
- * registry publishes both, the name could select either: neither is listed to the client, and a
- * request naming it is refused. A listing the client named is answered by the name it sent, which it
- * can read: a release after 2.0.0-beta.15 that states no revision may send a full name and requires
- * the answer to name the same. Names quoted from source files are never rewritten, so readiness a
- * client cannot read is withheld instead.
- *
- * A name selects whichever listing it names when the request arrives, which need not be the one the
- * client was shown: that listing may have been replaced, or its organization renamed and its slug
- * taken by another. So a revision 0 name is resolved only to list a listing, or for a request that
- * also names the commit it was shown, which the registry checks in the same read that returns its
- * source: source, files, and copies into the caller's own organization. A removal names no commit,
- * so app management refuses a removal by a name revision 0 reads for a scoped listing and gives the
- * full name instead; a full name means only itself.
- */
 import { Array as Arr, Effect, Option } from "effect";
 import type { Executor } from "../contracts/executor.ts";
 import {
@@ -31,11 +10,9 @@ import {
   RegistryError,
 } from "../contracts/registry.ts";
 
-/** Package names as revision 0 decodes them: no dot in the scope. */
 const revisionZeroPackageName = /^@[a-z0-9][a-z0-9-]{0,79}\/[a-z0-9][a-z0-9-]{0,62}$/u;
 const publishingSuffix = `.${publishingDomain}`;
 
-/** The name revision 0 reads a listing by, if it can read one. */
 const revisionZeroName = (name: PackageName): Option.Option<PackageName> => {
   const scope = packageScope(name);
   const read = scope.endsWith(publishingSuffix)
@@ -43,15 +20,10 @@ const revisionZeroName = (name: PackageName): Option.Option<PackageName> => {
     : name;
   return revisionZeroPackageName.test(read) ? Option.some(read) : Option.none();
 };
-/**
- * The listing name in a publishing scope that revision 0 reads as `name`: for `@acme/notes`,
- * `@acme.executor.community/notes`. None for any other name, which means only itself.
- */
 export const scopedNameFor = (name: PackageName): Option.Option<PackageName> =>
   revisionZeroPackageName.test(name)
     ? Option.some(`@${packageScope(name)}${publishingSuffix}/${packageLabel(name)}`)
     : Option.none();
-/** Every listing name revision 0 reads as `name`: itself, and its label in its slug's publishing scope. */
 const namesReadAs = (name: PackageName): ReadonlyArray<PackageName> => [
   name,
   ...Option.toArray(scopedNameFor(name)),
@@ -63,11 +35,6 @@ const leftOut = (count: number) =>
     ? Effect.annotateCurrentSpan("registry.listings_unreadable_by_client", count)
     : Effect.void;
 
-/**
- * The registry's answer for each listing name revision 0 reads as `name`, `name` itself first: the
- * listings under that exact name, or none when the registry states it has no such listing, as a
- * remote registry may.
- */
 const answersFor = (registry: Executor["registry"], name: PackageName) =>
   Effect.forEach(
     namesReadAs(name),
@@ -80,16 +47,9 @@ const answersFor = (registry: Executor["registry"], name: PackageName) =>
       ),
     { concurrency: "unbounded" },
   );
-/** The published listings revision 0 reads as `name`, found by their exact names. */
 const publishedAs = (registry: Executor["registry"], name: PackageName) =>
   Effect.map(answersFor(registry, name), (answers) => Arr.getSomes(answers).flat());
 
-/**
- * The listings revision 0's `name` selects, all under one published name. None when no listing
- * reads as it and the registry states it has no listing named `name`, which the client is answered
- * with as this release's clients are. When two published names read as it, the client cannot have
- * told them apart, so the request is refused rather than sent to either.
- */
 const selected = (registry: Executor["registry"], name: PackageName) =>
   Effect.gen(function* () {
     const answers = yield* answersFor(registry, name);
@@ -106,7 +66,6 @@ const selected = (registry: Executor["registry"], name: PackageName) =>
     }
     return Option.some(found);
   });
-/** The listing name revision 0's `name` selects; unchanged when nothing is published under it. */
 const selectedName = (registry: Executor["registry"], name: PackageName) =>
   Effect.map(selected(registry, name), (found) =>
     Option.match(Option.flatMap(found, Arr.head), {
@@ -115,20 +74,12 @@ const selectedName = (registry: Executor["registry"], name: PackageName) =>
     }),
   );
 
-/**
- * The listing name a client reading wire `revision` means by `name`, for a request that names the
- * commit it was shown. Never resolve one for a write that names no commit.
- */
 export const packageNameFromRevision = (
   registry: Executor["registry"],
   revision: number,
   name: PackageName,
 ) => (revision >= 1 ? Effect.succeed(name) : selectedName(registry, name));
 
-/**
- * One listing for a client reading wire `revision`. The client named it, or its owner published it
- * under the organization's slug, so its name reads unless another listing reads the same.
- */
 export const publicationForRevision = (
   registry: Executor["registry"],
   revision: number,
@@ -141,10 +92,6 @@ export const publicationForRevision = (
         onSome: (listing) => selected(registry, listing.name).pipe(Effect.as(listing)),
       });
 
-/**
- * Listings for a client reading wire `revision`. Ones it cannot read, or cannot tell apart from
- * another published listing, are left out and counted.
- */
 export const publicationsForRevision = (
   registry: Executor["registry"],
   revision: number,
@@ -167,7 +114,6 @@ export const publicationsForRevision = (
         Effect.tap((listings) => leftOut(all.length - listings.length)),
       );
 
-/** The whole catalog for revision 0, without the listings it cannot read or tell apart by name. */
 const revisionZeroCatalog = (all: ReadonlyArray<Publication>) =>
   Effect.gen(function* () {
     const named = all.flatMap((publication) => Option.toArray(readable(publication)));
@@ -178,7 +124,6 @@ const revisionZeroCatalog = (all: ReadonlyArray<Publication>) =>
     return listings;
   });
 
-/** Readiness for a client reading wire `revision`, or null when it names a package the client cannot read. */
 export const readinessForRevision = (
   revision: number,
   readiness: PublicationReadiness | null,
@@ -195,7 +140,6 @@ export const readinessForRevision = (
     : null;
 };
 
-/** Registry reads for a client reading wire `revision`. */
 export const registryForRevision = (
   registry: Executor["registry"],
   revision: number,
