@@ -1,6 +1,7 @@
 // MCP Apps, SEP-1865: https://github.com/modelcontextprotocol/ext-apps/blob/main/specification/2026-01-26/apps.mdx
 import { Effect, Option, Schema } from "effect";
 import { McpSchema, type McpServer } from "effect/ai";
+import { HttpServerRequest } from "effect/http";
 import { mcpUiExtension, mcpUiMimeType, mcpUiResourceTool } from "apps/contracts";
 import { resolveLinkedAccounts, ToolName } from "@executor-js/sdk/core";
 import type { McpBackend } from "../contracts/backend.ts";
@@ -231,9 +232,18 @@ const uiTools = (backend: McpBackend<Error>) =>
     ),
   );
 
-const negotiated = Effect.map(McpSchema.McpRequestContext, ({ clientCapabilities }) => {
+// external: Claude Code and Codex render MCP Apps without declaring the extension, so a client can opt in with this header.
+export const mcpAppsHeader = "x-executor-mcp-apps";
+
+const negotiated = Effect.gen(function* () {
+  const { clientCapabilities } = yield* McpSchema.McpRequestContext;
   const ui = clientCapabilities.extensions?.[mcpUiExtension];
-  return isRecord(ui) && Array.isArray(ui.mimeTypes) && ui.mimeTypes.includes(mcpUiMimeType);
+  if (isRecord(ui) && Array.isArray(ui.mimeTypes) && ui.mimeTypes.includes(mcpUiMimeType))
+    return true;
+  const request = yield* Effect.serviceOption(HttpServerRequest.HttpServerRequest);
+  return Option.exists(request, ({ headers }) =>
+    ["1", "true"].includes(headers[mcpAppsHeader]?.trim().toLowerCase() ?? ""),
+  );
 });
 
 const failed = (text: string) =>

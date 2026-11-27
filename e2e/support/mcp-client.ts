@@ -23,6 +23,7 @@ const make = Effect.gen(function* () {
         readonly origin?: string;
         readonly path?: string;
         readonly extensions?: Readonly<Record<string, object>>;
+        readonly headers?: Readonly<Record<string, string>>;
       } = {},
     ) =>
       Effect.gen(function* () {
@@ -148,6 +149,7 @@ const make = Effect.gen(function* () {
         const transport = new StreamableHTTPClientTransport(endpoint, {
           requestInit: {
             headers: {
+              ...options.headers,
               authorization: `Bearer ${reveal(typeof accessToken === "function" ? accessToken() : accessToken)}`,
             },
           },

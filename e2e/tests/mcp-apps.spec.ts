@@ -275,6 +275,18 @@ layer(HostedLive, { excludeTestServices: true })("MCP Apps", (it) => {
           .pipe(Effect.flip);
         expect(String(plainRead)).toContain("-32002");
 
+        const optedIn = yield* mcp.connect(key.key, "mcp-apps-header", {
+          organization,
+          mode: "model",
+          headers: { "X-Executor-MCP-Apps": "1" },
+        });
+        const optedInTools = yield* optedIn.use("List tools with the opt-in header", (client) =>
+          client.listTools(),
+        );
+        expect(optedInTools.tools.map((tool) => tool.name)).toEqual(
+          expect.arrayContaining(["show_board", "move_card"]),
+        );
+
         const host = yield* mcp.connect(key.key, "mcp-apps-host", {
           organization,
           mode: "native",
