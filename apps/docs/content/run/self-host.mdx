@@ -1,207 +1,53 @@
 ---
 title: Self-host with Docker
-description: "Run the whole hosted server in one container, with an embedded database and no separate Postgres, queue or proxy, on your own infrastructure."
+description: "Run Executor in one Docker container with an embedded database, no separate Postgres or queue, and configure health checks and stall detection."
 ---
 
-Self-host is the hosted server on your own infrastructure. One container holds
-the API, the MCP endpoint, authentication, the app runtime and the dashboard,
-over an embedded PGlite database. There is no separate database, worker, queue
-or proxy to run.
+Self-host runs the full Executor server — API, MCP endpoint, authentication, app runtime, dashboard, and an embedded PGlite database — in one Docker container on your own infrastructure (**Self-host** only).
 
-It has the same organizations, invitations and browser sign-in as hosted. It
-does not offer the hosted Google and GitHub sign-in buttons.
+Pull and start `ghcr.io/usefulsoftwareco/executor-selfhost:2.0.0-beta.79` with a persistent `/app/data` volume on `127.0.0.1:4400`, then open `http://localhost:4400` to complete setup privately. No environment variables or separate Postgres, worker, or queue services are needed.
 
-## Configure it
+**Prerequisites:** Docker on Linux AMD64 or ARM64 (or Docker Desktop running Linux containers on macOS/Windows). For remote access beyond localhost, place a TLS reverse proxy in front of `127.0.0.1:4400` and set `BETTER_AUTH_URL` (for a trusted private network without TLS, see [Plain HTTP on a LAN](/docs/run/self-host/deploy#plain-http-on-a-lan)).
 
-No environment variables are needed for local Docker or a Railway service with a
-public domain. On first boot, Executor generates separate session and encryption
-keys and saves them in the data volume. Later boots reuse those files.
-
-These settings override the defaults:
-
-| Variable                             | Required | Purpose                                                                  |
-| ------------------------------------ | -------- | ------------------------------------------------------------------------ |
-| `BETTER_AUTH_URL`                    | no       | Public origin. Defaults to Railway's HTTPS domain, then `http://localhost:4400` (or `PORT`). |
-| `BETTER_AUTH_SECRET`                 | no       | Override the saved session secret. At least 32 characters. Rotating it signs everyone out. |
-| `EXECUTOR_ENCRYPTION_KEY`            | no       | Override the saved credential encryption key. Exactly 64 hexadecimal characters. |
-| `EXECUTOR_ENVIRONMENT`               | no       | Label for this deployment. The default is `self-host`.                   |
-| `EXECUTOR_APP_UI_BASE_URL`           | no       | HTTPS origin that serves app web pages. See below.                       |
-| `EXECUTOR_APPS_ALLOW_PRIVATE_FETCH`  | no       | Let app code reach your private network. See below.                      |
-| `EXECUTOR_TRUSTED_PROXIES`           | no       | Comma-separated addresses of your reverse proxies, so rate limits count each client behind them. List only proxies. See below. |
-| `EXECUTOR_APP_WORKERS` | no | Most app and data Workers kept loaded at once. The default is `64`. See below. |
-| `EXECUTOR_APP_WORKER_IDLE_SECONDS` | no | Unload an app or data Worker not called for this long; `0` keeps idle Workers loaded up to the limit. The default is `300`. See below. |
-| `EXECUTOR_PRODUCT_NAME`              | no       | Name the dashboard, sign-in, MCP consent, OAuth client and MCP server present instead of Executor. See below. |
-| `EXECUTOR_PRODUCT_LOGO_URL`          | no       | Square logo URL, absolute or a path on this origin, shown with that name and as the favicon. |
-| `EXECUTOR_MCP_CLIENTS` | no | Most MCP clients the server keeps state for at once; each API key or OAuth grant in use is one. The default is `512`. See [Connect an agent](#connect-an-agent). |
-| `EXECUTOR_MCP_CLIENTS_PER_USER` | no | Most of those one member may hold. The default is `256`. |
-| `EXECUTOR_HOST_STALL_SECONDS` | no | Busy seconds of the main thread with no answer before the server counts as stalled, from `0`, which turns the check off, to `3600`. The default is `60`. See [When the server stops answering](#when-the-server-stops-answering). |
-| `EXECUTOR_HOST_STALL_RESTART` | no | `true` restarts a stalled server instead of only logging it. Off by default. See [When the server stops answering](#when-the-server-stops-answering). |
-| `EXECUTOR_OAUTH_CLIENT_METADATA_URL` | no       | Identify Executor to OAuth services by a client metadata document instead of registering a client. Off by default. See below. |
-| `EXECUTOR_CATALOG_URL`               | no       | `index.json` of the official app feed that onboarding and **Add app** list. The default is `https://catalog.executor.sh/index.json`; `off` lists only the built-in Executor app, for an instance without outbound internet access. |
-| `EXECUTOR_REGISTRY_URL`              | no       | Origin of the public app registry. The default is `https://api.executor.sh`. |
-| `EXECUTOR_TOOL_LISTING_FRESH_SECONDS` | no     | Reuse an app's evaluated tool list this long before refreshing it in the background. The default is `30`. |
-| `EXECUTOR_TOOL_LISTING_RENEW_SECONDS` | no     | Renew the tool lists search serves in the background once they are this old. The default is `86400`. |
-| `EXECUTOR_TOOL_LISTING_MAX_AGE_SECONDS` | no  | Never serve an evaluated tool list older than this; `0` evaluates every list. The default is `604800`. |
-| `EXECUTOR_TOOL_LISTING_LOAD_SECONDS` | no     | Stop evaluating an app's tool list after this long when no request is waiting for it; capped at the maximum age. The default is `45`. |
-| `EXECUTOR_EVALUATION_MEMORY_MB`      | no       | Memory for kept tool lists and app declarations. The default is `256`.  |
-| `EXECUTOR_NPM_REGISTRY`              | no       | npm registry that app builds install packages from. The default is `https://registry.npmjs.org`. |
-| `EXECUTOR_NO_UPDATE_CHECK`           | no       | Set to `1` to turn off the daily check for a newer release. See [Updates](#updates). |
-| `DO_NOT_TRACK` or `EXECUTOR_DISABLE_ANALYTICS` | no | Set to `1` to turn off anonymous usage analytics and feedback. See [usage analytics](/run/usage-analytics). |
-| `SSO_DISCOVERY_URL`                  | no       | OIDC discovery document. Leave it empty to keep SSO off.                 |
-| `SSO_CLIENT_ID`, `SSO_CLIENT_SECRET` | no       | Credentials for that identity provider.                                  |
-| `SSO_ALLOWED_DOMAINS`                | no       | Comma-separated email domains allowed to join through SSO.               |
-
-App code runs in an isolate whose `fetch` reaches only public addresses, the same
-as Executor Cloud. Requests to your own `BETTER_AUTH_URL` origin go straight to
-the server and do not use the network. Thus the bundled Executor app works when
-that origin resolves to a private address, such as a Tailscale name. To let app
-code reach other private addresses, set `EXECUTOR_APPS_ALLOW_PRIVATE_FETCH=true`.
-The default is `false`. Every app in the instance shares that network position,
-so grant it deliberately. App builds follow the same setting for every download
-off the registry's origin: a dependency declared by tarball URL, and a tarball or
-redirect the registry's metadata sends elsewhere. Downloads from the registry's
-own origin, including a private `EXECUTOR_NPM_REGISTRY`, work either way.
-
-Each app runs in its own Worker for each set of accounts it is called with, and
-each loaded Worker holds its own memory. The server keeps at most
-`EXECUTOR_APP_WORKERS` of them loaded. When more are needed, it unloads the
-ones idle longest; their next call loads them again, which takes longer than a
-call to a loaded Worker. A Worker that is still handling a call is never
-unloaded. Raise the limit if many apps are used at the same time and the
-server has memory to spare; lower it on a small machine.
-
-A Worker that has not been called for `EXECUTOR_APP_WORKER_IDLE_SECONDS`
-(five minutes by default) is unloaded even below the limit, so an app called
-once does not keep its memory. Raise it if apps are called every few minutes
-and the slower first call matters more than memory. Set it to `0` to keep idle
-Workers loaded until the limit unloads them.
-
-Apps with a database also run their calls in a data Worker, for the accounts
-they were last called with. Data Workers count against `EXECUTOR_APP_WORKERS`
-too, so a call of such an app can keep two Workers loaded.
-
-`BETTER_AUTH_URL` must match the scheme, host and port you actually use. If it
-does not, browser sign-in is rejected as an invalid origin. Railway detection uses `RAILWAY_PUBLIC_DOMAIN`. Origins are never inferred
-from a request header. Set `BETTER_AUTH_URL` when you use a custom domain.
-
-On a home or office network without TLS, set `BETTER_AUTH_URL` to the plain HTTP
-address you open, such as `http://192.168.1.20:4400`. Browsers give such a page no
-secure context, and the dashboard does not need one. App web pages still need an
-HTTPS origin; see [Serving app web pages](#serving-app-web-pages).
-
-Keep `<BETTER_AUTH_URL>/api/oauth/callback` reachable; connecting a provider
-account by OAuth uses it. The SSO callback is
-`<BETTER_AUTH_URL>/api/auth/callback/sso`.
-
-Executor registers its own OAuth client with each service that offers dynamic
-registration. Services that accept an OAuth client ID metadata document, such as
-many MCP servers, can identify Executor by a public document instead. Set
-`EXECUTOR_OAUTH_CLIENT_METADATA_URL` to `<BETTER_AUTH_URL>/oauth/client-metadata.json`
-and Executor serves that document. It lists a callback on the document's own origin,
-since some services accept no other: `EXECUTOR_OAUTH_CALLBACK_URL` when it is on that
-origin, otherwise `/api/oauth/callback` there. The service fetches it
-from the internet, so turn this on only when that URL is reachable publicly over
-HTTPS. Startup fails for any other address on your own origin. Clients your users
-already registered or entered stay in use when you turn this on.
-
-The bundled telemetry collector records traces by default. You can export to your own collector instead. See
-[Tracing](/run/tracing).
-
-### Your own name and logo
-
-`EXECUTOR_PRODUCT_NAME` replaces Executor in page titles, sign-in, setup guides, MCP consent,
-OAuth resource and client metadata, and the MCP server name clients list. Setup commands name
-the MCP server after it in lowercase, such as `acme-tools` for `Acme Tools`.
-`EXECUTOR_PRODUCT_LOGO_URL` replaces the logo and favicon; serve a square image of at least 64
-pixels. With another name, setup guides leave out Executor's own plugins and screenshots, and
-the dashboard leaves out Executor's feedback and GitHub links. The built-in app keeps the name
-Executor and shows your logo.
+**You'll know it worked when** `docker logs executor-v2` prints `Executor is ready at http://localhost:4400`, `curl -sf http://127.0.0.1:4400/health` returns `{"status":"ok"}`, and `http://localhost:4400` shows **Set up Executor**.
 
 ## Run it
 
 <ReleaseCommand product="docker" />
 
-Open `http://localhost:4400` and complete the first-run setup.
-The volume retains your data and keys across container restarts.
+Open `http://localhost:4400` and complete first-run setup. The named volume `executor-v2-data` retains your live product database (`/app/data/product`), app data, and generated keys across restarts.
 
 <ReleaseCommand product="docker-channel" />
 
-The container publishes port `4400` on loopback only, as
-`127.0.0.1:4400`. Put your own TLS terminator in front of it and forward to that
-port, and add `-e BETTER_AUTH_URL=<origin>` to the run command with the exact
-origin people will open. [Private access with Tailscale](#private-access-with-tailscale)
-shows one way.
+The run command binds port `4400` to loopback (`127.0.0.1:4400`). Keep the instance reachable only by you until **Set up Executor** finishes. Before opening public access, configure a TLS reverse proxy forwarding to `127.0.0.1:4400` and set `BETTER_AUTH_URL` to the exact public origin.
 
-The server opens its embedded database as soon as it starts. Until that
-finishes, every request, including the health check at `/health`, gets an
-immediate `503` with `Executor is starting`. The first boot creates the database, which can take a
-minute or more on slower hardware such as a NAS. Watch its progress with
-`docker logs -f executor-v2`: the log says `Executor is still starting` every
-15 seconds, then `Executor is ready at <BETTER_AUTH_URL>` once it serves
-requests. Docker reports the container healthy after that line.
+On startup, the server opens its embedded database. After the HTTP listener opens, `/health` returns `503` with `Executor is starting` until the product first answers (wait for HTTP `200` and the ready log; if startup fails after the product answers, requests can return `500`). First boot initializes the database and can take a minute or more on slow disks such as a NAS. Watch progress with `docker logs -f executor-v2`: it logs `Executor is still starting` every 15 seconds, then `Executor is ready at <BETTER_AUTH_URL>`.
 
-Sign-in and the other auth routes are rate-limited per client address. Behind a
-reverse proxy every request comes from the proxy, so all clients share its
-limits. Set `EXECUTOR_TRUSTED_PROXIES` to the addresses your proxies connect
-from; the Docker image and the Compose build read it. A request from a listed
-address takes its client from `X-Forwarded-For`, read from the right past every
-listed address. Each proxy must append the address it received the request from,
-as Caddy, Traefik and nginx's `$proxy_add_x_forwarded_for` do. When every listed
-address is such a proxy and no client connects from one, a client can't pick its
-own address by sending that header. Requests from any other address, or with the
-setting empty, use the connection's address.
-
-List each proxy's exact address, or a range that holds only your proxies. Anything
-that connects from a listed address can choose the address it is limited and
-recorded under, so do not list a Docker subnet other containers share, and never
-list `0.0.0.0/0` or `::/0`.
-
-- A proxy on the host connects from the gateway of the container's Docker
-  network, often `172.17.0.1` for `docker run` and different under Compose.
-  `docker inspect` on the container shows it as each network's `Gateway`. The
-  loopback-only port keeps remote clients off, but every process on the host
-  arrives from that same gateway, so listing it trusts all of them.
-- A proxy container connects from its own address. Give it a fixed address and
-  list that.
-- For Cloudflare Tunnel, list the address `cloudflared` connects from, by the same
-  rules: Cloudflare appends each visitor's address to `X-Forwarded-For` and
-  `cloudflared` passes it on.
-
-Stop it with:
+Stop the container with:
 
 ```bash
 docker stop executor-v2
 ```
 
-The first person to finish setup becomes the owner, and one organization is
-created. After that, people join through invitations, or through SSO when you
-have configured it.
-
 ## Health checks
 
-`/health` answers `200` once the server is ready. The thread that answers it also runs the rest of
-the product and commits its storage, syncing each commit to disk before it continues, so on a slow
-disk every response, `/health` included, can wait seconds behind one commit. With 30 apps running
-schedules on a desktop disk, `/health` took up to 16.5 seconds (99th percentile 12.9 seconds); on a
-disk limited to 5 writes a second, up to 34 seconds.
+`/health` returns HTTP `200` with `{"status":"ok"}` once the server is ready. Because product requests, `/health`, and storage commits share one workerd thread, a slow disk can delay `/health` behind a commit. As reference measurements (not guarantees), with 30 apps running schedules `/health` took up to 16.5 seconds on a desktop disk (99th percentile 12.9 seconds) and up to 34 seconds on a disk capped at 5 writes per second.
 
-The image's own check allows 30 seconds a probe and marks the container unhealthy after three
-failures in a row: a server that stops answering is marked unhealthy within three minutes, and one
-that never answers from its first boot after about five. 30 seconds covers every stall measured on
-the desktop disk but not the slowest answer on the throttled one, so on a disk that slow a check can
-still fail now and then; only three failures in a row count. Give your own probes the same room:
+The Docker image includes a built-in `HEALTHCHECK` (`--interval=30s --timeout=30s --start-period=120s --retries=3`) that runs `executor-host health` (which itself times out at 29 seconds). Once healthy, a server that stops answering becomes unhealthy after three consecutive failed probes (within about three minutes), and a server that never starts becomes unhealthy after about five minutes. Give external probes the same headroom:
 
-- **Kubernetes.** A probe's `timeoutSeconds` defaults to 1 second, which ordinary commit stalls on a
-  slow disk exceed. When a liveness probe fails `failureThreshold` times in a row, the kubelet
-  restarts the container; one failed probe does not. Give a readiness probe the liveness probe's
-  timeout.
+- **Kubernetes:** Default `timeoutSeconds` is `1`, which normal disk commits on slow storage exceed. Give readiness and liveness probes a 30-second timeout:
 
   ```yaml
   startupProbe:
     httpGet: { path: /health, port: 4400 }
     periodSeconds: 10
     timeoutSeconds: 10
-    failureThreshold: 18 # about three minutes, whether probes fail at once or time out
+    failureThreshold: 18 # ~3 minutes; raise to 36 (~6 minutes) on very slow disks
+  readinessProbe:
+    httpGet: { path: /health, port: 4400 }
+    periodSeconds: 30
+    timeoutSeconds: 30
+    failureThreshold: 3
   livenessProbe:
     httpGet: { path: /health, port: 4400 }
     periodSeconds: 30
@@ -209,253 +55,70 @@ still fail now and then; only three failures in a row count. Give your own probe
     failureThreshold: 3
   ```
 
-  Until the server is ready, `/health` answers `503` at once, and one success ends the startup
-  probe, so it can wait less than the liveness probe: its 18 attempts take about three minutes
-  either way. With these settings a server that stops answering is restarted 90 to 120 seconds
-  later, or 60 to 90 seconds once its connections are refused, plus the pod's termination grace
-  period.
-
-  On a very slow disk the first start, which creates the database, can outlast that: with the disk
-  limited to 5 writes a second it took 204 seconds. On storage that slow, raise the startup probe's
-  `failureThreshold`, for example to 36 for about six minutes.
-
-- **Railway** checks `/health` only while a deployment starts, to decide when to send it traffic,
-  and does not probe a running service. Set the path to `/health` and the timeout to 120 seconds.
-- **Docker Compose or another supervisor** with its own check: allow 30 seconds a probe and three
-  failures, for example `timeout: 30s`, `interval: 30s` and `retries: 3`.
+  In reference measurements on a disk throttled to 5 writes per second, first-boot database creation took 204 seconds, so raise `startupProbe.failureThreshold` (for example to `36`) on storage that slow.
+- **Railway:** Probes `/health` only during startup. Set the healthcheck path to `/health` and keep the startup timeout at `300` seconds on slow storage.
+- **Docker Compose or other supervisors:** Allow `timeout: 30s`, `interval: 30s`, and `retries: 3`.
 
 ## When the server stops answering
 
-Everything the server does runs on one thread, so app code that never returns, or any other fault
-that holds that thread, stops the whole instance from answering. The image's health check only
-marks such a container unhealthy; Docker does not restart an unhealthy container.
+Product requests and storage commits share one workerd thread (Go's front listener and the telemetry supervisor run separately), so app code that never returns or another fault blocking that workerd thread can prevent the product from responding. Docker marks an unhealthy container but does not restart it on its own.
 
-Once the server is ready, the image's host checks every second whether the server answered and how
-its main thread spent that second. It decides the server has stalled when, since its last answer,
-the thread was busy in `EXECUTOR_HOST_STALL_SECONDS` of those seconds (60 by default), or sleeping or
-stopped in five times as many. A busy second is one in which the thread used at least half a
-CPU-second, or proportionally less when the container may use less than one CPU: a quarter of a
-CPU-second at half a CPU. Seconds the thread spends waiting on disk count toward neither, so a slow
-disk does not trip it; nor does a paused container or a sleeping host, since the check counts only
-the seconds it was itself running. `0` turns the check off; the most it accepts is `3600`.
+Once the server is ready, `executor-host` checks every second whether the server answered and how its workerd thread spent that second. It considers the server stalled when, since the last answer, the thread was busy for `EXECUTOR_HOST_STALL_SECONDS` seconds (`60` by default; `0` disables the check; max `3600`), or sleeping or stopped for five times as many. A busy second uses at least half a CPU-second (scaled down proportionally if the container has less than one CPU via cgroup v2 quota). Uninterruptible disk I/O wait, paused containers, and sleeping hosts are excluded, so slow disks do not trigger it.
 
-By default the check only logs. Its line starts with `Executor stopped responding:` and gives the
-rule, the counts, the CPU the thread used, the thread states it saw and what it would have done; if
-the server answers again, a line starting with `Executor answered again` follows. Set
-`EXECUTOR_HOST_STALL_RESTART=true` to have it act instead: the host stops the server and exits with
-an error, and the container's restart policy starts it again, which took a few seconds in our tests.
-Restart is off by default. It needs a restart policy, or the container stays stopped, and a restart
-ends every open session, call in progress and paused approval; stored data is kept.
+By default, the watchdog only logs `Executor stopped responding:` (followed by `Executor answered again` if it recovers). Set `EXECUTOR_HOST_STALL_RESTART=true` to make `executor-host` stop the server and exit with an error so Docker's restart policy restarts it. Because the watchdog cannot distinguish long legitimate work from a hung thread, observe logs in default log-only mode first before enabling restart. Restarting drops active MCP sessions, in-flight calls, and paused MCP approvals; the `/app/data` volume keeps stored data.
 
-The check cannot tell a long stretch of real work from a server that will never answer: in both, the
-thread stays busy without answering. So before turning restart on, run with the default, which only
-logs, through a period of normal use and watch for the `Executor stopped responding:` line. If
-`Executor answered again` follows it, the server answered after the reported stall. Long-running
-work can cause this too; restarting may interrupt it again if it is retried. If normal work needs
-longer, raise `EXECUTOR_HOST_STALL_SECONDS` or leave restart off. If no recovery line appears while
-the check is still running, it has not observed another answer. If the server remains unresponsive,
-restart it to try to restore service. In two earlier loaded test runs, the check reached the default
-limit; neither retained log recorded an answer again before the test ended.
+Always run with `--restart unless-stopped` or `--restart always` rather than `--restart on-failure`: the server can exit cleanly if something inside the container sends its runtime a stop signal, and `on-failure` would leave it stopped.
 
-Use `--restart unless-stopped` or `always` rather than `--restart on-failure`. `on-failure` restarts
-only a container that exits with an error, and the server can exit cleanly without Docker asking it
-to stop, for example when something else in the container sends its runtime a stop signal; the
-container then stays stopped.
+## Configure it
+
+Set `BETTER_AUTH_URL`, reverse-proxy trust (`EXECUTOR_TRUSTED_PROXIES`), Worker and MCP client limits, private fetch, and runtime environment variables to match your infrastructure. See [Deploy, proxy, and tune self-host](/docs/run/self-host/deploy).
 
 ## Deploy on Railway
 
-<ReleaseCommand product="docker-image" />
-
-1. Attach a new persistent volume at `/app/data`.
-2. Generate a public domain in the service's networking settings. Route it to port `8080`, which Railway supplies through `PORT`. If you override `PORT`, use that value.
-3. Set the Railway healthcheck path to `/health`, with a startup timeout of 120 seconds.
-4. Deploy (or redeploy if the service already started). This loads the new public domain into the server. Open that domain to create the first administrator.
-
-No database service or secret variables are needed. Executor reads
-`RAILWAY_PUBLIC_DOMAIN` and `PORT`. The container prepares the root-owned volume,
-then runs the server as the unprivileged `executor` user. You do not need
-`RAILWAY_RUN_UID=0` or a custom start command. Keep one replica per volume.
-
-For a custom domain, set `BETTER_AUTH_URL` to that exact HTTPS origin. App web
-pages need the additional wildcard domain described below; the dashboard, API,
-and MCP endpoint use the service domain.
+Deploy the published image on Railway with a `/app/data` volume, matching `PORT`, and `/health` check, completing first-run setup before opening the origin to untrusted users. See [Deploy, proxy, and tune self-host](/docs/run/self-host/deploy#deploy-on-railway).
 
 ## Private access with Tailscale
 
-Tailscale Serve gives the server a private HTTPS address on your tailnet, with
-no public DNS, port forwarding or certificate to manage. Install Tailscale on
-the host that runs Docker, keep the container on loopback, and point Serve at
-it. This example uses HTTPS port `4443`, for a host where another service
-already uses `443`:
-
-```bash
-docker run -d --name executor-v2 --init --restart unless-stopped \
-  -p 127.0.0.1:4400:4400 -v executor-v2-data:/app/data \
-  -e BETTER_AUTH_URL=https://<machine>.<tailnet>.ts.net:4443 \
-  ghcr.io/usefulsoftwareco/executor-selfhost:beta
-tailscale serve --bg --https=4443 http://127.0.0.1:4400
-```
-
-`tailscale serve status` shows the address. `BETTER_AUTH_URL` must match it
-exactly, including a port other than `443`; without the port, browser sign-in
-is rejected as an invalid origin. Changing Serve needs administrator rights on
-the host; on Synology, run it over SSH with `sudo`.
-
-The MCP endpoint is then `https://<machine>.<tailnet>.ts.net:4443/mcp`. Every
-device that opens the dashboard or runs an MCP client must be on the tailnet.
-For Codex:
-
-```bash
-codex mcp add executor --url 'https://<machine>.<tailnet>.ts.net:4443/mcp'
-codex mcp login executor
-```
-
-What works with a tailnet-only address:
-
-| Feature | Tailnet only |
-| --- | --- |
-| Dashboard, MCP endpoint, and client sign-in | Yes |
-| Connecting a provider account by OAuth | Yes. The provider redirects your browser, which is on the tailnet, to `/api/oauth/callback`. |
-| `EXECUTOR_OAUTH_CLIENT_METADATA_URL` | No. The service fetches the document from the internet. |
-| App webhooks | No. The service delivers them to your origin, so it must reach it. |
-| App web pages | No. They need a wildcard domain and certificate, and Tailscale certificates cover only the machine's own name. See [Serving app web pages](#serving-app-web-pages). |
-
-Tailscale Funnel can publish the address on the internet for the features
-that need it. Funnel accepts only ports `443`, `8443` and `10000`.
-
-## Storage
-
-Everything that must survive a restart lives in the named volume `executor-v2-data`,
-mounted at `/app/data`. This includes the database, app source and builds, app
-data and generated keys (`auth-secret.key` and `encryption.key`).
-The key files are readable only by the server user. Back up the whole volume.
-
-The telemetry collector stores telemetry separately at `/app/motel-data` (`EXECUTOR_MOTEL_DATA_DIR`;
-the name is historical, from Motel, the collector earlier images ran). Replacing the container
-discards that telemetry by default. Mount a separate volume there if you need
-to retain it. The collector keeps telemetry for seven days and at most 1 GiB, evicting the oldest
-first. A busy server reaches 1 GiB first, so it may keep only the last hours of traces. When
-exports arrive faster than it can store them, it refuses the excess rather than holding it in
-memory, and it counts every export it does not store; `executor-host telemetry /api/ingest`
-reports the counts. Images that ran Motel left its store, up to about 1 GiB, in a `motel` folder
-there; the collector neither reads nor removes it. Without a volume at `/app/motel-data` it went with
-the old container; with one, delete it by hand with
-`docker exec executor-v2 rm -rf /app/motel-data/motel`.
-
-If you supply keys through environment variables, keep those values in your
-secret manager as well; Executor does not save those overrides to disk. Keep
-the same key source across upgrades. If a saved key is missing or invalid for
-an existing database, startup fails instead of creating a replacement. Restore
-the original key. Changing the encryption key makes existing credentials unreadable.
-
-### Updates
-
-The server checks once a day whether a newer Executor release exists, and shows
-owners and admins an **Update available** note at the bottom of the sidebar, with
-how to update. Members see nothing. It sends one `GET` of
-`/-/package/executor/dist-tags` to the npm registry the server already installs
-app packages from: `EXECUTOR_NPM_REGISTRY`, by default `https://registry.npmjs.org`.
-That request has no query string, cookie or header of its own, and nothing that
-identifies this instance, its version, its organizations or its users. The app
-runtime that installs app packages sends it, in the image and on the native
-server built from source alike, so it reaches the registry exactly as installs
-do: a mirror that installs can use, on a private network or over plain HTTP,
-works for the check too, and both connect directly, without reading `HTTP_PROXY`
-or `HTTPS_PROXY`. It follows no redirect and gives up after 5 seconds. Each attempt is saved with the instance's
-data before the request goes out, so it asks at most once a day: a failed or
-unanswered request, or a restart, doesn't ask again within the day. If the
-attempt can't be saved, the check is off: the server doesn't ask, and logs one
-warning that says where it tried to save it, then one line once saving works
-again. With `EXECUTOR_NPM_REGISTRY` set it asks only your mirror, never the
-public registry. Members' browsers never contact the registry; they ask only
-this server. A beta image compares against betas and newer stable releases; a
-stable image compares against stable releases only. The server keeps the last
-answer it got, with the time of its last check, with the instance's data. When
-the registry can't be reached, it keeps showing the newer release from that
-answer, since that release still exists, and logs one debug line; startup and
-requests never wait for it. Set `EXECUTOR_NO_UPDATE_CHECK=1`
-to turn the check off, as for the CLI: the server then makes no request at all.
-
-Back up by snapshotting that volume. Do not remove it when you update the image.
-Before updating, stop the container and back up the volume. Pull the new image,
-remove only the stopped container with `docker rm executor-v2`, and repeat the
-run command with the same volume and secrets.
-
-## Build from source
-
-<ReleaseCommand product="source" />
-
-Compose also works without environment variables. This setup uses a separate named
-volume, `pglite-data`; do not confuse it with the published-image example above.
+Expose the loopback container over HTTPS on your tailnet with `tailscale serve` (complete setup privately before enabling Funnel). See [Deploy, proxy, and tune self-host](/docs/run/self-host/deploy#private-access-with-tailscale).
 
 ## Serving app web pages
 
-Some apps ship a web page. Set `EXECUTOR_APP_UI_BASE_URL` to an HTTPS origin
-with no trailing slash, and point a wildcard DNS record and certificate at your
-proxy:
-
-```bash
-EXECUTOR_APP_UI_BASE_URL=https://apps.example.net
-```
-
-Each page is served at `<app-slug>--<organization-slug>.<base>`, forwarded to
-container port 4400. That whole first label must fit in 63 characters, so keep
-app and organization slugs short. On localhost the origin is derived for you and
-you do not need to set this.
-
-## Running without Docker
-
-The source checkout includes a native development server that runs with Bun.
-The published Docker image uses workerd. Native development data persists under
-`.local/hosted`; set `EXECUTOR_DATA_DIR` to choose a different parent directory.
-`HOST` defaults to `0.0.0.0` and `PORT` to `4400`.
-
-Self-host needs no `DATABASE_URL`, no separate Postgres, and no migration
-command.
+Set `EXECUTOR_APP_UI_BASE_URL` with wildcard DNS and TLS to serve apps that ship a web UI. See [Deploy, proxy, and tune self-host](/docs/run/self-host/deploy#serving-app-web-pages).
 
 ## Connect an agent
 
-The MCP endpoint is `<your origin>/mcp`. Sign-in happens in the browser, the
-same way as hosted. See [Add an MCP client](/mcp-clients).
+Point MCP clients at `<your origin>/mcp` and tune `EXECUTOR_MCP_CLIENTS` and `EXECUTOR_MCP_CLIENTS_PER_USER` if many agents connect concurrently. See [Add an MCP client](/docs/mcp-clients) and [Deploy, proxy, and tune self-host](/docs/run/self-host/deploy#private-network-fetch-worker-and-mcp-client-limits).
 
-The server keeps each MCP client's state in memory, one client for each API key
-or OAuth grant in use. A connected client holds about 200 KB, so the default
-of 512 clients takes about 120 MB. It keeps at most `EXECUTOR_MCP_CLIENTS` of
-them. When a new client would pass that, the server forgets the one used least
-recently. The forgotten client's next request is answered `404` (session not
-found), and the client must initialize a new session, as after a server
-restart. Some clients do not do that on their own and keep getting `404`, so
-their tool calls fail until you reconnect them, for example by restarting the
-agent or reconnecting its MCP server. A member who already holds
-`EXECUTOR_MCP_CLIENTS_PER_USER` clients loses their own least recently used one instead, so one member cannot
-push everyone else's out. A client with a request in flight or a program
-waiting for approval is never forgotten. When no client can be, a new one gets
-`503` with `Retry-After: 1` until one finishes. A client unused for 30 minutes
-is forgotten anyway. Raise the limit with care: with about 800 clients kept,
-tool calls took several times as long on a 16-core machine.
+## Storage
+
+Persistent data and generated keys live in `/app/data`, while bundled telemetry lives separately in `/app/motel-data`. See [Storage, backups, and updates](/docs/run/self-host/storage-and-updates).
+
+### Updates
+
+Owners and admins see an **Update available** notice in the sidebar when a newer release ships; back up `/app/data` before recreating the container. See [Storage, backups, and updates](/docs/run/self-host/storage-and-updates#updates).
 
 ## Move from a local Executor
 
-A self-hosted server starts empty. Nothing is copied from the local Executor
-on your computer or from Executor 1, and the two keep running separately.
+A new self-host container starts empty; re-install apps, reconnect accounts, and switch MCP clients over. See [Storage, backups, and updates](/docs/run/self-host/storage-and-updates#move-from-a-local-executor).
 
-1. **Add your apps again.** Install them from **Add app**. To deploy your own,
-   sign in with `executor login --host <your origin>`, then pass the same
-   `--host` to the other `executor apps` commands.
-2. **Connect your accounts again.** Credentials are encrypted with each
-   server's own key and do not transfer. Connect each account from its app's
-   page.
-3. **Back up the new server.** Its apps, accounts, credentials and app data all
-   live in the data volume, together with the keys that decrypt them. Back up
-   the whole volume as described in [Storage](#storage).
-4. **Replace each client's old entry.** Remove the local or Executor 1 entry
-   first; one that starts `executor mcp` belongs to Executor 1, which served
-   MCP over stdio. For Codex, run `codex mcp remove executor`, then add your
-   endpoint as in [Connect an agent](#connect-an-agent). For Claude Code, run
-   `claude mcp remove executor --scope user`. The [Executor 1
-   commands](/run/cli#coming-from-executor-1) map to their replacements.
-5. **Start a new client session.** Most clients load MCP servers only when a
-   session starts.
-6. **Check it works.** Ask the agent to [search the tools](/mcp-clients#check-that-it-worked),
-   then to call one read-only tool from an app you added, such as a list or
-   search tool.
+## Running without Docker
+
+Run the native Bun development server from a source checkout without Docker or Postgres. See [Deploy, proxy, and tune self-host](/docs/run/self-host/deploy#running-without-docker).
+
+## Build from source
+
+Build and run the self-host image from the public repository with Docker Compose. See [Deploy, proxy, and tune self-host](/docs/run/self-host/deploy#build-from-source).
+
+## Limits
+
+- The container runs one embedded PGlite database on a single volume — keep one replica per `/app/data` volume.
+- First boot on slow storage can exceed 60 seconds; allow at least 120 seconds (300 seconds on slow storage) for startup probes.
+
+## Related
+
+- [Deploy, proxy, and tune self-host](/docs/run/self-host/deploy)
+- [Sign-in and OIDC SSO](/docs/run/self-host/sign-in-and-sso)
+- [Operator OAuth clients](/docs/run/self-host/oauth-clients)
+- [Storage, backups, and updates](/docs/run/self-host/storage-and-updates)
+- [Tracing](/docs/run/tracing)
+- [Usage analytics](/docs/run/usage-analytics)

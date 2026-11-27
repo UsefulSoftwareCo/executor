@@ -159,9 +159,10 @@ createRoot(document.getElementById("root")!).render(<App />);
 </CodeGroup>
 
 Import server operations as **types only** (`import type`). Deploy over MCP
-([Author an app](/author-an-app#deploying)), or from a shell. The CLI uses local
-Executor by default. For Cloud or self-host, [sign in](/run/cli) with **All
-apps** and check the host and organization with `executor whoami`.
+([Build an app](/docs/build#deploying)), or from a shell. The CLI uses local
+Executor by default. For Cloud or self-host, run `executor apps login` for this
+target ([Use Executor from a shell](/docs/run/cli/from-a-shell#cloud-and-self-host))
+and check with `executor apps list` before creating the app.
 
 Run `executor apps framework`, copy `version` into `dependencies.apps`, save the
 four files under `./status-board`, then create and deploy in order (passing the
@@ -287,7 +288,7 @@ export function PinButton() {
 Use the bottom-left account button in Executor desktop to switch or add Cloud,
 self-hosted or local accounts (on the welcome screen, **Customize** → **Sign in
 to this server**). Self-hosted servers need
-[serving app web pages](/run/self-host#serving-app-web-pages)
+[serving app web pages](/docs/run/self-host#serving-app-web-pages)
 (`EXECUTOR_APP_UI_BASE_URL` outside localhost, matching the dashboard protocol).
 
 From a Mac or Windows browser (HTTPS or localhost), click **Install as app** →
