@@ -90,7 +90,6 @@ export const dispatchWebhook = <
                       ...(yield* Schema.decodeUnknownEffect(ManualWebhookSetup)(hook.setup)),
                       stateSchema: yield* describe(hook.state),
                     };
-              // Requirement names are unique across scopes, so the name alone names the source.
               return yield* Schema.decodeUnknownEffect(HostedWebhook)({
                 name,
                 account: source.name,
@@ -118,7 +117,6 @@ export const dispatchWebhook = <
         value.id === command.sourceAccount,
     );
     if (account === undefined) return yield* new HostInputInvalid();
-    // SAFETY: the same context without `user`, which an app-account hook's declared context lacks.
     const hookContext = source.scope === "app" ? (withoutUser(context) as Context) : context;
     const config = yield* safe(
       () => Schema.decodeUnknownEffect(hook.config)(command.config),
@@ -136,8 +134,6 @@ export const dispatchWebhook = <
       callbackUrl: command.callbackUrl,
       secret: command.secret,
     };
-    // SAFETY: each erased callback's schema is decoded here before invocation. The authoring boundary
-    // preserves its context/input relationship, which a heterogeneous catalog cannot express.
     const invoke = (
       callback: (context: Context, input: never) => Effect.Effect<unknown, unknown>,
       value: unknown,
@@ -202,7 +198,6 @@ export const dispatchWebhook = <
     const chunks: Uint8Array[] = [];
     let size = 0;
     const stream = response.body;
-    // The body is the app's: a stream it returns runs its own code as it is read.
     if (stream !== null)
       // oxlint-disable-next-line executor/authored-code-through-adapter -- read inside appCode
       yield* Stream.fromReadableStream({

@@ -29,7 +29,6 @@ const isObject = (value: unknown): value is JsonObject =>
 /** One JSON Pointer reference token. */
 export const pointerToken = (key: string) => key.replaceAll("~", "~0").replaceAll("/", "~1");
 
-// Never echo values from the definition: a failing path and the expected shape locate the problem.
 const issueFormat = SchemaIssue.makeFormatterStandardSchemaV1({
   leafHook: (issue) =>
     SchemaIssue.hasInput(issue) ? "Invalid value" : SchemaIssue.defaultLeafHook(issue),
@@ -188,9 +187,7 @@ const localPath = (ref: string): readonly string[] | undefined => {
   let pointer = ref.slice(1);
   try {
     pointer = decodeURIComponent(pointer);
-  } catch {
-    // An invalid percent-encoding is read literally.
-  }
+  } catch {}
   if (pointer === "") return [];
   return pointer.startsWith("/")
     ? pointer.slice(1).split("/").map(JsonPointer.unescapeToken)
@@ -240,8 +237,6 @@ function dereference(scope: JsonObject) {
                 : visit(value, false);
     return result;
   };
-  // A Responses Object lists its fixed `default` field before status codes, as the importer
-  // always stored it.
   const defaultFirst = (responses: Schema.Json): Schema.Json => {
     if (!isObject(responses) || !Object.hasOwn(responses, "default")) return responses;
     const { default: fallback, ...statuses } = responses;
@@ -342,8 +337,6 @@ function upgradeOwned(document: JsonObject): JsonObject {
   try {
     upgraded = upgradeFromTwoToThree(document);
   } catch (error) {
-    // Scalar reads the definition without checking it, so a malformed part the check above does
-    // not cover fails inside the upgrader, which does not say where.
     if (!(error instanceof TypeError)) throw error;
     return fail(
       "invalid_document",
@@ -363,7 +356,6 @@ const supportedVersion = /^3\.[12]\.\d+$/;
  * import boundary.
  */
 export async function openApiDocument(input: JsonObject) {
-  // The caller hands over the document; each original entry is released as it is upgraded.
   const root = upgradeOwned(record(input));
   // oxlint-disable-next-line executor/authored-code-through-adapter -- scheduler yield
   await yieldToRuntime();
@@ -376,8 +368,6 @@ export async function openApiDocument(input: JsonObject) {
   const components = spec.components?.schemas ?? {};
   const convert = JsonSchema.fromSchemaOpenApi3_1;
 
-  // Schema Objects are opaque to the object resolver. Effect owns their dialect,
-  // reference siblings and recursion, so component schemas are not reference targets here.
   const componentsObject = root.components === undefined ? {} : record(root.components);
   const { document: restored, origins } = dereference({
     ...root,
@@ -392,12 +382,8 @@ export async function openApiDocument(input: JsonObject) {
     "definition",
   );
 
-  // Component schemas converted once for the whole app. Operation schemas keep
-  // `#/$defs/<name>` references; the runtime attaches the definitions a schema reaches.
   const definitions = new Map<string, JsonObject>();
-  // Component names each definition references directly, for transitive reach checks.
   const references = new Map<string, ReadonlySet<string>>();
-  // Schemas a reference reaches somewhere other than a whole component, by definition name.
   const pointed = new Map<string, Schema.Json>();
   const componentSection = (path: readonly string[]) =>
     path[0] === "components" && path[1] === "schemas" && path[2] !== undefined;
@@ -417,8 +403,6 @@ export async function openApiDocument(input: JsonObject) {
     if (component !== undefined && !Object.hasOwn(components, component))
       return { problem: "missing" };
     if (component !== undefined && path.length === 3) return { name: component };
-    // A JSON Pointer, which a URI fragment would prefix with `#`: the validator does not encode
-    // that character in definition names.
     const name = path.map((token) => `/${JsonPointer.escapeToken(token)}`).join("");
     if (pointed.has(name)) return { name };
     if (Object.hasOwn(components, name)) return { problem: "conflict" };
@@ -501,8 +485,6 @@ export async function openApiDocument(input: JsonObject) {
       const direct = new Set<string>();
       const local: Record<string, Schema.Json> = {};
       const visit = (input: JsonObject, direct: Set<string>, at: string): JsonObject => {
-        // Every reference is written as the component reference the converter rewrites to
-        // `#/$defs/<name>`, whatever schema in the definition it reaches.
         const prepared = prepareSchema(input, at, (ref) => {
           const found = definitionName(ref);
           if ("name" in found)
@@ -530,7 +512,6 @@ export async function openApiDocument(input: JsonObject) {
                 );
               direct.add(name);
               if (!definitions.has(name)) {
-                // The placeholder ends recursion; a cycle stays a reference to the same definition.
                 added.push(name);
                 definitions.set(name, {});
                 const names = new Set<string>();
@@ -548,7 +529,6 @@ export async function openApiDocument(input: JsonObject) {
           });
         } catch (error) {
           if (error instanceof TemplateError) throw error;
-          // Effect's converter refuses keywords whose meaning the target dialect would change.
           return fail(
             "schema_keyword",
             `The schema at ${at} cannot be converted to JSON Schema 2020-12 without changing its constraints${error instanceof Error ? `: ${error.message}` : ""}.`,
@@ -560,7 +540,6 @@ export async function openApiDocument(input: JsonObject) {
         });
       };
       const api = (input: Schema.Json, at: string): JsonObject => {
-        // OpenAPI 3.1 allows boolean schemas; these objects mean the same.
         const schema =
           input === true
             ? {}
@@ -589,7 +568,6 @@ export async function openApiDocument(input: JsonObject) {
       try {
         const converted = build(api);
         if (Object.keys(local).length) {
-          // Local definitions share the `$defs` scope with every component this schema reaches.
           const reached = new Set<string>();
           const pending = [...direct];
           for (let name = pending.pop(); name !== undefined; name = pending.pop()) {
@@ -610,7 +588,6 @@ export async function openApiDocument(input: JsonObject) {
           $schema: JsonSchema.META_SCHEMA_URI_DRAFT_2020_12,
         };
       } catch (error) {
-        // A failed conversion leaves no placeholder or partial definition for later schemas.
         for (const name of added) {
           definitions.delete(name);
           references.delete(name);

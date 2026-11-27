@@ -1,4 +1,3 @@
-/** App checks use real linked backend credentials and expose bounded display data through HTTP and the row. */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Schema } from "effect";
 import { Actors } from "../support/actors.ts";
@@ -140,6 +139,9 @@ layer(HostedLive, { excludeTestServices: true })("Account display status", (it) 
           const status = page
             .getByRole("region", { name: "Your accounts", exact: true })
             .getByRole("group", { name: "Account status", exact: true });
+          const identityAvatar = page
+            .getByRole("region", { name: "Your accounts", exact: true })
+            .locator('[data-slot="account-avatar"]');
           return Promise.all([
             status.getByText("Pro", { exact: true }).count(),
             status.getByRole("meter", { name: "5h", exact: true }).getAttribute("aria-valuenow"),
@@ -156,6 +158,8 @@ layer(HostedLive, { excludeTestServices: true })("Account display status", (it) 
             status.getByText("Rem unknown", { exact: true }).count(),
             status.innerText(),
             status.locator("..").getByText("Working", { exact: true }).count(),
+            identityAvatar.count(),
+            identityAvatar.locator('[data-slot="avatar-fallback"]').count(),
           ]);
         });
         expect(visible[0]).toBe(1);
@@ -177,6 +181,8 @@ layer(HostedLive, { excludeTestServices: true })("Account display status", (it) 
         expect(visible[7]).toContain("Tokens: 12,345");
         expect(visible[7]).toContain("Cost: $1.23");
         expect(visible[8]).toBe(1);
+        expect(visible[9]).toBe(1);
+        expect(visible[10]).toBe(1);
         yield* evidence.attach(
           "account-status-row.png",
           "image/png",
@@ -208,7 +214,6 @@ layer(HostedLive, { excludeTestServices: true })("Account display status", (it) 
         yield* browser.use("Restore the dashboard viewport", (page) =>
           page.setViewportSize({ width: 1280, height: 800 }),
         );
-        // The existing check remains fresh on opening and revisiting the tab.
         expect(yield* statusBackend.calls).toBe(1);
         for (const [status, classified] of [
           [401, "credentials_rejected"],
@@ -221,7 +226,6 @@ layer(HostedLive, { excludeTestServices: true })("Account display status", (it) 
           expect(failed.apps[0]?.check?.displayStatus).toBeUndefined();
           expect(failed.info).toMatchObject({ displayName: "Checked fixture identity" });
         }
-        // Bounds fail the check rather than publishing oversized or invalid display data.
         for (const status of [
           {
             ...displayedStatus,

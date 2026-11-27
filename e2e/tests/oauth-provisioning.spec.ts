@@ -1,4 +1,3 @@
-/** Registration checks every persisted resource without signing in or triggering app setup. */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Schema } from "effect";
 import { scenarios } from "../test-plan.ts";
@@ -18,6 +17,7 @@ layer(TestLive, { excludeTestServices: true })("OAuth provisioning", (it) => {
           `${origin}/mcp`,
           `${origin}/mcp?elicitation_mode=native`,
           `${origin}/mcp?elicitation_mode=browser`,
+          `${origin}/mcp?elicitation_mode=automatic`,
           ...(target.metadata.target === "local" ? [] : [`${origin}/api`]),
         ];
         const session = yield* api.session();

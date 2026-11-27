@@ -1,4 +1,3 @@
-/** Imported tools ask before destructive calls through approval rules kept in the app's own source. */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Schema } from "effect";
 import { randomUUID } from "node:crypto";
@@ -122,7 +121,10 @@ layer(HostedLive, { excludeTestServices: true })("Imported approvals", (it) => {
                 .request(actors.owner, "POST", "/api/auth/api-key/delete", { keyId: token.id })
                 .pipe(Effect.orDie),
             );
-            const client = yield* mcp.connect(token.key, "import-approvals", { organization });
+            const client = yield* mcp.connect(token.key, "import-approvals", {
+              organization,
+              mode: "model",
+            });
             const request = (name: "execute" | "resume", args: Record<string, unknown>) =>
               client.use(`MCP ${name}`, (client, signal) =>
                 client.callTool({ name, arguments: args }, undefined, { signal }),
@@ -195,8 +197,6 @@ export default defineApp({}, async () => ({
         yield* evidence.step(
           "An app's kinds override is the read-only hint its approval rule reads",
           Effect.gen(function* () {
-            // The conservative rule asks unless the hint says read-only. The app classifies the
-            // unhinted tool as a read and the tool the server calls read-only as a write.
             const deployed = yield* api.request(actors.owner, "POST", `${prefix}/apps/deploy`, {
               name: `Approval kinds ${randomUUID().slice(0, 8)}`,
               files: [

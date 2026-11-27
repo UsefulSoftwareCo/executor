@@ -1,5 +1,4 @@
-/** Reproducible populated organizations created through the real product and provider APIs. */
-import { Effect, Redacted, Schema } from "effect";
+import { Effect, Schema } from "effect";
 import { randomBytes } from "node:crypto";
 import { Api, body } from "../support/api.ts";
 import { Actors } from "../support/actors.ts";
@@ -7,20 +6,18 @@ import { App, Resource } from "../support/contracts.ts";
 import { connectionsPath, linkAccount } from "../support/app-accounts.ts";
 import { BaseUrl, emulatorRequest } from "../support/emulators.ts";
 import { appsManifest } from "../support/apps-release.ts";
+import { heldValue, reveal } from "../support/failure-text.ts";
 
-/** Bounded volumes are explicit; the seed controls data values while the scenario owns unique identities. */
 export const DataShape = Schema.Struct({
   seed: Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: 2147483647 })),
   apps: Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 50 })),
   accounts: Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 1000 })),
   records: Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: 10000 })),
 });
-/** Ready-to-use populations; empty scenarios need no seeding operation. */
 export const populations = {
   populated: { seed: 42, apps: 8, accounts: 32, records: 1000 },
   large: { seed: 42, apps: 24, accounts: 200, records: 10000 },
 } as const;
-/** Non-sensitive receipts let callers assert exact resources and replay the data shape. */
 export const SeedReceipt = Schema.Struct({
   shape: DataShape,
   apps: Schema.Array(
@@ -28,7 +25,6 @@ export const SeedReceipt = Schema.Struct({
       id: Schema.String,
       slug: Schema.String,
       name: Schema.String,
-      /** The account choice for calls: the owner links the primary account to every app. */
       accounts: Schema.Record(Schema.String, Schema.Array(Schema.String)),
     }),
   ),
@@ -51,7 +47,6 @@ export default defineApp({user: { accounts:{service} },sql:true},{
   })
 });`;
 
-/** Seed real apps, native account connections, group access and app storage; own the external emulator until scope exit. */
 export const seedOrganization = (input: typeof DataShape.Type) =>
   Effect.gen(function* () {
     const shape = yield* Schema.decodeUnknownEffect(DataShape)(input);
@@ -94,7 +89,7 @@ export const seedOrganization = (input: typeof DataShape.Type) =>
                 Schema.decodeUnknownEffect(
                   Schema.Struct({
                     credential: Schema.Struct({
-                      token: Schema.RedactedFromValue(Schema.NonEmptyString),
+                      token: heldValue(Schema.RedactedFromValue(Schema.NonEmptyString)),
                     }),
                   }),
                 ),
@@ -151,7 +146,6 @@ export const seedOrganization = (input: typeof DataShape.Type) =>
       (token, index) =>
         Effect.gen(function* () {
           const actor = index % 2 === 0 ? actors.owner : actors.admin;
-          // Connecting from the app links the new account to it for the connecting actor.
           const connection = yield* body(
             Resource,
             yield* api.request(
@@ -166,7 +160,7 @@ export const seedOrganization = (input: typeof DataShape.Type) =>
             yield* api.request(actor, "POST", `${prefix}/connections/${connection.id}/submit`, {
               method: "token",
               label: `${index % 3 === 0 ? "Support" : index % 3 === 1 ? "Engineering" : "Finance"} ${String(index + 1).padStart(3, "0")}`,
-              fields: { token: Redacted.value(token) },
+              fields: { token: reveal(token) },
             }),
           );
           return saved.id;
@@ -181,8 +175,6 @@ export const seedOrganization = (input: typeof DataShape.Type) =>
       apps,
       (app) =>
         Effect.gen(function* () {
-          // Each connection replaced the connecting actor's earlier link to the first app, so every
-          // app, the first included, links the primary account.
           yield* linkAccount(actors.owner, `${prefix}/apps/${app.id}`, "service", primary);
           return { ...app, accounts };
         }),

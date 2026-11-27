@@ -42,7 +42,6 @@ const resetLabel = (value: string | undefined) => {
   return seconds >= 0 ? `in ${count}` : `${count} ago`;
 };
 
-/** Display only. Text never becomes HTML, links, credentials or an authorization decision. */
 export function AccountDisplayStatus({
   status,
   current,

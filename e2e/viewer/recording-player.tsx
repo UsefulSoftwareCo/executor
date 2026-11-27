@@ -11,7 +11,6 @@ import {
   MediaTimeRange,
 } from "media-chrome/react";
 
-/** Accessible recording controls stay visible below the footage and follow the viewer theme. */
 export function RecordingPlayer({
   src,
   poster,

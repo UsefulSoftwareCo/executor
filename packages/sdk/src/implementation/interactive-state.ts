@@ -1,5 +1,4 @@
-/** Acquisition provenance shares the completed connection's existing JSON column. */
-import { Clock, type Crypto, Effect, Option, Schema } from "effect";
+import { Clock, Effect, Option, Schema } from "effect";
 import { Account } from "../contracts/account.ts";
 import {
   InteractiveBinding,
@@ -7,9 +6,10 @@ import {
   InteractiveConnectionFailed,
   type InteractiveHost,
 } from "../contracts/interactive-accounts.ts";
-import { StorageError, type AccountId, type OwnerId } from "../contracts/shared.ts";
+import { type AccountId, type OwnerId } from "../contracts/shared.ts";
 import { query, transaction, type Query } from "./database.ts";
 import { storedApp, storedVersion } from "./apps.ts";
+import type { HostCrypto } from "./host-crypto.ts";
 import { requireTargetProvider } from "./connection-target.ts";
 import {
   StoredState,
@@ -27,7 +27,6 @@ const completed = Schema.toCodecJson(
 );
 const decodeCompleted = Schema.decodeUnknownOption(completed);
 
-/** Read acquisition metadata once for a group of accounts, newest provenance first. */
 export const interactiveBindings = (
   db: Query,
   input: { readonly accounts: ReadonlyArray<AccountId>; readonly owner?: OwnerId },
@@ -55,7 +54,6 @@ export const interactiveBindings = (
     return bindings;
   });
 
-/** An interactive account without provenance is never reusable in another app. */
 export const interactiveBinding = (
   db: Query,
   input: { readonly account: AccountId; readonly owner?: OwnerId },
@@ -69,7 +67,6 @@ export const pendingInteractive = (row: ConnectionRow): InteractiveSession | und
   row.storedState.status === "pending" ? row.storedState.interactive : undefined;
 
 const encode = Schema.encodeSync(StoredState);
-/** The revision claim belongs to this transition, which runs inside its caller's transaction. */
 export const writeInteractive = (db: Query, row: ConnectionRow, interactive: InteractiveSession) =>
   query(() =>
     db.updateMany("accountConnections", {
@@ -84,10 +81,9 @@ export type InteractiveClaim = {
   readonly session: InteractiveSession;
   readonly token: string;
 };
-/** Persist claims and their outcomes independently of handler execution. */
 export const interactiveClaims = (
   db: Query,
-  crypto: Crypto.Crypto,
+  crypto: HostCrypto,
   stepMillis: number,
   startMillis = stepMillis,
 ) => {
@@ -116,7 +112,6 @@ export const interactiveClaims = (
         const now = yield* Clock.currentTimeMillis;
         const previous = pendingInteractive(row);
         if (method === undefined && previous?.running !== undefined) {
-          // An expired lease is an uncertain invocation, not permission to repeat a mutation.
           if ((previous.leaseExpiresAt ?? 0) <= now)
             yield* writeInteractive(tx, row, {
               ...previous,
@@ -158,7 +153,7 @@ export const interactiveClaims = (
           }
         }
         if (session === undefined) return yield* failure();
-        const token = yield* crypto.randomUUIDv4.pipe(Effect.mapError(() => new StorageError()));
+        const token = yield* crypto.random.uuidV4();
         const claimed = {
           ...session,
           running: token,

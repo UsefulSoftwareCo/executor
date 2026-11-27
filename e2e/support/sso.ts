@@ -4,7 +4,6 @@ import { HttpClient } from "effect/http";
 import { Target } from "./platform.ts";
 import { emulatorRequest } from "./emulators.ts";
 
-/** Control only the disposable external IdP and loopback DNS fixture. */
 export const ssoFixture = Effect.gen(function* () {
   const target = yield* Target,
     fs = yield* FileSystem.FileSystem,
@@ -65,7 +64,6 @@ export const ssoFixture = Effect.gen(function* () {
   };
 });
 
-/** Identity modes of `apps/hosted/testing/sso-idp.ts`. */
 export type IdentityMode =
   | "valid"
   | "tamper"
@@ -82,13 +80,6 @@ export type IdentityMode =
   | "unverified-thin"
   | "unverified-absent";
 
-/**
- * Start the synthetic IdP for one self-host scenario. Self-host accepts only an HTTPS discovery
- * URL, so the IdP serves its server-to-server endpoints with a one-day certificate the product
- * trusts through `NODE_EXTRA_CA_CERTS`, without disabling TLS verification. Discovery names the
- * HTTPS sign-in page, which the browser cannot trust, so the scenario routes the browser from
- * `issuer` to the same page at `origin`, the loopback HTTP listener.
- */
 export const selfHostSsoIdp = (application: string) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem,

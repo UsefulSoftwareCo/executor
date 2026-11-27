@@ -70,21 +70,15 @@ const OrganizationRouteContext = createContext<{
   readonly id: OrganizationId | undefined;
   readonly name: string | undefined;
   readonly unavailable: boolean;
-  /** Whether the page may render; see `useGuardedPreload`. */
   readonly released: boolean;
   readonly metadataFailed: boolean;
   readonly retry: () => void;
 } | null>(null);
-/** The URL target is immediately usable by page requests, independently of sidebar metadata. */
 export function useOrganizationRoute() {
   const value = useContext(OrganizationRouteContext);
   if (value === null) throw new Error("Organization route context is missing");
   return value;
 }
-/**
- * Show only content errors; keep the dashboard and navigation mounted. A refusal shows itself;
- * until access succeeds, a server render shows `pending` instead of the page.
- */
 export function OrganizationContent({
   children,
   pending,
@@ -115,7 +109,6 @@ export function OrganizationContent({
     pending
   );
 }
-/** Native organization settings need verified metadata, but their wait stays inside the page. */
 export function OrganizationDetailsBoundary({
   children,
   pending,
@@ -139,17 +132,14 @@ export function OrganizationDetailsBoundary({
     );
   return organization === null ? pending : children;
 }
-/** Verified details when available; missing metadata must not hide static page content. */
 export function useOrganizationDetails() {
   return useContext(OrganizationContext);
 }
-/** Settings use verified organization metadata; request handlers still enforce current access. */
 export function useOrganization() {
   const value = useContext(OrganizationContext);
   if (value === null) throw new Error("Organization context is missing");
   return value;
 }
-/** Safe message for membership mutations. */
 export function organizationError(cause: Cause.Cause<OrganizationFailed | Schema.SchemaError>) {
   return Option.match(Cause.findErrorOption(cause), {
     onSome: Match.type<OrganizationFailed | Schema.SchemaError>().pipe(
@@ -162,7 +152,6 @@ export function organizationError(cause: Cause.Cause<OrganizationFailed | Schema
   });
 }
 
-/** Explicit creation, never an implicitly provisioned global organization. Children head the form. */
 export function CreateOrganization({
   onCreated,
   children,
@@ -174,7 +163,6 @@ export function CreateOrganization({
   const state = useAtomValue(createOrganizationAtom);
   const [error, setError] = useState<string | null>(null);
   const [name, setName] = useState("");
-  // The handle follows the name until someone edits it.
   const [handle, setHandle] = useState<string | null>(null);
   return (
     <OrganizationForm
@@ -221,7 +209,6 @@ export function CreateOrganization({
   );
 }
 
-/** Restore only bare-root visits; explicit organization and consent links keep their own destinations. */
 export function OrganizationResumeBoundary({ children }: { readonly children: ReactNode }) {
   const { pathname } = useLocation();
   const session = Option.getOrUndefined(AsyncResult.value(useAtomValue(sessionAtom)));
@@ -233,7 +220,6 @@ export function OrganizationResumeBoundary({ children }: { readonly children: Re
   );
 }
 
-/** A saved ID is enough to enter; membership and sidebar metadata resolve in the destination. */
 function ResumeOrganization({
   userId,
   children,
@@ -255,7 +241,6 @@ function ResumeOrganization({
   );
 }
 
-/** Keep query keys unchanged when verified aliases identify the same organization. */
 function useOrganizationQueryReference(routeReference: OrganizationReference) {
   const [retained, setRetained] = useState(routeReference);
   const retainedTarget = useAtomValue(organizationTargetAtom(retained));
@@ -263,32 +248,22 @@ function useOrganizationQueryReference(routeReference: OrganizationReference) {
   const sameOrganization =
     routeReference === retained || (retainedTarget !== undefined && retainedTarget === routeTarget);
   const reference = sameOrganization ? retained : routeReference;
-  // A different or unknown destination resets before children render. A canonical
-  // URL replacement keeps the existing atoms and their in-flight requests.
   if (reference !== retained) setRetained(reference);
   return reference;
 }
 
-/**
- * The reads an organization page starts with, from its URL alone. A server render waits for the
- * access check before it renders the page, so without these the page's reads would start only
- * after access settles. The boundary starts them with the check, and a document whose access
- * does not succeed carries none of their values. The browser renders the page while access loads
- * and needs no list.
- */
 export type OrganizationPageReads = (
   organization: OrganizationReference,
   params: Readonly<Record<string, unknown>>,
+  search?: Readonly<Record<string, unknown>>,
 ) => ReadonlyArray<Atom.Atom<unknown>>;
 
 declare module "@tanstack/react-router" {
   interface StaticDataRouteOption {
-    /** Started by the organization boundary together with its access check. */
     readonly organizationReads?: OrganizationPageReads;
   }
 }
 
-/** The API refused this user the organization, as opposed to failing to answer. */
 const refused = (access: Atom.Type<ReturnType<typeof accessAtom>>) =>
   AsyncResult.isFailure(access) &&
   Option.match(Cause.findErrorOption(access.cause), {
@@ -300,7 +275,6 @@ const refused = (access: Atom.Type<ReturnType<typeof accessAtom>>) =>
       ),
   });
 
-/** Start page reads from the URL immediately. Access and organization controls resolve alongside them. */
 export function OrganizationBoundary({
   slug,
   children,
@@ -315,7 +289,9 @@ export function OrganizationBoundary({
   usePreload(accessAtom(reference), organizationsAtom);
   const released = useGuardedPreload(
     accessAtom(reference),
-    matches.flatMap((match) => match.staticData.organizationReads?.(reference, match.params) ?? []),
+    matches.flatMap(
+      (match) => match.staticData.organizationReads?.(reference, match.params, match.search) ?? [],
+    ),
   );
   const access = useAtomValue(accessAtom(reference));
   const session = useAtomValue(sessionAtom);
@@ -340,8 +316,6 @@ export function OrganizationBoundary({
   useEffect(() => {
     if (!rejectedResume || resume === undefined) return;
     forgetOrganization(resume.userId, resume.organization);
-    // `/` resumes from the memory the document was served with. Forget that copy too, or `/`
-    // would reopen the rejected organization and never reach the chooser.
     const saved = registry.get(lastOrganizationAtom);
     if (saved?.user === resume.userId && saved.organization === resume.organization)
       registry.set(lastOrganizationAtom, null);
@@ -370,9 +344,10 @@ export function OrganizationBoundary({
       document.removeEventListener("visibilitychange", remember);
     };
   }, [access, session]);
+  const routeId = target ?? (AsyncResult.isSuccess(access) ? access.value.organization : undefined);
   const organization =
-    AsyncResult.isSuccess(organizations) && target !== undefined
-      ? organizations.value.find((item) => item.id === target)
+    AsyncResult.isSuccess(organizations) && routeId !== undefined
+      ? organizations.value.find((item) => item.id === routeId)
       : undefined;
   const canonicalSlug = organization?.slug;
   useEffect(() => {
@@ -430,7 +405,7 @@ export function OrganizationBoundary({
         organization: reference,
         slug,
         role: checked?.role,
-        id: target,
+        id: routeId,
         name: organization?.name,
         unavailable,
         released,
@@ -448,7 +423,6 @@ export function OrganizationBoundary({
   );
 }
 
-/** Resolve a destination when root restoration has no usable recent organization. */
 export function OrganizationEntry({ allowCreate = true }: { readonly allowCreate?: boolean }) {
   const organizations = useAtomValue(organizationsAtom);
   const navigate = useNavigate();
@@ -503,7 +477,6 @@ export function OrganizationEntry({ allowCreate = true }: { readonly allowCreate
   );
 }
 
-/** Resource-based invitation returns resolve their exact organization, never a default. */
 export function OrganizationDestination({
   organization,
 }: {
@@ -532,7 +505,6 @@ export function OrganizationDestination({
     />
   );
 }
-/** Compact organization mark shared by the switcher and organization pickers. */
 export function OrganizationAvatar({
   name,
   logo,
@@ -552,7 +524,6 @@ export function OrganizationAvatar({
   );
 }
 
-/** Organization picker shared by cloud and self-host. */
 export function OrganizationSwitcher({ allowCreate = true }: { readonly allowCreate?: boolean }) {
   const organizations = useAtomValue(organizationsAtom);
   const organization = useContext(OrganizationContext);

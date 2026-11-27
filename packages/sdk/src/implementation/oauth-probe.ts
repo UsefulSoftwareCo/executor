@@ -1,15 +1,8 @@
-/** Header-only OAuth discovery for resources that advertise auth on GET or MCP initialization. */
 import { Effect } from "effect";
 import { FetchHttpClient, HttpBody, HttpClient } from "effect/http";
 import { bearerChallenge } from "./oauth-challenge.ts";
 import { withExecutorUserAgent } from "./user-agent.ts";
 
-/**
- * Probe an already policy-checked endpoint with the host's checked HTTP client. The result keeps
- * the status, a Retry-After header for a rate-limited answer, and any Bearer challenge.
- * Never follow redirects or invoke tools. Release streaming bodies and any probe session.
- * An unauthorized response without a Bearer metadata challenge does not imply OAuth.
- */
 export const probeOAuthChallenge = (endpoint: string | URL, egress: HttpClient.HttpClient) =>
   Effect.gen(function* () {
     const client = withExecutorUserAgent(egress);
@@ -49,7 +42,6 @@ export const probeOAuthChallenge = (endpoint: string | URL, egress: HttpClient.H
         });
         const session = response.headers["mcp-session-id"];
         if (response.status >= 200 && response.status < 300 && session !== undefined) {
-          // Initialization can allocate a public MCP session even though we need only its headers.
           yield* Effect.addFinalizer(() =>
             Effect.scoped(
               HttpClient.withScope(client).del(endpoint, {

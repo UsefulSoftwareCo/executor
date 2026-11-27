@@ -1,23 +1,3 @@
-/**
- * Zero-configuration defaults for local product development, loaded with
- * `node --import ./scripts/local-dev.ts <entry>`. Every EXECUTOR_* value that is
- * already set wins, except the two served-address values below; this only fills gaps.
- *
- * - Data lives in this checkout's `.local/dev/`, apart from older directories
- *   that may be tied to other keys. The CLI and the development desktop share
- *   `.local/dev/local` and its background server.
- * - The dev directories use one development key pair saved in
- *   `.local/dev/keys.json` (mode 0600). A checkout copy carries its data and keys
- *   together, headless agents need no OS keychain, and throwaway copies leave no
- *   keychain entries behind. Product entry points keep the keychain default.
- *   Keys are only supplied when neither key and neither data directory is set,
- *   so a directory you choose follows the normal product rules.
- * - Under Portless (see scripts/dev-host.ts) the server always listens on the
- *   assigned PORT and trusts the public HTTPS origin in PORTLESS_URL; these two
- *   replace EXECUTOR_PORT and EXECUTOR_BROWSER_ORIGIN there.
- *
- * The macOS desktop development bundle loads this file through NODE_OPTIONS.
- */
 import { randomBytes } from "node:crypto";
 import { linkSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -48,7 +28,6 @@ const readKeys = (): DevelopmentKeys => {
   return parsed;
 };
 
-/** Create the key file once. A hard link publishes it atomically, so concurrent starts agree. */
 const developmentKeys = (): DevelopmentKeys => {
   mkdirSync(developmentDirectory, { recursive: true, mode: 0o700 });
   try {
@@ -82,7 +61,6 @@ if (!chosenDirectory && !chosenKeys) {
   env.EXECUTOR_ENCRYPTION_KEY = keys.encryptionKey;
 }
 
-// The proxy only reaches the port it assigned, and browsers only see its origin.
 if (env.PORTLESS_URL !== undefined && env.PORT !== undefined) {
   const served = {
     EXECUTOR_PORT: env.PORT,
@@ -95,7 +73,6 @@ if (env.PORTLESS_URL !== undefined && env.PORT !== undefined) {
   }
 }
 
-// Children inherit the resolved values; do not load this file again in every descendant.
 if (env.NODE_OPTIONS !== undefined) {
   const options = env.NODE_OPTIONS.replace(`--import="${self}"`, "").trim();
   if (options === "") delete env.NODE_OPTIONS;

@@ -1,8 +1,3 @@
-/**
- * The apps CLI's view of a source directory. Code is read as UTF-8 text; files under `ui/public/`
- * may be any bytes and are read only when they are sent. A source that fits one request is sent
- * as files; a larger one is pushed with Git.
- */
 import { Effect, FileSystem, Option, Path, Schema } from "effect";
 import type { PlatformError } from "effect/PlatformError";
 import {
@@ -22,7 +17,6 @@ import {
 import { pushTree, type PushFile } from "@executor-js/app-source/git-client";
 import { SourceRejected } from "../client-error.ts";
 
-/** One file of a local source. `text` holds code files, which must be UTF-8. */
 export interface LocalFile {
   readonly path: string;
   readonly size: number;
@@ -38,7 +32,6 @@ export const formatBytes = (bytes: number) =>
       ? `${Number((bytes / 1024).toFixed(1))} KiB`
       : `${bytes} bytes`;
 export const formatCount = (count: number) => count.toLocaleString("en-US");
-/** At most this many paths are named in a refusal; the count says how many there are. */
 const namedPaths = 20;
 const utf8 = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
 const decodeText = (bytes: Uint8Array) =>
@@ -49,11 +42,6 @@ const largest = (files: ReadonlyArray<{ readonly path: string; readonly size: nu
 const listed = (files: ReadonlyArray<{ readonly path: string; readonly size: number }>) =>
   files.map((file) => `${file.path} (${formatBytes(file.size)})`).join(", ");
 
-/**
- * Check a source against what every host accepts, before anything is read or sent. Code
- * (everything outside ui/public/) is held in memory by saves and builds and stays within
- * `sourceLimits`; public files are served as they are and stay within `publicFileLimits`.
- */
 const withinLimits = (files: ReadonlyArray<{ readonly path: string; readonly size: number }>) => {
   const code = files.filter((file) => !isPublicSourcePath(file.path));
   const served = files.filter((file) => isPublicSourcePath(file.path));
@@ -97,7 +85,6 @@ const withinLimits = (files: ReadonlyArray<{ readonly path: string; readonly siz
 
 const invalid = (detail: string) => new SourceRejected({ reason: "invalid", detail, paths: [] });
 
-/** A source must name canonical, unique paths and a root index.ts. */
 const checkPaths = (files: ReadonlyArray<{ readonly path: string }>) =>
   Effect.gen(function* () {
     for (const file of files)
@@ -127,10 +114,6 @@ const binaryCode = (files: ReadonlyArray<LocalFile>) =>
       });
   });
 
-/**
- * Read a JSON source list, or every file under a directory with POSIX paths relative to it. Code
- * files are read and must be UTF-8 text; public files are only listed with their sizes here.
- */
 export const readSource = (location: string) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
@@ -187,7 +170,6 @@ export const readSource = (location: string) =>
         );
         return nested.flat();
       });
-    // Sizes come from the directory listing, so an oversized source is refused before it is read.
     const found = yield* walk([]);
     yield* withinLimits(found);
     yield* checkPaths(found);
@@ -205,11 +187,9 @@ export const readSource = (location: string) =>
     return files;
   });
 
-/** Whether the whole source fits one request, as every text-only source within the limits did. */
 export const fitsRequest = (files: ReadonlyArray<LocalFile>) =>
   files.reduce((sum, file) => sum + file.size, 0) <= sourceLimits.bytes;
 
-/** The files of a request: code as text, public files as text or, when binary, base64. */
 export const requestFiles = (files: ReadonlyArray<LocalFile>) =>
   Effect.forEach(files, (file) =>
     Effect.gen(function* () {
@@ -230,14 +210,9 @@ export const requestFiles = (files: ReadonlyArray<LocalFile>) =>
     ),
   );
 
-/** Only code files, for creating an app whose public files follow by Git. */
 export const codeOnly = (files: ReadonlyArray<LocalFile>) =>
   files.filter((file) => !isPublicSourcePath(file.path));
 
-/**
- * Push a local source as the next commit after `expected`, given the files the remote holds at
- * `expected`. Only blobs the remote lacks are sent, in batches under one push's bound.
- */
 export const pushSource = (input: {
   readonly url: string;
   readonly authorization: string;
@@ -250,7 +225,6 @@ export const pushSource = (input: {
     const present = new Set<string>();
     for (const file of input.remote)
       present.add("object" in file ? file.object : yield* gitBlobId(inlineBytes(file)));
-    // Each file is hashed once here and read again only if its blob is sent.
     const files: ReadonlyArray<PushFile> = yield* Effect.forEach(
       input.files,
       (file) =>

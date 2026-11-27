@@ -210,7 +210,6 @@ const unpack = async (pack: Uint8Array, limits: { readonly objectBytes: number }
   const objects = new Map<string, { readonly type: ObjectType; readonly data: Uint8Array }>();
   const resolved = new Map<number, { readonly type: ObjectType; readonly data: Uint8Array }>();
   const pending = new Set(entries.keys());
-  // Resolve in passes so reference deltas can wait for bases that appear later in the pack.
   while (pending.size > 0) {
     let progressed = false;
     for (const offset of pending) {
@@ -274,7 +273,6 @@ export const parseTreeFetch = async (
     return result;
   };
 
-  // Walk down to the requested directory; a missing directory lists no files.
   let start = root;
   const prefix = path === undefined ? [] : path.split("/");
   for (const name of prefix) {
@@ -288,7 +286,6 @@ export const parseTreeFetch = async (
     for (const entry of entries(tree)) {
       const entryPath = `${directory}${entry.name}`;
       if (entry.mode === "040000") walk(entry.id, `${entryPath}/`);
-      // Submodules (160000) point at other repositories and have no files here.
       else if (entry.mode !== "160000") {
         files.push({ path: entryPath, mode: entry.mode });
       }

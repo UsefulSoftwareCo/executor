@@ -20,7 +20,6 @@ import { ConnectionLinkFailure, ProviderIcon } from "../components/common.tsx";
 import { AccountForm } from "@executor-js/ui/dashboard/account-form";
 import { LinkOAuthFields } from "./oauth-fields.tsx";
 
-/** A standalone, mobile-sized handoff page with no dashboard navigation or access. */
 export function ConnectAccountPage() {
   const entry = useAtomValue(connectionEntryAtom);
   const result = useAtomValue(connectionDetailsAtom);
@@ -73,7 +72,6 @@ function ConnectionForm({
 }: {
   readonly grant: ConnectionGrant;
   readonly connection: AccountConnection;
-  /** How the sign-in this page returned from failed, shown under the heading. */
   readonly failure?: ReactNode;
 }) {
   const [state, setState] = useState(connection.state);

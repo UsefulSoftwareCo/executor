@@ -1,7 +1,3 @@
-/**
- * Private cache of immutable executable builds, read by the app runner in the AppData Worker.
- * Invocation context never enters this store.
- */
 import { type BuildId, RuntimeBuildUnavailable } from "@executor-js/sdk/core";
 import {
   type FrameworkIdentity,
@@ -12,7 +8,7 @@ import {
   RetainedWorkerBuild,
   type StoredWorkerBuild,
 } from "@executor-js/sdk/workerd";
-import { Clock, Effect, FiberSet, Option, Schema, Semaphore, Struct } from "effect";
+import { Clock, Effect, FiberSet, Schema, Struct } from "effect";
 import {
   isolateBuildCacheBytes,
   isolateBuildCacheEntries,
@@ -25,10 +21,6 @@ const cached = <A>(read: () => Promise<A>) =>
   Effect.tryPromise({ try: read, catch: () => new BuildCacheFailed() });
 type Cache = Awaited<ReturnType<typeof caches.open>>;
 
-/**
- * A record as this cache holds it, in isolate memory and in the colo's Cache API: only the fields
- * linking reads. Its UI manifest, and any field a record gains later, stay in storage.
- */
 const ExecutableWorkerBuild = Schema.Union([
   RetainedWorkerBuild.mapFields(
     Struct.pick(["format", "mainModule", "modules", "framework", "database", "protocol"]),
@@ -39,12 +31,6 @@ const ExecutableWorkerBuild = Schema.Union([
 ]);
 type ExecutableWorkerBuild = typeof ExecutableWorkerBuild.Type;
 
-/**
- * Build records and frameworks decoded in this isolate, least recently used first, in one heap
- * budget. Both are immutable code only, so any invocation may reuse them. A framework is held
- * once however many records link it, and every load of one of those records refreshes it, so a
- * framework in use outlives the records of builds no longer called.
- */
 type Entry =
   | { readonly record: ExecutableWorkerBuild; readonly bytes: number }
   | { readonly framework: RetainedFramework; readonly bytes: number };
@@ -55,12 +41,6 @@ let accounted = 0;
 const recordKey = (build: BuildId) => `build:${build}`;
 const frameworkKey = (identity: FrameworkIdentity) => `framework:${identity.sha256}`;
 
-/**
- * The heap one entry is accounted, counted from every field it retains rather than measured.
- * Strings count two bytes per UTF-16 code unit, the most a V8 string takes; WASM counts its
- * bytes. Each module and entry adds an allowance for its objects and map slots, so many small
- * builds are bounded as well as a few large ones.
- */
 const textBytes = (...texts: ReadonlyArray<string>) =>
   texts.reduce((total, text) => total + 2 * text.length, 0);
 const modulesBytes = (modules: StoredWorkerBuild["modules"]) =>
@@ -77,7 +57,6 @@ const modulesBytes = (modules: StoredWorkerBuild["modules"]) =>
     isolateBuildEntryOverhead,
   );
 
-/** A stored record's `ExecutableWorkerBuild` fields, without copying their values. */
 const executable = (record: StoredWorkerBuild): ExecutableWorkerBuild =>
   record.format === 1
     ? {
@@ -121,9 +100,7 @@ const recall = (key: string) => {
   return entry;
 };
 
-/** Retain one decoded value, then evict to the heap and entry bounds. */
 const remember = (key: string, entry: Entry) => {
-  // One oversized value would evict every other entry and still not fit.
   if (entry.bytes > isolateBuildCacheBytes || memory.has(key)) return;
   memory.set(key, entry);
   accounted += entry.bytes;
@@ -134,31 +111,9 @@ const remember = (key: string, entry: Entry) => {
   }
 };
 
-/**
- * Reads in progress in this isolate, by key, with the number of callers that want each value.
- * Concurrent cold loads of one record or framework share one read, so its decode temporaries exist
- * once: a caller reads only while it holds the key's permit, and only if memory still lacks the
- * value. Callers share only the decoded value, never a promise or a wake-up. A call resumed by
- * another request continues in that request's I/O context (notes/app-runtime.md), and a semaphore
- * resumes its waiters from the releasing fiber, so a waiting caller tries the permit on its own
- * timer instead of queueing for it. The timer's interval is a quarter of the time the caller has
- * waited, within `readCheck`, so a long wait costs few timers and still learns of a finished read
- * within a quarter of its length.
- *
- * Each build load has one deadline, `readTimeout` from its start, for its record and its framework,
- * waiting and reading together. A read is interrupted at its caller's deadline, and a caller with
- * no time left fails rather than starting one. A read's failure, timeout or cancellation releases
- * the permit, and the next caller to try it reads. The last caller of a key removes its entry.
- */
-type Flight = { readonly permit: Semaphore.Semaphore; callers: number };
-const flights = new Map<string, Flight>();
-const readCheck = { min: 10, max: 200 };
 const readTimeout = 10_000;
 
-/**
- * One value through memory, then `read` under the key's permit, by the load's `deadline`; retained
- * once read. Returns the value's accounted bytes with it.
- */
+// external: Workers drop a cancelled invocation's pending work, so nothing in isolate scope may be awaited across invocations; only decoded values are shared.
 const readOnce = <A, R>(
   key: string,
   part: { readonly value: (entry: Entry) => A | undefined; readonly entry: (value: A) => Entry },
@@ -169,62 +124,24 @@ const readOnce = <A, R>(
   >,
   deadline: number,
 ) =>
-  Effect.acquireUseRelease(
-    Effect.sync(() => {
-      const flight = flights.get(key) ?? { permit: Semaphore.makeUnsafe(1), callers: 0 };
-      flight.callers += 1;
-      flights.set(key, flight);
-      return flight;
-    }),
-    (flight) =>
-      Effect.gen(function* () {
-        const since = yield* Clock.currentTimeMillis;
-        let waited = false;
-        for (;;) {
-          const owned = yield* flight.permit.withPermitsIfAvailable(1)(
-            Effect.gen(function* () {
-              const memorized = recall(key);
-              const held = memorized === undefined ? undefined : part.value(memorized);
-              if (memorized !== undefined && held !== undefined)
-                return {
-                  value: held,
-                  source: waited ? ("shared" as const) : ("memory" as const),
-                  bytes: memorized.bytes,
-                };
-              const left = deadline - (yield* Clock.currentTimeMillis);
-              if (left <= 0) return yield* new RuntimeBuildUnavailable();
-              const { value, source } = yield* read.pipe(
-                Effect.timeoutOrElse({
-                  duration: left,
-                  orElse: () => Effect.fail(new RuntimeBuildUnavailable()),
-                }),
-              );
-              const entry = part.entry(value);
-              remember(key, entry);
-              return { value, source, bytes: entry.bytes };
-            }),
-          );
-          if (Option.isSome(owned)) return owned.value;
-          const now = yield* Clock.currentTimeMillis;
-          if (now >= deadline) return yield* new RuntimeBuildUnavailable();
-          waited = true;
-          yield* Effect.sleep(
-            Math.min(
-              deadline - now,
-              Math.max(readCheck.min, Math.min(readCheck.max, (now - since) / 4)),
-            ),
-          );
-        }
+  Effect.gen(function* () {
+    const memorized = recall(key);
+    const held = memorized === undefined ? undefined : part.value(memorized);
+    if (memorized !== undefined && held !== undefined)
+      return { value: held, source: "memory" as const, bytes: memorized.bytes };
+    const left = deadline - (yield* Clock.currentTimeMillis);
+    if (left <= 0) return yield* new RuntimeBuildUnavailable();
+    const { value, source } = yield* read.pipe(
+      Effect.timeoutOrElse({
+        duration: left,
+        orElse: () => Effect.fail(new RuntimeBuildUnavailable()),
       }),
-    (flight) =>
-      Effect.sync(() => {
-        flight.callers -= 1;
-        if (flight.callers === 0) flights.delete(key);
-      }),
-  );
+    );
+    const entry = part.entry(value);
+    remember(key, entry);
+    return { value, source, bytes: entry.bytes };
+  });
 
-// Separate from browser assets. No route serves these synthetic URLs. The reader and the
-// deploy-time warming address each part through these keys only.
 const recordUrl = (origin: string, build: BuildId) =>
   new URL(`/_executor/runtime-build-cache/${encodeURIComponent(build)}`, origin).href;
 const frameworkUrl = (origin: string, identity: FrameworkIdentity) =>
@@ -239,10 +156,6 @@ const openCache = cached(() => caches.open("executor-private-runtime-builds-v1")
 const encodedRecord = Schema.fromJsonString(ExecutableWorkerBuild);
 const encodedFramework = Schema.fromJsonString(RetainedFramework);
 
-/**
- * Copy one immutable value into the colo's Cache API. Callers run it in the background. A failed
- * write is logged and recorded on its span, never returned.
- */
 const writeCache = <A>(
   cache: Cache,
   url: string,
@@ -251,10 +164,7 @@ const writeCache = <A>(
   value: A,
 ) =>
   Effect.gen(function* () {
-    // Recorded as failed until the put returns, so an interrupted write is not reported stored.
     yield* Effect.annotateCurrentSpan("executor.build.cache_write", "failed");
-    // Encode only the retained code/metadata schema. Credentials, query results,
-    // bindings, account identity and authorization are supplied per invocation.
     const body = yield* Schema.encodeEffect(schema)(value);
     yield* cached(() =>
       cache.put(
@@ -278,10 +188,6 @@ const writeCache = <A>(
     }),
   );
 
-/**
- * Read one immutable value through the colo's Cache API before authoritative storage, and copy a
- * miss into the cache in the background. The cache is an optimisation: its failures are misses.
- */
 const throughCache = <A, E, R>(
   cache: Cache | undefined,
   url: string,
@@ -313,11 +219,6 @@ const throughCache = <A, E, R>(
     return { value, source: "miss" as const };
   });
 
-/**
- * Warm the colo's Cache API with a build just retained, under the keys the runner reads: its
- * record, and its framework unless the colo already holds it. Call only after authoritative
- * storage holds both. The Cache API is per data centre, so other colos still read storage once.
- */
 export const cacheRuntimeBuild = (
   writes: FiberSet.FiberSet,
   origin: string,
@@ -350,12 +251,6 @@ export const cacheRuntimeBuild = (
       );
   });
 
-/**
- * The runner's build reader: this isolate's memory, then one read of each value at a time here
- * (`readOnce`), through the colo's Cache API, then authoritative storage. A build's record and its
- * framework are cached separately, so a cold build whose framework is already cached reads only
- * its own record. `background` keeps a cache write running after the read returns.
- */
 export const cachedRuntimeBuilds = <R>(
   origin: string,
   load: {
@@ -425,7 +320,6 @@ export const cachedRuntimeBuilds = <R>(
         Effect.annotateCurrentSpan({
           "executor.build.isolate_accounted_bytes": accounted,
           "executor.build.isolate_entries": memory.size,
-          "executor.build.isolate_reads": flights.size,
         }),
       ),
       Effect.withSpan("runtime.cloud.build.cached"),

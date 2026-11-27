@@ -1,7 +1,3 @@
-/**
- * Local evaluated declarations follow credentials and versions at once, are served stale for
- * one read while a background evaluation replaces them, and are still served that way past a minute.
- */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Redacted, Schema } from "effect";
 import { randomUUID } from "node:crypto";
@@ -12,7 +8,6 @@ import { TestLive, withCase } from "../support/case.ts";
 import { scenarios } from "../test-plan.ts";
 import { appsManifest } from "../support/apps-release.ts";
 
-/** Each evaluation names its workflow after the version, the stored token and the clock. */
 const source = (
   version: string,
 ) => `import {defineApp,defineProvider,secrets,query,workflow,object,string, router} from "apps";
@@ -72,7 +67,6 @@ layer(TestLive, { excludeTestServices: true })("Local app declarations", (it) =>
           const { app } = yield* body(Version, deployed);
           resources.apps.push(app.id);
           const path = `/v1/apps/${app.id}`;
-          // Connect an account for the app, or replace the given account's key.
           const connect = (token: string, account?: string) =>
             connectLocalAccount(agent, {
               app: app.id,
@@ -85,7 +79,6 @@ layer(TestLive, { excludeTestServices: true })("Local app declarations", (it) =>
           const account = (yield* connect("alpha")).id;
           resources.accounts.push(account);
           const read = Effect.gen(function* () {
-            // The read uses the account linked to the app; agents do not choose one.
             const response = yield* api.request(agent, "GET", `${path}/workflows`);
             expect(response.status, JSON.stringify(response.body)).toBe(200);
             const names = (yield* body(Workflows, response)).map((workflow) => workflow.name);
@@ -93,12 +86,10 @@ layer(TestLive, { excludeTestServices: true })("Local app declarations", (it) =>
             return names[0] ?? "";
           });
 
-          // An identical read within the fresh period reuses the evaluation.
           const first = yield* read;
           expect(first).toMatch(/^first_alpha_\d+$/);
           expect(yield* read).toBe(first);
 
-          // A reconnected credential and a new version are new evaluation inputs.
           expect((yield* connect("beta", account)).id).toBe(account);
           const reconnected = yield* read;
           expect(reconnected).toMatch(/^first_beta_\d+$/);
@@ -112,8 +103,6 @@ layer(TestLive, { excludeTestServices: true })("Local app declarations", (it) =>
           const current = yield* read;
           expect(current).toMatch(/^second_beta_\d+$/);
 
-          // Past the fresh period, one read still returns the kept result while a background
-          // evaluation replaces it; a later read returns the replacement without evaluating.
           yield* Effect.sleep("11 seconds");
           expect(yield* read).toBe(current);
           let refreshed = current;
@@ -125,8 +114,6 @@ layer(TestLive, { excludeTestServices: true })("Local app declarations", (it) =>
           expect(refreshed).toMatch(/^second_beta_\d+$/);
           expect(yield* read).toBe(refreshed);
 
-          // A minute later the kept result is still served first, well inside the day-long bound,
-          // and the background evaluation it starts replaces it.
           yield* Effect.sleep("61 seconds");
           expect(yield* read).toBe(refreshed);
           let later = refreshed;

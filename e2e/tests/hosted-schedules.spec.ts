@@ -1,4 +1,3 @@
-/** Both hosted products run the same membership, browser review and creator-revocation scenario. */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Schedule, Schema } from "effect";
 import { randomUUID } from "node:crypto";
@@ -110,7 +109,6 @@ layer(HostedLive, { excludeTestServices: true })("Hosted schedules", (it) => {
         expect(configured.status).toBe(200);
         const creator = yield* body(Settings, configured);
         expect(creator.actor).toBeTruthy();
-        // The admin's own copy, which the owner controls through its address.
         const copy = `${path}/creator/copies/${creator.id}`;
         expect(
           (yield* api.request(actors.owner, "PATCH", `${prefix}/apps/${app.id}/access`, {
@@ -118,12 +116,10 @@ layer(HostedLive, { excludeTestServices: true })("Hosted schedules", (it) => {
             audience: { kind: "private" },
           })).status,
         ).toBe(200);
-        // The run would be the admin's, who can no longer use the app: it is refused, not started.
         const refused = yield* api.request(actors.owner, "POST", `${copy}/run`);
         expect(refused.status, JSON.stringify(refused.body)).toBe(403);
         expect(refused.body).toMatchObject({ _tag: "OrganizationForbidden" });
         expect((yield* runs).some((row) => row.name === "creator")).toBe(false);
-        // The owner manages the app, so they may pause the admin's copy.
         expect((yield* api.request(actors.owner, "PATCH", copy, { enabled: false })).status).toBe(
           200,
         );

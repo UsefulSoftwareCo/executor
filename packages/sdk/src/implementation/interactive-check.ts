@@ -1,5 +1,4 @@
 import { privateAccountCheck } from "./account-status-output.ts";
-/** Check an app-owned reference with the caller's current linked accounts and normal app authority. */
 import { Effect, Redacted, Schema } from "effect";
 import { AccountCheckResult } from "apps/contracts";
 import { CurrentActor, type HostApi, type ResourceLifecycle } from "../contracts/executor.ts";

@@ -1,4 +1,3 @@
-/** Display status reuses health JSON without advancing the schema or losing checked identity. */
 import { expect, layer } from "@effect/vitest";
 import { Effect } from "effect";
 import { HostedLive, withHostedCase } from "../support/case.ts";
@@ -24,7 +23,7 @@ layer(HostedLive, { excludeTestServices: true })("Status persistence", (it) => {
             params: [fixture.account],
           },
         ]);
-        expect(version).toEqual([{ value: "4.0.15" }]);
+        expect(version).toEqual([{ value: "4.0.17" }]);
         expect(columns).toEqual([]);
         expect(records).toEqual([
           {

@@ -1,5 +1,4 @@
-/** Abandon a pending app session without ending the connection or holding SQL during cancel. */
-import { type Crypto, Effect } from "effect";
+import { Effect } from "effect";
 import { CurrentActor, type ResourceLifecycle } from "../contracts/executor.ts";
 import { AuthMethodInvalid } from "../contracts/provider.ts";
 import type { AppAccounts } from "../contracts/apps.ts";
@@ -12,11 +11,12 @@ import { requireTargetProvider } from "./connection-target.ts";
 import { query, transaction, type Query } from "./database.ts";
 import { pendingInteractive } from "./interactive-state.ts";
 import { interactiveRunner } from "./interactive-runner.ts";
+import type { HostCrypto } from "./host-crypto.ts";
 
 export const interactiveCancelMillis = 5_000;
 export const makeInteractiveAttempts = (
   db: Query,
-  crypto: Crypto.Crypto,
+  crypto: HostCrypto,
   runtime: Runtime,
   resolveAccount: ReturnType<typeof makeOAuth>["resolveSelected"],
   lifecycle?: ResourceLifecycle,

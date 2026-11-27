@@ -1,8 +1,3 @@
-/**
- * An approved call whose service refuses its token is repeated after renewal only when the caller
- * named it a query. A call that named no kind may already have written, even when the catalog
- * names its tool a query, so it is not repeated.
- */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Redacted, Schema } from "effect";
 import { FetchHttpClient, HttpClient } from "effect/http";
@@ -47,11 +42,8 @@ layer(TestLive, { excludeTestServices: true })("Local approval resume kind", (it
         };
         const records = yield* recordingService;
         const issuer = yield* oauthSetupIssuer;
-        // No `expires_in`, so only the service's refusal starts a renewal.
         yield* issuer.configure({ refreshTokens: true, expiresIn: null });
         const name = `Resume kind ${randomUUID().slice(0, 8)}`;
-        // `save` is a query and `write` a mutation. Each approval policy saves a record and asks
-        // for approval; each tool saves a record and then presents the account's token.
         const tool = (kind: "query" | "mutation", marker: string) =>
           `${kind}({ input: object({}), approval: async () => {
       await record("policy");
@@ -129,17 +121,12 @@ export default defineApp({ user: { accounts: { service } } }, async ({ user: { a
         const connected = (yield* body(Resource, completed)).id;
         account = connected;
 
-        /**
-         * Call the tool, then resume its approval after the service has ended the account's
-         * token. Returns the resumed result, the records saved since the call, and the renewals.
-         */
         const approveRefused = (name: string, kind?: "query" | "mutation") =>
           Effect.gen(function* () {
             const before = {
               records: (yield* records.saved).length,
               refreshes: (yield* issuer.metrics).refreshesIssued,
             };
-            // The call names no account; it uses the account linked to the app.
             const called = yield* api.request(agent, "POST", "/v1/tools/call", {
               app: app.id,
               tool: name,
@@ -162,22 +149,18 @@ export default defineApp({ user: { accounts: { service } } }, async ({ user: { a
             };
           });
 
-        // No kind named: the request saves none. The refused call is renewed but not repeated,
-        // although the catalog names the tool a query: the tool ran once.
         const unnamed = yield* approveRefused("save");
         expect(unnamed.saved).not.toHaveProperty("kind");
         expect(unnamed.records).toEqual(["policy", "save"]);
         expect(unnamed.renewals).toBe(1);
         expect(unnamed.resumed).toMatchObject({ status: "failed", reason: "execution-failed" });
 
-        // Named a query: the refused call is repeated once with the renewed access.
         const queried = yield* approveRefused("save", "query");
         expect(queried.saved).toMatchObject({ kind: "query" });
         expect(queried.records).toEqual(["policy", "save", "save"]);
         expect(queried.renewals).toBe(1);
         expect(queried.resumed).toEqual({ status: "completed", value: "ran" });
 
-        // Named a mutation: renewed, not repeated.
         const written = yield* approveRefused("write", "mutation");
         expect(written.saved).toMatchObject({ kind: "mutation" });
         expect(written.records).toEqual(["policy", "write"]);

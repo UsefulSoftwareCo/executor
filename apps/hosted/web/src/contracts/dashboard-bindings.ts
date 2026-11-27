@@ -1,4 +1,3 @@
-/** Hosted resolvers bind organization identity here, outside reusable atoms and views. */
 import type { CustomAppInput } from "@executor-js/catalog/contracts";
 import { Effect } from "effect";
 import { AsyncResult, Atom } from "effect/reactivity";
@@ -9,7 +8,6 @@ import { HostedClient, catalogAtom } from "./api.ts";
 import { inventoryAtom } from "./organization.ts";
 import { acknowledgeApp, toolsAtom } from "./apps.ts";
 
-/** A separate set of atom identities per organization prevents cross-organization cache reuse. */
 export const dashboardAtoms = Atom.family((organization: OrganizationReference) => ({
   inventory: Atom.map(
     inventoryAtom(organization),
@@ -25,7 +23,6 @@ export const dashboardAtoms = Atom.family((organization: OrganizationReference) 
         ...data,
         accounts: data.accounts.map((account) => {
           const definition = providers.get(account.provider);
-          // This API does not expose credential health. Do not invent a successful sign-in state.
           return {
             ...account,
             ...(definition
@@ -43,7 +40,6 @@ export const dashboardAtoms = Atom.family((organization: OrganizationReference) 
       AsyncResult.map((page) => page.items),
     ),
   ),
-  /** One install per catalog entry, so rows add independently and each gets its own result. */
   install: Atom.family((_entry: string) =>
     HostedClient.runtime.fn((input: InstallApp, get) =>
       Effect.flatMap(HostedClient, (client) =>

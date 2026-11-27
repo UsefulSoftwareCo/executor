@@ -4,7 +4,6 @@ import { Tabs as TabsPrimitive } from "radix-ui";
 
 import { cn } from "../lib/utils.ts";
 
-/** Tabs primitive; accepts native props and composes caller styles. */
 function Tabs({
   className,
   orientation = "horizontal",
@@ -21,7 +20,6 @@ function Tabs({
   );
 }
 
-/** Filled and underline tab-list appearances. */
 const tabsListVariants = cva(
   "group/tabs-list inline-flex w-fit items-center justify-center rounded-lg p-[3px] text-muted-foreground group-data-[orientation=horizontal]/tabs:h-9 group-data-[orientation=vertical]/tabs:h-fit group-data-[orientation=vertical]/tabs:flex-col data-[variant=line]:rounded-none",
   {
@@ -37,7 +35,6 @@ const tabsListVariants = cva(
   },
 );
 
-/** Tabs List primitive; accepts native props and composes caller styles. */
 function TabsList({
   className,
   variant = "default",
@@ -53,7 +50,6 @@ function TabsList({
   );
 }
 
-/** Tabs Trigger primitive; accepts native props and composes caller styles. */
 function TabsTrigger({ className, ...props }: React.ComponentProps<typeof TabsPrimitive.Trigger>) {
   return (
     <TabsPrimitive.Trigger
@@ -70,7 +66,6 @@ function TabsTrigger({ className, ...props }: React.ComponentProps<typeof TabsPr
   );
 }
 
-/** Tabs Content primitive; accepts native props and composes caller styles. */
 function TabsContent({ className, ...props }: React.ComponentProps<typeof TabsPrimitive.Content>) {
   return (
     <TabsPrimitive.Content

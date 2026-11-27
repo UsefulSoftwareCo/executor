@@ -1,11 +1,8 @@
-/** Bulk cleanup is bounded and advisory; a provider never vetoes the local purge. */
 import { Clock, Effect } from "effect";
 import type { InteractiveHost } from "../contracts/interactive-accounts.ts";
 import type { AccountId, OwnerId } from "../contracts/shared.ts";
 import { interactiveStepMillis } from "./interactive-runner.ts";
-/** Self-host's HTTP idle limit is 30 seconds; leave 10 seconds for the local mutation. */
 export const interactiveCleanupMillis = 20_000;
-/** Capture resolved handler calls while the app, version and linked credentials still exist. */
 export const prepareInteractiveCleanup = <E, E2>(
   prepare: (
     input: Parameters<InteractiveHost["remove"]>[0],

@@ -1,4 +1,3 @@
-/** Persistent error-monitoring projects. The app consumes public DSNs from this stack. */
 import * as Alchemy from "alchemy";
 import { Random, RandomProvider } from "alchemy/Random";
 import * as Output from "alchemy/Output";

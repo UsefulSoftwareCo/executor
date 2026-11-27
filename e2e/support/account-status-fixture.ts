@@ -1,4 +1,3 @@
-/** Synthetic status endpoint. The app reaches it with its own backend account. */
 import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
 import { Effect, Layer, Ref, Schema } from "effect";
 import { HttpRouter, HttpServer, HttpServerRequest, HttpServerResponse } from "effect/http";

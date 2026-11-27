@@ -3,12 +3,10 @@ import { Input } from "@executor-js/ui/components/input";
 import { cn } from "@executor-js/ui/lib/utils";
 import { useId, type ComponentProps, type ReactNode } from "react";
 
-/** Organization details form parts shared by first-team setup and later creation. */
 export function OrganizationForm({ className, ...props }: ComponentProps<"form">) {
   return <form className={cn("flex flex-col gap-5", className)} {...props} />;
 }
 
-/** Title row; setup places its icon picker beside the heading. */
 export function OrganizationFormHeader({ className, ...props }: ComponentProps<"header">) {
   return (
     <header
@@ -21,7 +19,6 @@ export function OrganizationFormHeader({ className, ...props }: ComponentProps<"
   );
 }
 
-/** Labelled input; remaining props go to the input. */
 export function OrganizationFormField({
   label,
   className,

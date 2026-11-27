@@ -1,4 +1,3 @@
-/** Shared source-owned shadcn primitives. Prefer individual component subpaths. */
 export * from "./implementation/components/alert.tsx";
 export * from "./implementation/components/avatar.tsx";
 export * from "./implementation/components/button.tsx";

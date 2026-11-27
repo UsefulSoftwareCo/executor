@@ -1,6 +1,5 @@
 import { Predicate } from "effect";
 
-/** Account field values of at least this length are replaced wherever a message contains them. */
 const minimumSecretLength = 6;
 
 const secretValues = (
@@ -16,11 +15,6 @@ const secretValues = (
   return found;
 };
 
-/**
- * Every credential field value of an invocation's accounts by scope, longest first. The accounts
- * may not have been checked yet, so each scope is read only when it is a slot-to-account record;
- * each account keeps its credential values in `fields`.
- */
 export const accountFieldSecrets = (accounts: unknown, minimum = minimumSecretLength) => {
   const found = new Set<string>();
   if (Predicate.isObject(accounts))
