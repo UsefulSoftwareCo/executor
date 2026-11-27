@@ -4,12 +4,12 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "build": "bun ./node_modules/blume/src/cli/index.ts build",
-    "dev": "bun ./node_modules/blume/src/cli/index.ts dev --port 4322",
+    "build": "bun reference/generate.ts && bun ./node_modules/blume/src/cli/index.ts build",
+    "dev": "bun reference/generate.ts && bun ./node_modules/blume/src/cli/index.ts dev --port 4322",
     "preview": "blume preview --port 4322",
-    "validate": "blume validate",
+    "validate": "bun reference/generate.ts && blume validate",
     "audit": "blume audit --skip BLUME_AUDIT_LINK_TO_BROKEN",
-    "eval": "blume eval"
+    "eval": "bun reference/generate.ts && blume eval"
   },
   "dependencies": {
     "@executor-js/marketing": "workspace:*",

@@ -529,7 +529,11 @@ const registry = Effect.gen(function* () {
       ]),
     );
   yield* psql(`create role "stage.admin" login superuser password '${password}'`);
-  return { url: `postgresql://stage.admin:${password}@127.0.0.1:${port}/postgres`, psql };
+  return {
+    url: `postgresql://stage.admin:${password}@127.0.0.1:${port}/postgres`,
+    psql,
+    container,
+  };
 });
 
 const cli = (
@@ -599,9 +603,14 @@ const inventory = (world: World, slug: string) =>
     }),
   );
 const deletes = (world: World) => world.requests.filter((request) => request.startsWith("DELETE "));
+const previewOwner = (number: number) =>
+  `GitHub PR preview: UsefulSoftwareCo/executor-next#${number}`;
 const lease = (slug: string, database = "neon", createdAt = "2026-10-15T00:00:00Z", owner = slug) =>
   `insert into executor_test_stage_leases (slug, owner, created_at, expires_at, database_provider, retention, background)
    values ('${slug}', '${owner.replaceAll("'", "''")}', '${createdAt}', null, '${database}', 'retained', 'active')`;
+const temporaryLease = (slug: string, createdAt: string, owner = slug) =>
+  `insert into executor_test_stage_leases (slug, owner, created_at, expires_at, database_provider, retention, background)
+   values ('${slug}', '${owner.replaceAll("'", "''")}', '${createdAt}', '${createdAt}'::timestamptz + interval '3 hours', 'neon', 'temporary', 'active')`;
 const prepareRegistry = (world: World, url: string) =>
   cli(world, ["list"], { registry: url }).pipe(
     Effect.tap((result) => Effect.sync(() => expect(result.code, result.output).toBe(0))),
@@ -987,7 +996,7 @@ describe("Removing a test stage by name, with its registry", () => {
         const world = pr2994World();
         yield* prepareRegistry(world, url);
         yield* psql(
-          lease("pr-2994", "neon", "2026-10-01T00:00:00Z", "Owner 100%\r\n::error::spoof"),
+          temporaryLease("pr-2994", "2026-10-01T00:00:00Z", "Owner 100%\r\n::error::spoof"),
         );
         yield* psql(
           `insert into executor_test_stage_leases (slug, owner, created_at, expires_at, database_provider, retention, background)
@@ -1042,8 +1051,10 @@ describe("Removing a test stage by name, with its registry", () => {
       namespacesUnlisted = 0,
       workers = 0,
       env = {},
+      command = ["deploy", "new-stage", "--owner", "Deployer"],
     }: {
       readonly readable?: boolean;
+      readonly command?: ReadonlyArray<string>;
       readonly namespaces?: Array<{ script: string }>;
       readonly namespacesUnlisted?: number;
       readonly workers?: number;
@@ -1069,7 +1080,7 @@ describe("Removing a test stage by name, with its registry", () => {
           AuthSecret: "readable",
         };
       yield* prepareRegistry(world, url);
-      yield* psql(lease("pr-2994", "neon", "2026-10-01T00:00:00Z", "Owner"));
+      yield* psql(lease("pr-2994", "neon", "2026-10-01T00:00:00Z", previewOwner(2994)));
       yield* psql(
         `insert into executor_test_stage_leases (slug, owner, created_at, expires_at, database_provider, retention, background)
          select 'filler-' || n, 'Filler', '2026-11-01'::timestamptz + n * interval '1 minute', null, 'neon', 'retained', 'active'
@@ -1086,11 +1097,10 @@ describe("Removing a test stage by name, with its registry", () => {
         );
         yield* fs.chmod(path.join(bin, tool), 0o755);
       }
-      const result = yield* cli(
-        world,
-        ["deploy", "new-stage", "--owner", "Deployer", "--no-input", "--yes", ...flags],
-        { registry: url, env: { PATH: `${bin}:${process.env.PATH ?? ""}`, ...env } },
-      );
+      const result = yield* cli(world, [...command, "--no-input", "--yes", ...flags], {
+        registry: url,
+        env: { PATH: `${bin}:${process.env.PATH ?? ""}`, ...env },
+      });
       return {
         result,
         built: yield* fs.exists(built),
@@ -1109,8 +1119,8 @@ describe("Removing a test stage by name, with its registry", () => {
         const { result, built, deletes, leases, oldest } = yield* deployAmong(80, ["--no-evict"]);
         expect(result.code).not.toBe(0);
         expect(result.output).toContain("Deploying new-stage would evict 1 test stage");
-        expect(result.output).toContain("pr-2994 (Owner)");
-        expect(result.output).not.toContain("Evicting the oldest test stage");
+        expect(result.output).toContain(`pr-2994 (${previewOwner(2994)})`);
+        expect(result.output).not.toContain("Evicting the oldest");
         expect([built, deletes, leases, oldest]).toEqual([false, [], "80", "1"]);
       }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
     180_000,
@@ -1122,7 +1132,7 @@ describe("Removing a test stage by name, with its registry", () => {
       Effect.gen(function* () {
         const { result, built, deletes, oldest } = yield* deployAmong(79, ["--no-evict"]);
         expect(result.output).not.toContain("would evict");
-        expect(result.output).not.toContain("Evicting the oldest test stage");
+        expect(result.output).not.toContain("Evicting the oldest");
         expect([built, deletes, oldest]).toEqual([true, [], "1"]);
       }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
     180_000,
@@ -1134,7 +1144,7 @@ describe("Removing a test stage by name, with its registry", () => {
       Effect.gen(function* () {
         const { result, built } = yield* deployAmong(80, []);
         expect(result.output).toContain(
-          "Evicting the oldest test stage, pr-2994 (Owner), to stay within 80.",
+          `Evicting the oldest evictable test stage, pr-2994 (${previewOwner(2994)}), to stay within 80.`,
         );
         expect(result.output).not.toContain("would evict");
         expect(built).toBe(true);
@@ -1150,6 +1160,27 @@ describe("Removing a test stage by name, with its registry", () => {
         expect(result.output).toContain("Evicted pr-2994.");
         expect(result.output).not.toContain("Could not evict");
         expect([built, oldest, leases]).toEqual([true, "0", "80"]);
+      }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+    180_000,
+  );
+
+  it.live(
+    "a PR preview's slug is not redeployed under another owner, so a hand deploy cannot inherit its evictable registration",
+    () =>
+      Effect.gen(function* () {
+        const other = yield* deployAmong(1, [], {
+          command: ["deploy", "pr-2994", "--owner", "Person"],
+        });
+        expect(other.result.code).not.toBe(0);
+        expect(other.result.output).toContain(
+          `test-pr-2994 is registered as ${previewOwner(2994)}, a PR preview that eviction may remove. Deploying it as Person would leave that registration in place, so nothing was reserved, deployed or destroyed.`,
+        );
+        expect([other.built, other.leases]).toEqual([false, "1"]);
+        const same = yield* deployAmong(1, [], {
+          command: ["deploy", "pr-2994", "--owner", previewOwner(2994)],
+        });
+        expect(same.result.output).not.toContain("is registered as");
+        expect(same.built).toBe(true);
       }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
     180_000,
   );
@@ -1369,6 +1400,391 @@ describe("Removing a test stage by name, with its registry", () => {
         expect((yield* psql("select count(*) from executor_test_stage_leases")).trim()).toBe("1");
       }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
     180_000,
+  );
+});
+
+interface EvictionDecision {
+  readonly admitted: boolean;
+  readonly refusal: "no-evict" | "quota" | null;
+  readonly planned: ReadonlyArray<string>;
+  readonly evicted: ReadonlyArray<string>;
+  readonly failed: ReadonlyArray<string>;
+  readonly torn: ReadonlyArray<string>;
+  readonly registry: number;
+  readonly warnsOverLimit: boolean;
+}
+interface EvictionSituation {
+  readonly name: string;
+  readonly stages: number;
+  readonly leases: ReadonlyArray<string>;
+  readonly unreadable?: ReadonlyArray<string>;
+  readonly classes?: Record<string, number>;
+  readonly limit?: number;
+  readonly command?: ReadonlyArray<string>;
+  readonly onDestroy?: (sql: (statement: string) => string) => string;
+  readonly kept: ReadonlyArray<string>;
+  readonly instead?: EvictionDecision;
+  readonly accepted?: { readonly because: string; readonly decision: EvictionDecision };
+}
+const evictionBase = "f10d44db5855d9c78f4ddecd4b1a9fc174f46bba";
+const mainDecisions = "e2e/tests/test-stage-eviction-main.json";
+const preview = (number: number, createdAt: string, database = "neon") =>
+  lease(`pr-${number}`, database, createdAt, previewOwner(number));
+const kept = (slug: string, createdAt: string, owner = "Person") =>
+  lease(slug, "neon", createdAt, owner);
+const decision = (overrides: Partial<EvictionDecision>): EvictionDecision => ({
+  admitted: true,
+  refusal: null,
+  planned: [],
+  evicted: [],
+  failed: [],
+  torn: [],
+  registry: 81,
+  warnsOverLimit: false,
+  ...overrides,
+});
+const unreadablePreviews = [1, 2, 3, 4, 5, 6].map((index) => ({
+  slug: `pr-${3000 + index}`,
+  lease: preview(3000 + index, `2026-09-0${index}T00:00:00Z`),
+}));
+const evictionSituations: ReadonlyArray<EvictionSituation> = [
+  { name: "below the threshold", stages: 79, leases: [preview(2994, "2026-10-01")], kept: [] },
+  { name: "oldest is a PR preview", stages: 80, leases: [preview(2994, "2026-10-01")], kept: [] },
+  {
+    name: "oldest is a temporary stage, whoever owns it",
+    stages: 80,
+    leases: [temporaryLease("temp-a", "2026-09-01", "Person"), preview(2994, "2026-10-01")],
+    kept: [],
+  },
+  {
+    name: "oldest is kept, a PR preview is next",
+    stages: 80,
+    leases: [kept("kept-stage", "2026-09-01"), preview(2994, "2026-10-01")],
+    kept: ["kept-stage"],
+    instead: decision({ evicted: ["pr-2994"], torn: ["pr-2994"], registry: 80 }),
+  },
+  {
+    name: "every stage is kept",
+    stages: 80,
+    leases: [kept("pr-2994", "2026-10-01")],
+    kept: ["pr-2994"],
+    instead: decision({ warnsOverLimit: true }),
+  },
+  {
+    name: "stages that only resemble PR previews are kept",
+    stages: 85,
+    leases: [
+      kept("ops-stage", "2026-09-01", "GitHub PR preview: ops"),
+      kept("pr-2995", "2026-09-02", previewOwner(2994)),
+      kept("pr-2996", "2026-09-03", "GitHub PR preview: someone/executor-next#2996"),
+      kept("pr-2997", "2026-09-04", `${previewOwner(2997)} `),
+      preview(2998, "2026-09-05", "planetscale"),
+      kept("pr-2994", "2026-10-01"),
+    ],
+    kept: ["ops-stage", "pr-2995", "pr-2996", "pr-2997", "pr-2998", "pr-2994"],
+    instead: decision({ registry: 86, warnsOverLimit: true }),
+  },
+  {
+    name: "two needed, a kept stage between evictable ones",
+    stages: 81,
+    leases: [
+      temporaryLease("temp-a", "2026-09-01"),
+      kept("kept-stage", "2026-09-15"),
+      preview(2994, "2026-10-01"),
+    ],
+    kept: ["kept-stage"],
+    instead: decision({
+      evicted: ["temp-a", "pr-2994"],
+      torn: ["temp-a", "pr-2994"],
+      registry: 80,
+    }),
+  },
+  {
+    name: "--no-evict with a PR preview to evict",
+    stages: 80,
+    leases: [preview(2994, "2026-10-01")],
+    command: ["deploy", "new-stage", "--owner", "Deployer", "--no-evict"],
+    kept: [],
+  },
+  {
+    name: "--no-evict when every stage is kept",
+    stages: 80,
+    leases: [kept("pr-2994", "2026-10-01")],
+    command: ["deploy", "new-stage", "--owner", "Deployer", "--no-evict"],
+    kept: [],
+  },
+  {
+    name: "redeploying a registered slug at the threshold",
+    stages: 81,
+    leases: [kept("kept-stage", "2026-09-01"), preview(2994, "2026-10-01")],
+    command: ["deploy", "pr-2994", "--owner", previewOwner(2994)],
+    kept: [],
+  },
+  {
+    name: "plan with a kept oldest stage",
+    stages: 80,
+    leases: [kept("kept-stage", "2026-09-01"), preview(2994, "2026-10-01")],
+    command: ["plan", "new-stage", "--owner", "Deployer"],
+    kept: ["kept-stage"],
+    instead: decision({ planned: ["pr-2994"], registry: 80 }),
+  },
+  {
+    name: "plan when every stage is kept",
+    stages: 80,
+    leases: [kept("pr-2994", "2026-10-01")],
+    command: ["plan", "new-stage", "--owner", "Deployer"],
+    kept: ["pr-2994"],
+    instead: decision({ registry: 80, warnsOverLimit: true }),
+  },
+  {
+    name: "a second candidate's lease changes to a person's before eviction locks it",
+    stages: 81,
+    leases: [preview(2994, "2026-10-01"), preview(3000, "2026-10-02")],
+    onDestroy: (sql) =>
+      `if [ "$ALCHEMY_STAGE" = test-pr-2994 ]; then ${sql("update executor_test_stage_leases set owner = 'Person' where slug = 'pr-3000'")}; fi`,
+    kept: ["pr-3000"],
+    instead: decision({
+      evicted: ["pr-2994"],
+      failed: ["pr-3000"],
+      torn: ["pr-2994"],
+      warnsOverLimit: true,
+    }),
+  },
+  {
+    name: "a second candidate, a temporary stage, changes owner before eviction locks it",
+    stages: 81,
+    leases: [preview(2994, "2026-10-01"), temporaryLease("temp-b", "2026-10-02")],
+    onDestroy: (sql) =>
+      `if [ "$ALCHEMY_STAGE" = test-pr-2994 ]; then ${sql("update executor_test_stage_leases set owner = 'Person' where slug = 'temp-b'")}; fi`,
+    kept: ["temp-b"],
+    instead: decision({
+      evicted: ["pr-2994"],
+      failed: ["temp-b"],
+      torn: ["pr-2994"],
+      warnsOverLimit: true,
+    }),
+  },
+  {
+    name: "a second candidate leaves the registry before eviction locks it",
+    stages: 81,
+    leases: [preview(2994, "2026-10-01"), preview(3000, "2026-10-02")],
+    onDestroy: (sql) =>
+      `if [ "$ALCHEMY_STAGE" = test-pr-2994 ]; then ${sql("delete from executor_test_stage_leases where slug = 'pr-3000'")}; fi`,
+    kept: [],
+  },
+  {
+    name: "497 of 500 classes, a second candidate PR preview destroyed by something else before eviction locks it",
+    stages: 81,
+    leases: [preview(2994, "2026-10-01"), preview(3000, "2026-10-02")],
+    classes: { "pr-3000": 8 },
+    limit: 500,
+    onDestroy: (sql) =>
+      `if [ "$ALCHEMY_STAGE" = test-pr-2994 ]; then ${sql("delete from executor_test_stage_leases where slug = 'pr-3000'")}; fi`,
+    kept: [],
+  },
+  {
+    name: "497 of 500 classes, two needed, an empty temporary stage, an empty kept stage, then a PR preview",
+    stages: 81,
+    leases: [
+      temporaryLease("empty-stage", "2026-09-01"),
+      kept("kept-stage", "2026-09-02"),
+      preview(2994, "2026-10-01"),
+    ],
+    classes: { "pr-2994": 8 },
+    limit: 500,
+    kept: ["kept-stage"],
+    accepted: {
+      because:
+        "main's candidates include a kept stage, so it credits nothing and refuses; these candidates are all evictable, and evicting them is eviction's job",
+      decision: decision({
+        evicted: ["empty-stage", "pr-2994"],
+        torn: ["empty-stage", "pr-2994"],
+        registry: 80,
+      }),
+    },
+  },
+  {
+    name: "497 of 500 classes, the oldest stage is an empty temporary stage",
+    stages: 80,
+    leases: [temporaryLease("empty-stage", "2026-09-20"), preview(2994, "2026-10-01")],
+    classes: { "pr-2994": 8 },
+    limit: 500,
+    kept: [],
+  },
+  {
+    name: "497 classes with no limit set, the oldest stage is an empty temporary stage",
+    stages: 80,
+    leases: [temporaryLease("empty-stage", "2026-09-20"), preview(2994, "2026-10-01")],
+    classes: { "pr-2994": 8 },
+    kept: [],
+  },
+  {
+    name: "497 of 500 classes, a kept oldest stage, three empty stages, then a PR preview",
+    stages: 80,
+    leases: [
+      kept("kept-stage", "2026-09-01"),
+      temporaryLease("empty-1", "2026-09-02"),
+      temporaryLease("empty-2", "2026-09-03"),
+      temporaryLease("empty-3", "2026-09-04"),
+      preview(2994, "2026-10-01"),
+    ],
+    classes: { "kept-stage": 8, "pr-2994": 8 },
+    limit: 500,
+    kept: ["kept-stage"],
+    instead: decision({ admitted: false, refusal: "quota", registry: 80 }),
+  },
+  {
+    name: "six unreadable PR previews at the front",
+    stages: 80,
+    leases: [...unreadablePreviews.map((stage) => stage.lease), preview(2994, "2026-10-01")],
+    unreadable: unreadablePreviews.map((stage) => stage.slug),
+    kept: [],
+  },
+  {
+    name: "six unreadable PR previews at the front, 497 of 500 classes",
+    stages: 80,
+    leases: [...unreadablePreviews.map((stage) => stage.lease), preview(2994, "2026-10-01")],
+    unreadable: unreadablePreviews.map((stage) => stage.slug),
+    classes: { "pr-3001": 8, "pr-2994": 8 },
+    limit: 500,
+    kept: [],
+  },
+];
+
+const decide = (situation: EvictionSituation) =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const { url, psql, container } = yield* registry;
+    const world: World = { ...pr2994World(), state: {} };
+    const classes = Object.entries(situation.classes ?? {});
+    const script = (slug: string) => `executor-next-hosted-api-test-${slug}-ffffffffffffffff`;
+    for (const [slug] of classes)
+      world.workers.push({ id: script(slug), tags: tags(`test-${slug}`, "Api") });
+    const counted = classes.reduce((sum, [, count]) => sum + count, 0);
+    world.namespaces = [
+      ...classes.flatMap(([slug, count]) =>
+        Array.from({ length: count }, () => ({ script: script(slug) })),
+      ),
+      ...Array.from({ length: classes.length === 0 ? 0 : 497 - counted }, () => ({
+        script: "executor-next-hosted-api-v2-dddddddddddddddd",
+      })),
+    ];
+    for (const slug of situation.unreadable ?? [])
+      world.state[`test-${slug}`] = { Api: "undecryptable" };
+    yield* prepareRegistry(world, url);
+    for (const statement of situation.leases) yield* psql(statement);
+    yield* psql(
+      `insert into executor_test_stage_leases (slug, owner, created_at, expires_at, database_provider, retention, background)
+       select 'filler-' || n, 'Filler', '2026-11-01'::timestamptz + n * interval '1 minute', null, 'neon', 'retained', 'active'
+       from generate_series(1, ${situation.stages - situation.leases.length}) as n`,
+    );
+    const directory = yield* fs.makeTempDirectoryScoped({ prefix: "executor-stage-eviction-" });
+    const bin = path.join(directory, "bin");
+    const built = path.join(directory, "built");
+    const torn = path.join(directory, "torn");
+    yield* fs.makeDirectory(bin);
+    const sql = (statement: string) =>
+      `docker exec ${container} psql -v ON_ERROR_STOP=1 -U executor -d postgres -c "${statement}" >/dev/null 2>&1`;
+    for (const tool of ["bun", "alchemy"]) {
+      yield* fs.writeFileString(
+        path.join(bin, tool),
+        `#!/bin/sh\n${tool === "alchemy" ? `if [ "$1" = destroy ]; then echo "\${ALCHEMY_STAGE#test-}" >> '${torn}'; ${situation.onDestroy?.(sql) ?? ""}\nexit 0; fi\n` : ""}touch '${built}'\nexit 1\n`,
+      );
+      yield* fs.chmod(path.join(bin, tool), 0o755);
+    }
+    const result = yield* cli(
+      world,
+      [
+        ...(situation.command ?? ["deploy", "new-stage", "--owner", "Deployer"]),
+        "--no-input",
+        "--yes",
+      ],
+      {
+        registry: url,
+        env: {
+          PATH: `${bin}:${process.env.PATH ?? ""}`,
+          ...(situation.limit === undefined
+            ? {}
+            : { TEST_STAGE_DURABLE_OBJECT_CLASS_LIMIT: String(situation.limit) }),
+        },
+      },
+    );
+    const all = (pattern: RegExp) => [...result.output.matchAll(pattern)].map((match) => match[1]!);
+    return {
+      admitted: yield* fs.exists(built),
+      refusal: result.output.includes("--no-evict refuses it")
+        ? "no-evict"
+        : result.output.includes("would bring the account to")
+          ? "quota"
+          : null,
+      planned: all(
+        /^Deploying will evict the oldest (?:evictable )?test stage, ([a-z0-9-]+) \(/gmu,
+      ),
+      evicted: all(/^Evicted ([a-z0-9-]+)\.$/gmu),
+      failed: all(/Could not evict ([a-z0-9-]+) \(/gu),
+      torn: (yield* fs.exists(torn)) ? (yield* fs.readFileString(torn)).trim().split("\n") : [],
+      registry: Number(yield* psql("select count(*) from executor_test_stage_leases")),
+      warnsOverLimit: /over the limit of 80|go past the limit of 80/u.test(result.output),
+    } satisfies EvictionDecision;
+  }).pipe(Effect.scoped);
+
+describe("Choosing which test stage to evict, compared with main", () => {
+  it.live(
+    `makes main's decision (${evictionBase.slice(0, 10)}) in every situation, except that it never evicts a stage that is not evictable`,
+    () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const decisions = Object.fromEntries(
+          yield* Effect.forEach(
+            evictionSituations,
+            (situation) =>
+              decide(situation).pipe(Effect.map((made) => [situation.name, made] as const)),
+            { concurrency: 4 },
+          ),
+        );
+        const record = process.env.TEST_STAGE_EVICTION_RECORD;
+        if (record !== undefined) {
+          expect(
+            process.env.CI,
+            "TEST_STAGE_EVICTION_RECORD writes main's decisions instead of comparing with them, so it is refused in CI",
+          ).toBeUndefined();
+          yield* fs.writeFileString(
+            mainDecisions,
+            `${JSON.stringify({ base: record, decisions }, null, 2)}\n`,
+          );
+          return;
+        }
+        const main = JSON.parse(yield* fs.readFileString(mainDecisions)) as {
+          readonly base: string;
+          readonly decisions: Record<string, EvictionDecision>;
+        };
+        expect(main.base).toBe(evictionBase);
+        expect(Object.keys(main.decisions).toSorted()).toEqual(
+          evictionSituations.map((situation) => situation.name).toSorted(),
+        );
+        for (const situation of evictionSituations) {
+          const before = main.decisions[situation.name]!;
+          const notEvictable = (slug: string) =>
+            situation.kept.includes(slug) || slug.startsWith("filler-");
+          expect(
+            [...before.planned, ...before.evicted, ...before.torn].some(notEvictable),
+            situation.name,
+          ).toBe(situation.instead !== undefined);
+          expect(situation.instead === undefined || situation.accepted === undefined).toBe(true);
+          const after = decisions[situation.name]!;
+          expect(after, situation.name).toEqual(
+            situation.accepted?.decision ?? situation.instead ?? before,
+          );
+          if (situation.accepted !== undefined)
+            expect(situation.accepted.decision, situation.name).not.toEqual(before);
+          expect(
+            [...after.planned, ...after.evicted, ...after.torn].some(notEvictable),
+            situation.name,
+          ).toBe(false);
+        }
+      }).pipe(Effect.provide(NodeServices.layer)),
+    600_000,
   );
 });
 

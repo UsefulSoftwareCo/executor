@@ -1,0 +1,141 @@
+---
+title: App storage and SQLite
+description: "Give an Executor app a SQLite database with SQL files in migrations/ and read or write rows synchronously with ctx.sql."
+slug: "/build/storage"
+---
+
+Deploying an Executor app that includes one or more `.sql` files in `migrations/` provisions a SQLite database for that app. Deploy applies pending migrations in number order before activating the new version, and handlers read and write rows synchronously through `ctx.sql.exec` and `ctx.sql.transaction`. App SQLite storage works on **Local**, **Self-host**, and **Cloud**.
+
+**The step that matters most:** add `migrations/0001_init.sql` with your `CREATE TABLE` statements and deploy—there is nothing to declare in `defineApp` requirements.
+
+**Prerequisites:** an app you can edit and deploy. See [Build an app](/docs/build).
+
+**You'll know it worked when…** `executor apps deploy` succeeds without migration errors, calling `addNote` inserts a row, and `listNotes` returns that same row.
+
+## How to use it
+
+Migration files and `ctx.sql` behave identically on **Local**, **Self-host**, and **Cloud**.
+
+### 1. Add numbered migrations in `migrations/`
+
+Place `.sql` files directly inside `migrations/` named `<number>_<name>.sql`, such as `migrations/0001_create_notes.sql` and `migrations/0002_add_pinned.sql`.
+
+- Executor applies pending migrations in numeric order inside one transaction during `executor apps deploy`, before activating the new version.
+- If a migration fails, nothing is applied and the previous version stays active.
+- Already-applied migrations are recorded by order, filename, and content hash in `_executor_migrations`. Never edit or delete an applied migration file; add a new numbered file for schema changes.
+
+### 2. Read in queries and write in mutations
+
+`ctx.sql.exec<Row>(sql, ...bindings)` runs synchronously (do not `await` it) and returns a cursor with `.toArray()`, `.one()` (throws unless exactly one row returned), `.columnNames`, `.rowsRead`, and `.rowsWritten`.
+
+- **Queries** receive a read-only `SqlReader`. Each `ctx.sql.exec` call runs in a transaction that always rolls back; a call that modifies rows fails, and schema changes roll back too.
+- **Mutations** receive a writable `Sql`. Outside `ctx.sql.transaction(...)`, each `ctx.sql.exec` call runs in its own transaction and commits independently.
+- **Transactions:** `ctx.sql.transaction((tx) => ...)` groups multiple `exec` calls in a synchronous callback inside one SQLite transaction. A failed SQL call or thrown error rolls back the entire transaction even if your callback catches the SQL error. Explicit transactions cannot nest, and returning a `Promise` or using `await` inside `transaction` is refused so no transaction stays open while waiting on network I/O.
+
+### 3. Combine SQLite with external API calls
+
+Never hold a transaction open across `fetch`. Instead, use reserve-call-publish:
+
+1. Write a `"pending"` row in one `ctx.sql.transaction(...)`.
+2. Call the external API with `ctx.fetch` outside the transaction.
+3. Update the row conditionally (`UPDATE ... WHERE id = ? AND status = 'pending'`) and check `rowsWritten` to handle concurrent calls or failures.
+
+For workflow step mutations invoked with `step.runMutation`, open at most one `ctx.sql.transaction(...)` and put all writes inside it so Executor commits the step receipt atomically with your data writes.
+
+## Example
+
+Save these files in `./storage` (replacing `0.0.1-beta.148` with the `version` from `executor apps framework` if your host reports a different release):
+
+<CodeGroup>
+
+```json storage/package.json
+{
+  "name": "storage-review",
+  "private": true,
+  "dependencies": {
+    "apps": "0.0.1-beta.148"
+  }
+}
+```
+
+```sql storage/migrations/0001_create_notes.sql
+CREATE TABLE notes (
+  id TEXT PRIMARY KEY NOT NULL,
+  text TEXT NOT NULL,
+  created_at INTEGER NOT NULL
+);
+```
+
+```ts storage/index.ts
+import { array, defineApp, mutation, number, object, query, router, string } from "apps";
+
+const noteSchema = object({
+  id: string(),
+  text: string(),
+  createdAt: number(),
+});
+
+const listNotes = query(
+  {
+    description: "List recent notes",
+    input: object({}),
+    output: array(noteSchema),
+  },
+  async ({ sql }) =>
+    sql
+      .exec<{ id: string; text: string; createdAt: number }>(
+        "SELECT id, text, created_at AS createdAt FROM notes ORDER BY created_at DESC LIMIT 50",
+      )
+      .toArray(),
+);
+
+const addNote = mutation(
+  {
+    description: "Save a note",
+    input: object({ text: string() }),
+    output: noteSchema,
+  },
+  async ({ sql }, { text }) =>
+    sql.transaction((tx) =>
+      tx
+        .exec<{ id: string; text: string; createdAt: number }>(
+          "INSERT INTO notes (id, text, created_at) VALUES (?, ?, ?) RETURNING id, text, created_at AS createdAt",
+          crypto.randomUUID(),
+          text,
+          Date.now(),
+        )
+        .one(),
+    ),
+);
+
+export default defineApp({}, { tools: router({ listNotes, addNote }) });
+```
+
+</CodeGroup>
+
+Deploy `./storage` as **Storage review**, insert a note, and read it back:
+
+```bash
+APP_ID=$(executor apps create --name "Storage review" --files ./storage | node -pe 'JSON.parse(require("fs").readFileSync(0, "utf8")).id')
+executor apps deploy --app "$APP_ID" --files ./storage
+executor execute --code 'return await tools["storage-review"].addNote({ text: "review note" })'
+executor execute --code 'return await tools["storage-review"].listNotes({})'
+```
+
+Check that `listNotes` returns the same `id` and `text: "review note"` returned by `addNote`.
+
+## Limits
+
+- **Immutable migration history:** removing `migrations/` or modifying an applied migration file fails the deploy and leaves the previous version active.
+- **Bound parameter limit:** one statement can bind at most 100 values (`?`). For larger lists, pass one JSON array string and expand it with `json_each(?)`, or split into batches.
+- **SQLite size limits:** a single statement is at most 100 KB; a string, BLOB, or row is at most 2 MB; a table has at most 100 columns. Each migration file runs as one SQL `exec` (after trailing comments and whitespace are stripped), so keep each migration file under 100 KB (split larger schemas across numbered files).
+- **Reserved tables, views, and PRAGMAs:** do not create or modify reserved tables and views prefixed with `_executor_` (`_executor_migrations`, `_executor_step_receipts`, `_executor_step_events`, and the `_executor_legacy_rows` view). Guarded connection `PRAGMA` changes (`foreign_keys`, `defer_foreign_keys`, `ignore_check_constraints`, `legacy_alter_table`, `recursive_triggers`, `reverse_unordered_selects`, `case_sensitive_like`) are refused or restored outside migrations (`case_sensitive_like` is reset after execution).
+- **Shared app data:** callers of an app share its database. Enforce caller-level data partitioning in the app.
+- **Activation and copies:** on **Cloud** and **Self-host**, activating an older build preserves stored SQL rows. A copy leaves live rows behind. On those targets, copying an active app deploys the copy and runs its migrations on fresh storage.
+
+## Related
+
+- [Build an app](/docs/build)
+- [Tools, routers, and schemas](/docs/build/tools)
+- [Framework versions and upgrades](/docs/build/upgrades)
+- [Apps and versions](/docs/concepts/apps-and-versions)

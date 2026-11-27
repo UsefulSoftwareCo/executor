@@ -20,3 +20,14 @@ apps/hosted/cloud/.generated/
 
 # Detached preview handoffs (see notes/preview-handoffs.md)
 .preview/
+
+# Generated Executor docs reference
+/apps/docs/content/reference/cli.md
+/apps/docs/content/reference/cli/
+/apps/docs/content/reference/self-host-env.md
+/apps/docs/content/reference/mcp.md
+/apps/docs/content/reference/mcp/
+/apps/docs/content/reference/skills.md
+/apps/docs/content/reference/skills/
+/apps/docs/content/changelog.md
+/apps/docs/content/changelog/

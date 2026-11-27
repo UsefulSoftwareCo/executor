@@ -1,6 +1,7 @@
 export const previewCommitPattern = /^[a-f0-9]{40}$/u;
 export const previewRepositoryPattern = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/u;
 
+export const previewHomeRepository = "UsefulSoftwareCo/executor-next";
 export const previewSlug = (number: number) => `pr-${number}`;
 export const previewOwner = (repository: string, number: number) =>
   `GitHub PR preview: ${repository}#${number}`;

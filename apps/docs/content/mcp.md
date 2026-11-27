@@ -1,236 +1,130 @@
 ---
 title: The MCP endpoint
-description: "One endpoint gives an agent every app you have configured, without putting a credential in the agent. Codemode, sign-in and elicitation modes explained."
+description: "Connect a compatible MCP client over streamable HTTP or stdio and discover and call the app tools your connection authorizes."
 ---
 
-Executor serves one MCP endpoint at `/mcp`. Every app you have configured is
-reachable through it. You do not add one MCP server per service, and you do not
-paste a credential into the agent.
+Executor stores credentials for your connected accounts and exposes one streamable HTTP MCP endpoint at `/mcp` so an agent can use authorized app tools through a single server. Connect your client to `https://mcp.executor.sh/mcp` (**Cloud**), `<your origin>/mcp` (**Self-host**), or `http://127.0.0.1:4312/mcp` (**Local**, default port), or run `executor mcp` over stdio.
 
-- Hosted: `https://mcp.executor.sh/mcp`
-- Self-host: `<your origin>/mcp`
-- Local: `http://127.0.0.1:4312/mcp`
+- **Available on:** Local, Self-host, and Cloud.
+- **Prerequisites:** At least one app in Executor with its required accounts linked (see [Connect an account](/docs/connect-an-account)) and an MCP client that supports streamable HTTP or stdio commands. For the stdio bridge, install the Executor 2 CLI first (`npm i -g executor@2.0.0-beta.79`). With no host selected or remembered, `executor mcp` starts or uses Local; for Cloud, sign in with `executor login` first; for Self-host, sign in with `executor login --host "$EXECUTOR_ORIGIN"`.
+- **Main command (stdio bridge):**
 
-The transport is streamable HTTP. See
-[Add an MCP client](/mcp-clients) for the exact setup commands. For a client
-that starts a command instead, `executor mcp` serves the same endpoint over
-stdio; see [From a shell](#from-a-shell).
-
-## The tools
-
-The endpoint does not expose one MCP tool per app tool. However many apps you
-add, the tool list stays the same size. When a client connects, the server's
-MCP instructions introduce Executor to the agent. They are the Executor app's
-`executor` skill, which points to its `code-mode` and `app-authoring` skills.
-
-- **`skills`** reads the instructions an app ships. Call `skills({})` for a list
-  of what is visible, `skills({ app: "support-inbox" })` for one app's skills,
-  and `skills({ app: "support-inbox", name: "triage" })` to read one. It
-  connects no account and runs no code.
-- **`search`** finds app tools by words in their paths, descriptions and
-  labels, and returns each tool's exact path and input type.
-- **`describe`** returns the whole description and signature of tools at exact
-  paths from `search`.
-- **`call`** calls tools directly by path. Pass one `{ path, input }` as
-  `calls`, or an array of independent calls, which run concurrently.
-- **`execute`** runs a JavaScript program over your apps.
-- **`resume`** continues a call or program that paused for an approval or for
-  input. It is not present in native mode, where the client answers in place.
-
-## Direct calls
-
-For one or a few calls, an agent needs no program:
-
-```json
-{ "calls": [{ "path": "tools.vercel.listProjects", "input": {} }] }
-```
-
-`call` returns each call's outcome in order, with `ok` and its `value` or
-`error`. One failed call does not stop the others. An unknown path comes back
-with the closest paths. Results come back whole, however large; `execute` can
-return only the fields you need. Approvals and input pause `call` exactly as they pause `execute`,
-except in [native mode](#elicitation-modes): there `call` is marked destructive
-and open-world, so your MCP client confirms each call before it runs, and that
-confirmation answers the apps' approval policies. Tool input still opens the
-client's prompt.
-
-## Codemode
-
-`execute` is for work where one result feeds another call, or a large result
-should be reduced before it reaches the agent. The agent writes a short
-JavaScript program; Executor runs it in a sandboxed interpreter and returns what
-the program returns.
-
-Inside the program, app tools are ordinary async functions:
-
-```js
-return await tools.search({ query: "vercel projects" });
-```
-
-Search returns a page of tools: each one's exact callable path, the first line
-of its description and its input type. Each app and its linked accounts are listed once.
-`tools.search(next)`, with the returned `next` as the whole input, reads the
-following page, and
-`tools.search.describe({ paths })` returns a tool's whole signature, including
-its output type. Every app is called by its slug, `tools.<app>.<tool>`. A call
-uses the accounts you linked to the app: one for each single-account
-requirement, and every linked account for a `.many()` requirement. An app's own
-accounts, linked for everyone by people who can edit it, fill its app account
-requirements for every caller; search and `$accounts` describe only the accounts you link. Calls never
-choose accounts; an input with `$accounts` fails with `AccountChoiceUnsupported`.
-To use another account, link it on the app's **Accounts** tab.
-
-```js
-const projects = await tools.vercel.listProjects({});
-return projects.projects.map((project) => project.name);
-```
-
-The agent can call several tools, join the results and return only the part it
-needs. That is the point: the whole result set never has to pass through the
-model's context.
-
-A remote MCP tool returns its whole MCP result: `content`, `structuredContent`
-and `isError`. A server that returns `structuredContent` usually repeats it as
-JSON text in `content`; Executor drops that copy, so read `structuredContent`.
-Other content stays as the server sent it. `isError: true` is the tool saying it failed. The call returns
-that result instead of throwing, so programs that read `isError` keep working,
-and the result's `toolCalls` lists the call with outcome `failure`. The server
-may still have made changes. `call` lists it the same way. An outcome of
-`success` only means no tool error was reported; check the result before
-treating its action as done.
-
-Images, audio and files reach the agent as MCP content, not base64 text.
-Wherever the value `execute`, `call` or `resume` returns holds
-`{ type: "image", mimeType, data }`, `{ type: "audio", mimeType, data }` or an
-embedded resource with binary contents,
-`{ type: "resource", resource: { uri, mimeType, blob } }`, with its bytes in
-standard or URL-safe base64, the response carries that block as its own MCP
-content after the JSON text, once even if the value repeats it. The JSON keeps
-the block without its bytes, plus `contentIndex`, the block's index in the
-response's `content`. MCP image and audio results, such as screenshots, already
-have that shape. Each client decides how to present a resource; Claude Code, for
-example, saves it as a file the model can open, so a PDF attachment can be read.
-A text resource stays in the JSON. A program can show bytes a tool returns
-another way, such as `{ base64 }`, by returning them in one of these shapes.
-Inside a program the block is whole, so its data can be passed on to another
-tool. The `executor call`, `execute` and `resume` commands write each block to a
-file, in a new temporary directory or the one `--files` names, and print its
-`path` beside its `contentIndex`.
-
-The interpreter has no `fetch`, no `process`, no filesystem, no timers and no
-imports. Its only way out is a tool call, which enters the trusted runtime where your
-credentials live. Limits are cooperative, not process isolation. Discovery is
-not cached across changes, so run `tools.search` again in a new `execute` after
-you add or reconfigure an app.
-
-Some limits are fixed by the server and a client cannot raise them: 65,536
-characters of program source, 100 tool calls and 5 minutes. Executor does not
-limit the size of a result. The runtime limits one value crossing between an app
-and Executor, such as a tool's result, to 32 MiB, and on Cloud a result of a few
-tens of megabytes can pass the MCP session's 128 MB memory. Failures Executor
-recognizes at these limits return an error naming the likely limit, never a cut
-value. A failure that loses the response first, such as a 64 MiB value on Cloud,
-can end with no answer before the client's timeout. Time spent waiting for your approval or input does not count toward the
-5 minutes. Execute returns the result when the program ends, or sooner with a
-request for approval or input when the program pauses. An MCP client with a
-shorter tool-call timeout, often 60 seconds, may give up and cancel the program.
-
-## Signing in from the browser
-
-Hosted and self-host use OAuth. Your client registers itself, opens your browser
-at `/mcp/authorize`, and you sign in there. You then choose an organization and
-approve the connection. The client receives a token; it never receives your
-password or your accounts.
-
-The grant that comes back is bound to one
-[organization](/concepts/organizations-and-access). Switching organization in
-the dashboard later does not retarget an existing connection, including after
-the token refreshes. To use a second organization, connect again and approve it
-separately.
-
-Every request revalidates the token, the approval and your current membership. A
-revoked grant returns 401. Losing membership returns 403.
-
-On the same screen you choose what the agent reaches, every app available to you
-or one of your [scoped connections](#scoped-connections), and its
-[mode](#elicitation-modes). The URL the client was given only preselects these
-choices. The grant keeps what you chose: every request reads it from the grant,
-whatever URL the client later uses, so changing the URL never widens access or
-weakens approvals. To check what a token reaches, send it to `GET /mcp/whoami`.
-
-## Scoped connections
-
-A **scoped connection** is a named MCP URL that reaches only what you turned on.
-Create one under **Scoped connections** on the dashboard's Connect page. For
-each app, choose which of the accounts you linked to it the connection runs as,
-or none for an app without accounts, and which tools it exposes: all tools, read-only tools, or the tools
-you pick. All and read-only include tools the app adds later. Approval rules
-still come from each app's code. A connection never lists the accounts linked to
-an app for everyone: access to the app authorizes them.
-
-Each connection has its own URL, `/mcp?connection=<id>`, which still works: a
-client that signs in there finds the connection already chosen. You can also
-choose the connection when signing in at the plain `/mcp` URL. Either way the
-grant follows the connection: edits apply to connected agents at once, and
-revoking the connection revokes every grant issued through it. Personal access
-tokens and the local server key are not limited by a connection; they keep full
-access at the plain URL and are refused at a connection's URL.
-
-An agent can list your scoped connections with the Executor app, but creating,
-editing and revoking them happens on the dashboard, so an agent never widens its
-own access.
-
-On hosted and self-host, **Connected agents** on the same page lists each
-client you approved, with the apps it can reach, and revokes its grant.
-
-## Elicitation modes
-
-When a tool needs an approval, or needs input, Executor has to ask you. Where
-that question appears depends on the mode, which you choose when signing in and
-which the grant then keeps. The sign-in page preselects `automatic` for the plain
-`/mcp` URL, and the named mode for a URL with `elicitation_mode`.
-
-| Mode        | URL                               | Where you answer                                                                                                                                                                 |
-| ----------- | --------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `automatic` | `/mcp?elicitation_mode=automatic` | Nowhere. Executor approves tool calls at once; your agent's own permission prompt for `call` or `execute` is the check. A question a running tool asks still reaches the agent, as in `model` mode. |
-| `model`     | `/mcp?elicitation_mode=model`     | The agent shows you the request and calls `resume` with your answer.                                                                                                             |
-| `native`    | `/mcp?elicitation_mode=native`    | Your MCP client's own prompt. The `call` or `execute` request stays open and continues. There is no `resume`. `call` approvals are the client's confirmation of the call itself. |
-| `browser`   | `/mcp?elicitation_mode=browser`   | A signed-in page in your browser. The result carries an `approvalUrl`; the agent calls `resume({ requestId })` to collect your answer.                                            |
-
-Native mode needs a client that implements form elicitation. Browser mode is the
-one to use when you do not want the agent to be the one holding the question.
-
-The mode is part of the grant, not the URL. Changing the query string after
-signing in does not change the mode. A personal access token has no grant, so it
-takes its mode from the URL on each request: `automatic` at the plain `/mcp` URL,
-and the named mode with `elicitation_mode`.
-
-## From a shell
-
-The [`executor` command](/run/cli#use-your-tools-from-a-shell) calls the same
-tools from a shell: `executor search`, `describe`, `call`, `execute`, `resume`
-and `skills` each call the tool of the same name and print its result as JSON.
-`executor login` signs it in through the browser, where you choose which apps
-the sign-in reaches and its approval mode, as on the consent screen.
-`executor apps` uses that sign-in too, and needs **All apps** to create, change
-or deploy apps. Without a sign-in, it uses the local server.
-
-`executor mcp` is a stdio MCP server that passes every message to the endpoint
-of the host you signed in to, approvals and questions included, and renews the
-sign-in as it runs:
-
-```sh
+```bash
 claude mcp add executor -- executor mcp
 ```
 
-Its instructions add that the `executor` command is available in the agent's
-shell. A large result can then go to a file, with
-`executor execute --file program.js > result.json`, instead of into the
-agent's context.
+You'll know it worked when your client lists Executor's tools (`skills`, `search`, `describe`, `call`, `execute`, and `resume` outside `native` mode) and `search` returns tools from your apps.
 
-## What is coming later
+## Endpoint URLs by target
 
-- Remembering an approval, so the same action is not asked again.
-- Resuming a program after the server restarts. A lost session cannot be
-  continued, and the program must not be run again automatically, because
-  earlier tool calls may already have taken effect.
+| Target | Streamable HTTP URL | Auth method |
+| --- | --- | --- |
+| **Cloud** | `https://mcp.executor.sh/mcp` | Browser OAuth or personal access token (see below) |
+| **Self-host** | `<your origin>/mcp` | Browser OAuth or personal access token (see below) |
+| **Local** | `http://127.0.0.1:4312/mcp` (default port) | Local browser OAuth (requires a running service and paired dashboard), or local server API key (`Authorization: Bearer <key>`) |
+
+On Cloud, use `https://mcp.executor.sh/mcp`—the dashboard origin `app.executor.sh` does not serve `/mcp`. On Local, use the server's reported port if you changed it, and make sure the MCP client can reach the loopback listener.
+
+For a personal access token (PAT) on Cloud or Self-host, use the organization-specific MCP URL from **Connections** (`/org/<slug>/mcp`). If the token is pinned to one organization, you can also use the plain `/mcp` URL. A full-account PAT using plain `/mcp` requires the `X-Executor-Organization` header to select the organization.
+
+## The tools
+
+The endpoint keeps a fixed `tools/list` surface no matter how many apps you add (the server also registers event and skill extensions). The MCP instructions direct clients to the built-in Executor app's `executor` skill. Reading it requires access to the app and any required linked account. The skill points to `code-mode` and `app-authoring`.
+
+- **`skills`**: `skills({})` lists available app skills and `skills({ app, name })` reads one. The skill reader returns UTF-8 files as text and does not execute the returned file, though listing or reading can evaluate the app's code and run its dynamic skill loader with linked accounts. Some app skills require a linked account. Skill text and `allowed-tools` metadata grant no permissions.
+- **`search`**: Finds app tools by words in their paths, descriptions, and labels, returning each tool's exact path and input type.
+- **`describe`**: Returns the full description and input/output signatures for up to 20 exact tool paths from `search`.
+- **`call`**: Calls one `{ path, input }` or an array of independent tool calls concurrently under the `calls` key.
+- **`execute`**: Runs a JavaScript program inside Executor's interpreter over your apps to chain calls or filter large responses before they enter model context.
+- **`resume`**: Continues a `call` or `execute` request that paused for approval or user input. Not exposed in `native` mode, where the client answers in place.
+
+## Direct calls
+
+Pass `{ calls: { path, input } }` for one direct call or `{ calls: [{ path, input }, ...] }` for concurrent calls:
+
+```json
+{ "calls": { "path": "tools.executor.appManagement.list", "input": {} } }
+```
+
+A completed response puts the outcome in `execution.value`. If you pass an array, the outcomes keep the same order. Each outcome has `ok` and either `value` or `error`; one failed call does not stop the others. Paused requests return an interaction instead. See [Code mode and tool execution](/docs/mcp/code-mode) for full `call`, `search`, `describe`, and `execute` semantics.
+
+## Codemode
+
+Use `execute` when one tool's output feeds the next call or when a large payload should be reduced before returning to the model. Inside `execute`, tools are async functions on `tools.<app-slug>.<tool-name>` (or bracket syntax such as `tools["app-with-hyphens"].router.tool`), alongside `tools.search` and `tools.search.describe`. Read the full reference, interpreter limits, and media/file handling in [Code mode and tool execution](/docs/mcp/code-mode).
+
+## Signing in from the browser
+
+### Cloud and Self-host
+
+1. Add the `/mcp` URL to your MCP client (see [Add an MCP client](/docs/mcp-clients)).
+2. Your client registers via OAuth and opens `/mcp/authorize` in your browser.
+3. Sign in to Executor, choose an **Organization**, choose **Access** (**All apps**, a saved scoped connection, or **New connection**), and choose **Approvals** (**Automatic**, **Through your agent**, **In your browser**, or **In your client**).
+4. Approve the connection. The client receives an OAuth token bound to that organization, access scope (for a scoped grant, the connection ID), and approval mode—the OAuth exchange does not issue your password or service credentials. Note that app tools can still return values their code can read.
+
+Hosted MCP requests check the OAuth token, grant, and current membership. A revoked grant can return HTTP `401`. An otherwise valid grant without the required organization membership can return HTTP `403`. Switching organizations in the dashboard never retargets an existing MCP grant—connect again to authorize a second organization.
+
+You'll know it worked when `GET /mcp/whoami` with the bearer token returns your organization, scope, and approval mode, or when your agent runs `search` and receives matching tool paths.
+
+### Local
+
+1. Start Executor locally (via the desktop app or CLI) so it listens on `http://127.0.0.1:4312` (or your configured port) and pair the local dashboard in your browser if you plan to use browser OAuth.
+2. Point your MCP client on the same machine at `http://127.0.0.1:4312/mcp` (or `http://127.0.0.1:4312/mcp?connection=<id>` for a scoped connection).
+3. On the local browser consent page, pick the **Approvals** mode and approve the client. Alternatively, pass the local server API key as a `Bearer` token at `/mcp` (not at scoped `?connection=` URLs).
+
+You'll know it worked when your client lists Executor's tools and `search` returns tools from your local server.
+
+## Scoped connections
+
+A **scoped connection** restricts an MCP client to the apps, linked user accounts, tool subsets (**All tools**, **Read-only tools**, or **Specific tools**), and app events allowed by that connection. Create and manage them on the **Connections** page and connect via `/mcp?connection=<id>` or the sign-in screen. See [Scoped connections](/docs/mcp/scoped-connections).
+
+## Elicitation modes
+
+When a tool requires approval or asks for input, the grant's approval mode (`automatic`, `model`, `browser`, or `native`) controls how Executor handles it. For browser review, use `?elicitation_mode=browser` and confirm **In your browser** on the consent screen. Select **Through your agent** on the consent screen to use `model` (`?elicitation_mode=model` still initializes the selector to **Automatic**). Once granted, the OAuth grant keeps that selection. See [Approval and elicitation modes](/docs/mcp/approval-modes).
+
+## From a shell
+
+The `executor` CLI calls the same MCP tools from a terminal and prints JSON: `executor search`, `executor describe`, `executor call`, `executor execute`, `executor resume`, and `executor skills`.
+
+- The CLI picks an explicit `--host` (or `EXECUTOR_HOST`), then the remembered host from a prior sign-in, then the Local service.
+- On **Local**, with no host selected or remembered, run tool commands directly—the CLI starts the local server if needed.
+- On **Cloud**, sign in with `executor login`. On **Self-host**, run `EXECUTOR_ORIGIN="https://executor.example.com"` and `executor login --host "$EXECUTOR_ORIGIN"` to authorize tool commands and `executor mcp` in your browser. In `2.0.0-beta.79`, `executor apps` commands use a separate sign-in via `executor apps login`.
+
+`executor mcp` runs a local stdio MCP server that forwards messages to the selected host and refreshes its session automatically. Its instructions also tell the agent that the `executor` CLI is available in the shell so large results can be written to disk with `executor execute --file list-app-tools.js > result.json`.
+
+## Example
+
+Verify your local endpoint from a shell using `executor@2.0.0-beta.79` with no hosted target selected or remembered:
+
+```bash
+executor search "apps"
+```
+
+Inspect a specific tool returned by `search`:
+
+```bash
+executor describe tools.executor.appManagement.list
+```
+
+You'll know it worked when `search` returns a JSON page of matching tools (with `items` and `next`) and `describe` prints the full description and input/output schema for `tools.executor.appManagement.list`.
+
+## Limits
+
+- **Five vs. six tools:** `resume` is omitted in `native` mode (5 tools total); `automatic`, `model`, and `browser` modes expose all 6 tools.
+- **One organization per grant:** A hosted OAuth grant stays bound to the organization selected at sign-in, even after token refresh.
+- **Query string does not override a grant:** Changing `?connection=` or `?elicitation_mode=` after OAuth sign-in never widens access or weakens approvals.
+- **Personal access tokens and local API key:** Neither can be used at `/mcp?connection=<id>`; Executor refuses them rather than falling back to unscoped access. Use OAuth for scoped connections.
+
+### What is coming later
+
+- **Remembering prior approvals:** Executor does not yet remember past approvals across separate calls.
+- **Resuming after a server restart:** A paused `execute` program cannot continue after its server restarts. Check what its earlier calls did before deciding whether to run it again.
+
+## Related
+
+- [Code mode and tool execution](/docs/mcp/code-mode)
+- [Approval and elicitation modes](/docs/mcp/approval-modes)
+- [Scoped connections](/docs/mcp/scoped-connections)
+- [MCP events](/docs/mcp/events)
+- [Add an MCP client](/docs/mcp-clients)
+- [Personal access tokens](/docs/api-keys)
+- [Tools and approvals](/docs/concepts/tools-and-approvals)
