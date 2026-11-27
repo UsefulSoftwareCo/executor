@@ -165,6 +165,16 @@ export const makeOwners = (
             yield* query(() =>
               tx.deleteMany("accountChecks", { where: (b) => b("account", "in", accountIds) }),
             );
+            yield* query(() =>
+              tx.deleteMany("accountAcquisitions", {
+                where: (b) => b("account", "in", accountIds),
+              }),
+            );
+            yield* query(() =>
+              tx.deleteMany("accountDriverChecks", {
+                where: (b) => b("account", "in", accountIds),
+              }),
+            );
             const stored = yield* query(() =>
               tx.findMany("oauthGrants", {
                 select: ["id", "encrypted"],

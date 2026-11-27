@@ -32,6 +32,10 @@ export { readVersionSource } from "./implementation/version-source.ts";
 export { executorDatabase } from "./implementation/storage-migrations.ts";
 export { StorageMigrationFailed } from "./implementation/storage-migration-error.ts";
 export { makeExecutorStorage, type ExecutorDatabase } from "./implementation/storage.ts";
+export {
+  accountAcquisitionDriver,
+  type PromiseAccountAcquisitionDriver,
+} from "./implementation/account-acquisition-adapter.ts";
 
 export { aesGcmCredentials } from "./implementation/credentials.ts";
 export { remoteRegistry } from "./implementation/remote-registry.ts";

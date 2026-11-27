@@ -13,6 +13,7 @@
  * imports them, so a change here never edits a released protocol.
  */
 import { Schema } from "effect";
+import { ConnectCommand } from "../connect.ts";
 import { CacheCommand, CacheReply } from "@executor-js/app-cache/contracts";
 import { frameworkProtocol } from "../protocol-version.ts";
 import {
@@ -132,8 +133,10 @@ const clientGuide = { clientGuide: Schema.optionalKey(Schema.String) };
 
 /** Serializable authentication declarations interpreted by the trusted host. */
 export const DeclaredAuthMethod = Schema.Union([
+  Schema.Struct({ type: Schema.Literal("interactive"), label: Schema.String, ...exposure }),
   Schema.Struct({
     type: Schema.Literal("secrets"),
+    provisioned: Schema.optionalKey(Schema.Literal(true)),
     label: Schema.String,
     /**
      * Markdown the connect form shows above the fields: ordered setup, prerequisites, warnings.
@@ -192,6 +195,10 @@ export const DeclaredAccountSlot = Schema.Struct({
    * adding or editing a check never changes the provider's identity.
    */
   health: Schema.optionalKey(Schema.Literal(true)),
+  /** The methods acquired by a host driver rather than this app's handlers. */
+  hostAcquisition: Schema.optionalKey(Schema.Array(Schema.NonEmptyString)),
+  /** This slot can check app-acquired references through connect.check. */
+  interactiveHealth: Schema.optionalKey(Schema.Literal(true)),
 });
 export type DeclaredAccountSlot = typeof DeclaredAccountSlot.Type;
 
@@ -439,6 +446,7 @@ export type MigrateResult = typeof MigrateResult.Type;
 
 /** Framework-owned dispatch, independent of app-authored HTTP routing. */
 export const HostRequest = Schema.Union([
+  ...ConnectCommand.members,
   WorkflowCommand,
   WebhookCommand,
   Schema.Struct({ operation: Schema.Literal("requirements") }),
@@ -600,6 +608,8 @@ export type HostResponse = typeof HostResponse.Type;
 export const HostInvocation = Schema.Struct({
   command: HostRequest,
   accounts: ResolvedAccounts,
+  /** Trusted host identity; never part of the public command. */
+  caller: Schema.optionalKey(Schema.NonEmptyString),
   approval: Schema.optionalKey(TrustedToolApproval),
   replay: Schema.optionalKey(WorkflowReplay),
   deadline: Schema.optionalKey(InvocationDeadline),

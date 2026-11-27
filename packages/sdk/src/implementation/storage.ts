@@ -21,7 +21,7 @@ export const makeExecutorStorage = (options: { readonly provider: SqlProvider })
     const sql = yield* SqlClient.SqlClient;
     const reactivity = yield* makeReactiveStore({ namespace: "executor" });
     const client = executorDatabase.client(sqlAdapter({ provider: options.provider }));
-    const db = bindOrm(client.orm("4.0.17"), sql, reactivity);
+    const db = bindOrm(client.orm("4.0.23"), sql, reactivity);
     const checkMigration = Effect.gen(function* () {
       const migrator = yield* client.createMigrator;
       const version = yield* migrator.version;
@@ -68,7 +68,7 @@ export const makeExecutorStorage = (options: { readonly provider: SqlProvider })
       Effect.mapError(() => new StorageError()),
     );
     return {
-      orm: (_version: "4.0.17") => db,
+      orm: (_version: "4.0.23") => db,
       reactivity,
       toolSearch: makeToolSearchStore(sql),
       checkMigration,

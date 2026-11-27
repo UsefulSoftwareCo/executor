@@ -1,5 +1,6 @@
 import {
   AccountNotFound,
+  AccountProvisioned,
   AccountSelectionInvalid,
   AppNotFound,
   StorageError,
@@ -31,6 +32,7 @@ const connection = { ...organization, connection: ConnectionId };
 const agentsPath = "/api/organizations/:organization/mcp-agents";
 const errors = [AuthenticationUnavailable, OrganizationForbidden] as const;
 const saveErrors = [
+  AccountProvisioned,
   ...errors,
   ConnectionAccessInvalid,
   StorageError,

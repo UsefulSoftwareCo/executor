@@ -48,6 +48,7 @@ const resolveScope = (
   version: VersionId,
   scope: AccountScope,
   requirements: LinkedAccounts,
+  connecting?: string,
 ): Effect.Effect<Record<string, ReadonlyArray<AccountId>>, AccountRequired> =>
   Effect.gen(function* () {
     const resolved: Record<string, ReadonlyArray<AccountId>> = {};
@@ -57,6 +58,7 @@ const resolveScope = (
         continue;
       }
       const account = plainAccount(requirement.accounts);
+      if (account === undefined && connecting !== undefined) continue;
       if (account === undefined) return yield* new AccountRequired({ app, version, slot, scope });
       resolved[slot] = [account.id];
     }
@@ -68,6 +70,7 @@ export const resolveLinkedAccounts = (input: {
   readonly version: VersionId | null;
   readonly appLinks: LinkedAccounts;
   readonly userLinks: LinkedAccounts;
+  readonly connecting?: string;
 }) =>
   Effect.gen(function* () {
     if (Object.keys(input.appLinks).length === 0 && Object.keys(input.userLinks).length === 0)
@@ -75,8 +78,8 @@ export const resolveLinkedAccounts = (input: {
     const version = input.version;
     if (version === null) return yield* new AppNotDeployed({ app: input.app });
     return {
-      app: yield* resolveScope(input.app, version, "app", input.appLinks),
-      user: yield* resolveScope(input.app, version, "user", input.userLinks),
+      app: yield* resolveScope(input.app, version, "app", input.appLinks, input.connecting),
+      user: yield* resolveScope(input.app, version, "user", input.userLinks, input.connecting),
     } satisfies AppAccounts;
   });
 

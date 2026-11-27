@@ -32,6 +32,7 @@ import {
   readConnection,
   requireOpen,
   finishConnection,
+  savingConnection,
   lockConnection,
   recordSignInFailure,
   startSignIn,
@@ -1752,57 +1753,61 @@ export const makeOAuth = (
         const encryptedCredentials = yield* encrypt(account.id, fields);
         const encryptedGrant = yield* encrypt(account.id, grant);
         const ready = `ready_${yield* nextId}`;
-        const saved = yield* transaction(db, (tx) =>
-          Effect.gen(function* () {
-            const current = yield* lockConnection(tx, input, crypto);
-            if (current.state.status === "completed") return current.state.account;
-            const claimed = yield* requireOpen(input, current);
-            const stored =
-              existing === undefined
-                ? undefined
-                : yield* lockedAccount(tx, { account: account.id, owner: input.owner });
-            const saved = stored ?? {
-              ...account,
-              label: input.label ?? (yield* defaultLabel(tx, input.owner, input.provider)),
-              description: null,
-            };
-            if (stored === undefined) {
-              yield* query(() => tx.create("accounts", { ...saved, encryptedCredentials }));
-              if (lifecycle) yield* lifecycle.accountCreated(saved);
-            } else {
+        const saved = yield* savingConnection(
+          lifecycle,
+          input.connection,
+          transaction(db, (tx) =>
+            Effect.gen(function* () {
+              const current = yield* lockConnection(tx, input, crypto);
+              if (current.state.status === "completed") return current.state.account;
+              const claimed = yield* requireOpen(input, current);
+              const stored =
+                existing === undefined
+                  ? undefined
+                  : yield* lockedAccount(tx, { account: account.id, owner: input.owner });
+              const saved = stored ?? {
+                ...account,
+                label: input.label ?? (yield* defaultLabel(tx, input.owner, input.provider)),
+                description: null,
+              };
+              if (stored === undefined) {
+                yield* query(() => tx.create("accounts", { ...saved, encryptedCredentials }));
+                if (lifecycle) yield* lifecycle.accountCreated(saved);
+              } else {
+                yield* query(() =>
+                  tx.updateMany("accounts", {
+                    where: (b) => b("id", "=", stored.id),
+                    set: {
+                      encryptedCredentials,
+                      credentialGeneration: stored.credentialGeneration + 1,
+                    },
+                  }),
+                );
+                yield* resumeWaitingSources(tx, stored.id);
+              }
+              const state = {
+                encrypted: encryptedGrant,
+                status: ready,
+                updatedAt: new Date(completedAt),
+              };
               yield* query(() =>
-                tx.updateMany("accounts", {
-                  where: (b) => b("id", "=", stored.id),
-                  set: {
-                    encryptedCredentials,
-                    credentialGeneration: stored.credentialGeneration + 1,
-                  },
+                tx.upsert("oauthGrants", {
+                  where: (b) => b("id", "=", saved.id),
+                  create: { id: saved.id, ...state },
+                  update: state,
                 }),
               );
-              yield* resumeWaitingSources(tx, stored.id);
-            }
-            const state = {
-              encrypted: encryptedGrant,
-              status: ready,
-              updatedAt: new Date(completedAt),
-            };
-            yield* query(() =>
-              tx.upsert("oauthGrants", {
-                where: (b) => b("id", "=", saved.id),
-                create: { id: saved.id, ...state },
-                update: state,
-              }),
-            );
-            if (lifecycle)
-              yield* lifecycle.connectionCompleting({
-                id: current.id,
-                owner: current.owner,
-                reconnectAccount: current.reconnectAccount,
-                target: { app: current.target.app, requirement: current.target.requirement },
-              });
-            yield* finishConnection(tx, claimed, saved, lifecycle);
-            return saved;
-          }),
+              if (lifecycle)
+                yield* lifecycle.connectionCompleting({
+                  id: current.id,
+                  owner: current.owner,
+                  reconnectAccount: current.reconnectAccount,
+                  target: { app: current.target.app, requirement: current.target.requirement },
+                });
+              yield* finishConnection(tx, claimed, saved, lifecycle);
+              return saved;
+            }),
+          ),
         );
         return { status: "completed" as const, account: saved };
       }
@@ -2297,89 +2302,93 @@ export const makeOAuth = (
               },
         ).pipe(Effect.flatMap((grant) => encrypt(attempt.account, grant)));
       const encryptedCredentials = yield* encrypt(attempt.account, fields);
-      const ready = `ready_${yield* nextId}`;
-      return yield* transaction(db, (tx) =>
-        Effect.gen(function* () {
-          const current = yield* requireOpen(input, yield* lockConnection(tx, input, crypto));
-          if (current.oauthAttempt !== id) return yield* failed("sign_in_replaced");
-          const used = named ?? holding;
-          if (used !== undefined) {
+      const ready = "ready_" + (yield* nextId);
+      return yield* savingConnection(
+        lifecycle,
+        input.connection,
+        transaction(db, (tx) =>
+          Effect.gen(function* () {
+            const current = yield* requireOpen(input, yield* lockConnection(tx, input, crypto));
+            if (current.oauthAttempt !== id) return yield* failed("sign_in_replaced");
+            const used = named ?? holding;
+            if (used !== undefined) {
+              yield* query(() =>
+                tx.updateMany("storedOAuthClients", {
+                  where: (b) => b.and(b("id", "=", used.id), b("owner", "=", used.owner)),
+                  set: { owner: used.owner },
+                }),
+              );
+              const still = yield* query(() =>
+                tx.findFirst("storedOAuthClients", { where: (b) => b("id", "=", used.id) }),
+              );
+              if (still === null) return yield* failed("client_unavailable");
+            }
+            const target = attempt.reconnect ? yield* reconnectTarget(tx, attempt) : undefined;
+            const saved =
+              target ??
+              (yield* decode(Account, {
+                id: attempt.account,
+                provider: attempt.provider,
+                owner: attempt.owner,
+                label: attempt.label ?? (yield* defaultLabel(tx, attempt.owner, attempt.provider)),
+                description: null,
+                method: attempt.method,
+                createdAt: new Date(completedAt),
+              }));
+            const generation = target === undefined ? 0 : target.credentialGeneration + 1;
+            if (target !== undefined) {
+              yield* query(() =>
+                tx.updateMany("accounts", {
+                  where: (b) => b("id", "=", target.id),
+                  set: { encryptedCredentials, credentialGeneration: generation },
+                }),
+              );
+              yield* resumeWaitingSources(tx, target.id);
+            } else {
+              yield* query(() =>
+                tx.create("accounts", { ...saved, encryptedCredentials, credentialGeneration: 0 }),
+              );
+              if (lifecycle) yield* lifecycle.accountCreated(saved);
+            }
+            const grant = {
+              encrypted: yield* grantOf(generation),
+              status: ready,
+              updatedAt: new Date(completedAt),
+            };
             yield* query(() =>
-              tx.updateMany("storedOAuthClients", {
-                where: (b) => b.and(b("id", "=", used.id), b("owner", "=", used.owner)),
-                set: { owner: used.owner },
+              tx.upsert("oauthGrants", {
+                where: (b) => b("id", "=", saved.id),
+                create: { id: saved.id, ...grant },
+                update: grant,
               }),
             );
-            const still = yield* query(() =>
-              tx.findFirst("storedOAuthClients", { where: (b) => b("id", "=", used.id) }),
-            );
-            if (still === null) return yield* failed("client_unavailable");
-          }
-          const target = attempt.reconnect ? yield* reconnectTarget(tx, attempt) : undefined;
-          const saved =
-            target ??
-            (yield* decode(Account, {
-              id: attempt.account,
-              provider: attempt.provider,
-              owner: attempt.owner,
-              label: attempt.label ?? (yield* defaultLabel(tx, attempt.owner, attempt.provider)),
-              description: null,
-              method: attempt.method,
-              createdAt: new Date(completedAt),
-            }));
-          const generation = target === undefined ? 0 : target.credentialGeneration + 1;
-          if (target !== undefined) {
             yield* query(() =>
-              tx.updateMany("accounts", {
-                where: (b) => b("id", "=", target.id),
-                set: { encryptedCredentials, credentialGeneration: generation },
+              tx.updateMany("oauthAttempts", {
+                where: (b) => b("id", "=", id),
+                set: { status: "completed", encrypted: new Uint8Array() },
               }),
             );
-            yield* resumeWaitingSources(tx, target.id);
-          } else {
-            yield* query(() =>
-              tx.create("accounts", { ...saved, encryptedCredentials, credentialGeneration: 0 }),
-            );
-            if (lifecycle) yield* lifecycle.accountCreated(saved);
-          }
-          const grant = {
-            encrypted: yield* grantOf(generation),
-            status: ready,
-            updatedAt: new Date(completedAt),
-          };
-          yield* query(() =>
-            tx.upsert("oauthGrants", {
-              where: (b) => b("id", "=", saved.id),
-              create: { id: saved.id, ...grant },
-              update: grant,
-            }),
-          );
-          yield* query(() =>
-            tx.updateMany("oauthAttempts", {
-              where: (b) => b("id", "=", id),
-              set: { status: "completed", encrypted: new Uint8Array() },
-            }),
-          );
-          if (lifecycle)
-            yield* lifecycle.connectionCompleting({
-              id: current.id,
-              owner: current.owner,
-              reconnectAccount: current.reconnectAccount,
-              target: { app: current.target.app, requirement: current.target.requirement },
-            });
-          yield* finishConnection(tx, current, saved, lifecycle);
-          if (savedClient !== undefined)
-            yield* createStoredClient(tx, savedClient.row, savedClient.digest);
-          const stored = isFirstPartyAttempt(attempt) ? undefined : attempt.storedClient;
-          if (stored !== undefined && stored.fresh)
-            yield* query(() =>
-              tx.updateMany("storedOAuthClients", {
-                where: (b) => b("id", "=", stored.id),
-                set: { confirmed: true },
-              }),
-            );
-          return saved;
-        }),
+            if (lifecycle)
+              yield* lifecycle.connectionCompleting({
+                id: current.id,
+                owner: current.owner,
+                reconnectAccount: current.reconnectAccount,
+                target: { app: current.target.app, requirement: current.target.requirement },
+              });
+            yield* finishConnection(tx, current, saved, lifecycle);
+            if (savedClient !== undefined)
+              yield* createStoredClient(tx, savedClient.row, savedClient.digest);
+            const storedClient = isFirstPartyAttempt(attempt) ? undefined : attempt.storedClient;
+            if (storedClient !== undefined && storedClient.fresh)
+              yield* query(() =>
+                tx.updateMany("storedOAuthClients", {
+                  where: (b) => b("id", "=", storedClient.id),
+                  set: { confirmed: true },
+                }),
+              );
+            return saved;
+          }),
+        ),
       );
     });
 
@@ -2440,6 +2449,12 @@ export const makeOAuth = (
       );
       if (rejected !== undefined)
         yield* Effect.annotateCurrentSpan("oauth.renewal.trigger", "credentials_rejected");
+      if (provider.auth[account.method]?.type === "interactive")
+        return {
+          fields: yield* credentials.decrypt(account.id, account.encryptedCredentials),
+          firstParty: undefined,
+          generation: account.credentialGeneration,
+        } satisfies AccountCredential;
       if (provider.auth[account.method]?.type === "secrets") {
         const app = rejection?.app;
         const offered =
@@ -2845,7 +2860,11 @@ export const makeOAuth = (
   const grantedIds = (checks: ReadonlyArray<UsableCheck>) => [
     ...new Set(
       checks
-        .filter(({ account, provider }) => provider.auth[account.method]?.type !== "secrets")
+        .filter(
+          ({ account, provider }) =>
+            provider.auth[account.method]?.type !== "secrets" &&
+            provider.auth[account.method]?.type !== "interactive",
+        )
         .map(({ account }) => account.id),
     ),
   ];
@@ -2859,7 +2878,11 @@ export const makeOAuth = (
       yield* Effect.annotateCurrentSpan("oauth.usable.accounts", checks.length);
       for (const { account, provider } of checks) {
         yield* Effect.annotateCurrentSpan("oauth.provider.id", account.provider);
-        if (provider.auth[account.method]?.type === "secrets") continue;
+        if (
+          provider.auth[account.method]?.type === "secrets" ||
+          provider.auth[account.method]?.type === "interactive"
+        )
+          continue;
         const reconnect = (reason: ReconnectReason) =>
           reconnectRequired("oauth.usable", account.id, reason);
         const row = grants.get(account.id);
@@ -3009,7 +3032,11 @@ export const makeOAuth = (
   ) =>
     Effect.gen(function* () {
       const ids = selected
-        .filter(({ account, provider }) => provider.auth[account.method]?.type !== "secrets")
+        .filter(
+          ({ account, provider }) =>
+            provider.auth[account.method]?.type !== "secrets" &&
+            provider.auth[account.method]?.type !== "interactive",
+        )
         .map(({ account }) => account.id);
       if (ids.length === 0) return undefined;
       const rows = yield* query(() =>

@@ -71,6 +71,18 @@ Accounts bind at execution time. Live documents cannot change credential
 placement or send credentials to another origin. Editing generated source and
 redeploying is required to change those static choices.
 
+`ctx.user.id` is the caller's opaque identity in the host product. It stays the
+same across that person's calls, including calls to apps with no account
+requirements. Use it to attribute app records or enforce per-user limits. It
+is not an account ID or an app owner, and grants no permissions. The host
+supplies it after authentication; tool arguments cannot select another caller.
+Hosts without subjects leave it `undefined`. User schedules, user-account
+webhooks and workflow steps keep the user they run as. App-scope work has no
+`ctx.user`.
+
+The app database and `ctx.cache` are shared by callers. Include `ctx.user.id`
+in cache keys and filter stored rows when their contents belong to one caller.
+
 Requirements are declared by scope. `user: { accounts }` holds each caller's
 own accounts, read as `ctx.user.accounts`; `app: { accounts }` holds the app's
 own accounts, which people who can edit the app link for everyone, read as

@@ -101,6 +101,7 @@ const withoutFieldHelp = ({ title: _title, description: _description, ...field }
   field;
 
 const methodWithoutHelp = (method: DeclaredAuthMethod): DeclaredAuthMethod => {
+  if (method.type === "interactive") return method;
   if (method.type === "secrets") {
     const { guide: _guide, ...defined } = method;
     return { ...defined, fields: mapFieldHelp(method.fields, withoutFieldHelp) };

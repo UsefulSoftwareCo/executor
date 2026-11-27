@@ -1,3 +1,5 @@
+import { accountAcquisitions } from "./account-acquisition-schema.ts";
+import { accountDriverChecks } from "./account-driver-check-schema.ts";
 import { fumadb } from "fumadb-effect";
 import { Effect, Schema } from "effect";
 import { generateMigrationFromSchema } from "fumadb-effect/migration";
@@ -514,6 +516,18 @@ export const storageSchemas = [
           ...eventSelectionIndexes.map((sql) => ({ type: "custom" as const, sql })),
         ]),
       ),
+  }),
+  schema({
+    version: "4.0.23",
+    tables: { ...version4017Tables, accountAcquisitions, accountDriverChecks },
+    relations: {
+      accounts: ({ one }) => ({
+        providerDefinition: one("providers", ["provider", "id"]).foreignKey(),
+      }),
+      apps: ({ one }) => ({
+        deployment: one("deployments", ["activeDeployment", "id"], ["code", "code"]).foreignKey(),
+      }),
+    },
   }),
 ] as const;
 

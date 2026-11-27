@@ -49,6 +49,7 @@ const startupLinesQuoted = 20;
 
 const maxClockOffset = 40 * 86_400_000;
 export const OperatorSettings = Schema.Struct({
+  EXECUTOR_E2E_PRODUCT_ENTRY: Schema.optionalKey(Schema.NonEmptyString),
   EXECUTOR_URL_ALLOW_LOOPBACK_HTTP: Schema.optionalKey(Schema.String),
   EXECUTOR_URL_ALLOW_HTTP_ORIGINS: Schema.optionalKey(Schema.String),
   NODE_EXTRA_CA_CERTS: Schema.optionalKey(Schema.NonEmptyString),
@@ -142,6 +143,7 @@ export const startManagedServer = (
     let exitLine: Deferred.Deferred<void> | undefined;
     let saveWorkerdCoverage: Effect.Effect<void> = Effect.void;
     const env = {
+      EXECUTOR_E2E_PRODUCT_ENTRY: environment.EXECUTOR_E2E_PRODUCT_ENTRY,
       PATH: runtimePath,
       ...(process.env.SystemRoot === undefined ? {} : { SystemRoot: process.env.SystemRoot }),
       NODE_ENV: "test",
@@ -244,10 +246,16 @@ export const startManagedServer = (
             ? undefined
             : path.join(coverageDirectory, String(generation++));
         if (coverage !== undefined) yield* fs.makeDirectory(coverage, { recursive: true });
-        const [program = "", ...programArgs] = entry.command;
+        const productEntry = env.EXECUTOR_E2E_PRODUCT_ENTRY;
+        const command = productEntry === undefined ? entry.command : [productEntry];
+        const [program = "", ...programArgs] = command;
         const launch =
           target.metadata.target === "local"
-            ? localEntryCommand(program, programArgs)
+            ? localEntryCommand(
+                program,
+                programArgs,
+                productEntry === undefined ? [] : preloads.flatMap((url) => ["--import", url.href]),
+              )
             : {
                 command: "bun",
                 args:
@@ -263,7 +271,7 @@ export const startManagedServer = (
                         )).flatMap((file) => ["--preload", file]),
                         "./apps/hosted/self-host/scripts/coverage-main.ts",
                       ]
-                    : [...preloads.flatMap((url) => ["--import", url.href]), ...entry.command],
+                    : [...preloads.flatMap((url) => ["--import", url.href]), ...command],
               };
         const child = yield* processes.spawn(
           ChildProcess.make(launch.command, launch.args, {
