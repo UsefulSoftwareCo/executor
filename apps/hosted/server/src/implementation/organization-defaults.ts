@@ -12,7 +12,7 @@ import {
 } from "../contracts/organization-defaults.ts";
 import { organizationOwner } from "../contracts/organization.ts";
 import { ScheduleWakeup } from "../contracts/schedules.ts";
-import { addLink } from "./app-accounts.ts";
+import { provisionAccountLink } from "./app-accounts.ts";
 import { executorCopyOrigin } from "./executor-catalog-entry.ts";
 
 const executorApp = Effect.promise(() => import("./executor-app.ts"));
@@ -135,18 +135,13 @@ export const organizationDefaults = (
                 })
                 .pipe(personalAccountCreation(user.userId));
               if (
-                yield* addLink(sql, executor.webhooks, {
+                yield* provisionAccountLink(sql, executor.webhooks, {
                   app: app.id,
                   requirement: "service",
                   account: account.id,
                   subject: user.userId,
                   linkedBy: user.userId,
-                }).pipe(
-                  Effect.catchTags({
-                    RequirementMismatch: () => new StorageError(),
-                    AccountNotFound: () => new StorageError(),
-                  }),
-                )
+                })
               )
                 intent = true;
               const accounts = JSON.stringify({ ...state.accounts, [user.userId]: account.id });

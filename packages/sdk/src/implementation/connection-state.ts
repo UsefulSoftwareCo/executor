@@ -49,8 +49,10 @@ export const readConnection = (db: Query, input: typeof GetAccountConnection.Typ
             status: row.expiresAt.getTime() <= now ? "expired" : "pending",
             ...(yield* recordedFailure(stored.failure)),
           }
-        : stored;
-    return { ...row, target, state };
+        : stored.status === "completed"
+          ? { status: "completed", account: stored.account }
+          : { status: "cancelled" };
+    return { ...row, target, state, storedState: stored };
   });
 export const lockConnection = (
   db: Query,
@@ -61,7 +63,6 @@ export const lockConnection = (
     const claim = yield* crypto.random.uuidV4();
     while (true) {
       const row = yield* readConnection(db, input);
-      if (row.state.status !== "pending") return row;
       yield* query(() =>
         db.updateMany("accountConnections", {
           where: (b) => b.and(b("id", "=", row.id), b("revision", "=", row.revision)),
@@ -69,7 +70,7 @@ export const lockConnection = (
         }),
       );
       const current = yield* readConnection(db, input);
-      if (current.revision === claim || current.state.status !== "pending") return current;
+      if (current.revision === claim) return current;
     }
   });
 
@@ -85,8 +86,16 @@ export const finishConnection = (
   claimed: ConnectionRow,
   account: Account,
   lifecycle: ResourceLifecycle | undefined,
+  interactive?: import("../contracts/interactive-accounts.ts").InteractiveBinding,
 ) =>
   Effect.gen(function* () {
+    if (interactive !== undefined)
+      yield* query(() =>
+        db.updateMany("accountConnections", {
+          where: (b) => b("id", "=", claimed.id),
+          set: { state: encodeState({ status: "completed", account, interactive }) },
+        }),
+      );
     yield* applyConnectionTarget(
       db,
       claimed.id,
@@ -99,7 +108,11 @@ export const finishConnection = (
       db.updateMany("accountConnections", {
         where: (b) => b("id", "=", claimed.id),
         set: {
-          state: encodeState({ status: "completed", account }),
+          state: encodeState({
+            status: "completed",
+            account,
+            ...(interactive === undefined ? {} : { interactive }),
+          }),
           oauthAttempt: null,
         },
       }),
@@ -138,3 +151,10 @@ export const recordSignInFailure = (
       }),
     );
   }).pipe(Effect.withSpan("sdk.connections.recordSignInFailure"));
+
+export const savingConnection = <A, E, R>(
+  lifecycle: ResourceLifecycle | undefined,
+  connection: import("../contracts/shared.ts").AccountConnectionId,
+  save: Effect.Effect<A, E, R>,
+) =>
+  lifecycle?.connectionSaving === undefined ? save : lifecycle.connectionSaving(connection, save);

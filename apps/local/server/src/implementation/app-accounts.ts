@@ -2,6 +2,7 @@ import {
   AccountChoiceUnsupported,
   AccountId,
   AccountNotFound,
+  AccountProvisioned,
   AppId,
   StorageError,
   StorageHost,
@@ -367,6 +368,9 @@ const addLink = (
         scope: scopeOf(subject),
         reason: "provider",
       });
+    const method = required.definition.auth[account.method];
+    if (method?.type === "secrets" && method.provisioned === true)
+      return yield* new AccountProvisioned({ provider: account.provider });
     const replaced =
       required.cardinality === "many"
         ? []
@@ -379,6 +383,12 @@ const addLink = (
                 order by l.created_at, l.account`,
             ),
           );
+    for (const previous of replaced) {
+      const saved = yield* storage(executor.accounts.get({ account: previous.account }));
+      const method = required.definition.auth[saved.method];
+      if (method?.type === "secrets" && method.provisioned === true)
+        return yield* new AccountProvisioned({ provider: saved.provider });
+    }
     for (const previous of replaced)
       yield* removeLink(sql, executor, {
         app: app.id,
@@ -590,8 +600,16 @@ export const localResourceLifecycle = (
           requirement: input.requirement,
           account: input.account,
           subject: scopeSubject(input.scope),
-        }).pipe(Effect.mapError(() => new StorageError()));
-      }),
+        }).pipe(
+          Effect.mapError((error) =>
+            Schema.is(AccountProvisioned)(error) ? error : new StorageError(),
+          ),
+        );
+      }).pipe(
+        Effect.mapError((error) =>
+          Schema.is(AccountProvisioned)(error) ? error : new StorageError(),
+        ),
+      ),
     accountCreated: () => Effect.void,
     accountRemoving: (account) =>
       Effect.flatMap(executor, (sdk) => appLinkApps(sql, sdk, account.id)).pipe(

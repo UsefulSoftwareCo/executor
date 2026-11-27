@@ -2,6 +2,7 @@ import {
   AccountNotFound,
   StorageError,
   StorageHost,
+  InteractiveHost,
   type Account,
   type AccountId,
   type AccountScope,
@@ -11,6 +12,7 @@ import {
   type OwnerId,
 } from "@executor-js/sdk/core";
 import { Effect, Schema } from "effect";
+import type { SqlClient } from "effect/sql";
 import { HttpApiBuilder } from "effect/http-api";
 import { HostedApi } from "../contracts/api.ts";
 import {
@@ -24,6 +26,7 @@ import { HostedExecutor } from "../contracts/executor.ts";
 import { OrganizationForbidden } from "../contracts/organization.ts";
 import { ScheduleWakeup } from "../contracts/schedules.ts";
 import { appManagerOwner, currentOwner, usableApp } from "./access.ts";
+import { canDeleteAccount, replacingAccounts } from "./interactive-retirement.ts";
 import { connectAccount, connectionUrl } from "./accounts.ts";
 import { accountOAuthRedirectUri } from "./auth.ts";
 import { addLink, callerLinkedAccounts, lockedChange, removeLink } from "./app-accounts.ts";
@@ -84,13 +87,17 @@ const linkViews = (
       present,
       ({ record, account }) => {
         const checks = health.get(account.id);
-        return signIn(executor, owner, account.id).pipe(
-          Effect.map((state): AppAccountLink[] => [
+        return Effect.all([
+          signIn(executor, owner, account.id),
+          executor[InteractiveHost].binding({ owner, account: account.id }),
+        ]).pipe(
+          Effect.map(([state, binding]): AppAccountLink[] => [
             {
               requirement: record.requirement,
               account,
               createdAt: record.createdAt,
               signIn: state,
+              canReconnect: binding === undefined,
               ...(checks === undefined
                 ? {}
                 : {
@@ -159,7 +166,21 @@ const requirementView = (
       return account === undefined ? [] : [account];
     });
     const linkedIds = new Set(linkedAccounts.map((account) => account.id));
-    const usable = (yield* visibleAccounts(all)).filter((account) => !linkedIds.has(account.id));
+    const candidates = (yield* visibleAccounts(all)).filter(
+      (account) => !linkedIds.has(account.id),
+    );
+    const usable = (yield* Effect.forEach(
+      candidates,
+      (account) =>
+        executor[InteractiveHost]
+          .binding({ owner, account: account.id })
+          .pipe(
+            Effect.map((binding) =>
+              binding === undefined || binding.app === app.id ? [account] : [],
+            ),
+          ),
+      { concurrency: 8 },
+    )).flat();
     return {
       requirement,
       scope,
@@ -215,6 +236,38 @@ const connect = (
     };
   });
 
+const unlink = (
+  scope: AccountScope,
+  params: { readonly app: AppId; readonly requirement: string; readonly account: AccountId },
+) =>
+  Effect.gen(function* () {
+    const owner = yield* scope === "app" ? appManagerOwner(params.app) : currentOwner;
+    const executor = yield* Effect.flatten(HostedExecutor);
+    yield* executor.apps.get({ owner, app: params.app });
+    const subject = scope === "app" ? null : yield* caller;
+    const records = yield* linkRecords(params.app, subject, params.requirement);
+    if (!records.some((row) => row.account === params.account))
+      return yield* new AccountNotFound({ account: params.account });
+    const binding = yield* executor[InteractiveHost].binding({ owner, account: params.account });
+    const interactive =
+      binding?.app === params.app && (yield* canDeleteAccount(executor, params.account));
+    const remove = (sql: SqlClient.SqlClient) =>
+      Effect.gen(function* () {
+        const removed = yield* removeLink(sql, executor.webhooks, { ...params, subject });
+        if (!removed) return yield* new AccountNotFound({ account: params.account });
+      });
+    const change =
+      scope === "app"
+        ? lockedChange(executor, { app: params.app, access: "manage" }, remove)
+        : Effect.flatMap(policyDatabase, (sql) => executor[StorageHost].transaction(remove(sql)));
+    yield* executor[InteractiveHost].retire(
+      { owner, accounts: interactive ? [params.account] : [] },
+      change,
+    );
+    yield* wake;
+    return { requirement: params.requirement, account: params.account };
+  });
+
 export const hostedAppAccountHandlers = HttpApiBuilder.group(HostedApi, "appAccounts", (handlers) =>
   Effect.gen(function* () {
     const services = { auth: yield* SessionAuthentication, api: yield* BearerAuthentication };
@@ -246,17 +299,26 @@ export const hostedAppAccountHandlers = HttpApiBuilder.group(HostedApi, "appAcco
           yield* executor.apps.get({ owner, app: params.app });
           yield* requireAccountOwner(params.account);
           yield* executor.accounts.get({ owner, account: params.account });
-          const changed = yield* lockedChange(
+          const changed = yield* replacingAccounts(
             executor,
-            { app: params.app, access: "manage", account: params.account },
-            (sql) =>
-              addLink(sql, executor.webhooks, {
-                app: params.app,
-                requirement: params.requirement,
-                account: params.account,
-                subject: null,
-                linkedBy: user,
-              }),
+            {
+              app: params.app,
+              requirement: params.requirement,
+              subject: null,
+              account: params.account,
+            },
+            lockedChange(
+              executor,
+              { app: params.app, access: "manage", account: params.account },
+              (sql) =>
+                addLink(sql, executor.webhooks, {
+                  app: params.app,
+                  requirement: params.requirement,
+                  account: params.account,
+                  subject: null,
+                  linkedBy: user,
+                }),
+            ),
           );
           if (changed) yield* wake;
           return yield* savedLink(
@@ -269,27 +331,7 @@ export const hostedAppAccountHandlers = HttpApiBuilder.group(HostedApi, "appAcco
           );
         }),
       )
-      .handle("appUnlink", ({ params }) =>
-        Effect.gen(function* () {
-          const owner = yield* appManagerOwner(params.app);
-          const executor = yield* Effect.flatten(HostedExecutor);
-          yield* executor.apps.get({ owner, app: params.app });
-          const removed = yield* lockedChange(
-            executor,
-            { app: params.app, access: "manage" },
-            (sql) =>
-              removeLink(sql, executor.webhooks, {
-                app: params.app,
-                requirement: params.requirement,
-                account: params.account,
-                subject: null,
-              }),
-          );
-          if (!removed) return yield* new AccountNotFound({ account: params.account });
-          yield* wake;
-          return { requirement: params.requirement, account: params.account };
-        }),
-      )
+      .handle("appUnlink", ({ params }) => unlink("app", params))
       .handle("appConnect", ({ params, payload }) => connect(services, "app", params, payload))
       .handle("userList", ({ params }) =>
         Effect.gen(function* () {
@@ -317,17 +359,26 @@ export const hostedAppAccountHandlers = HttpApiBuilder.group(HostedApi, "appAcco
           yield* usableApp(executor, owner, params.app);
           yield* requireAccountOwner(params.account);
           yield* executor.accounts.get({ owner, account: params.account });
-          const changed = yield* lockedChange(
+          const changed = yield* replacingAccounts(
             executor,
-            { app: params.app, access: "use", account: params.account },
-            (sql) =>
-              addLink(sql, executor.webhooks, {
-                app: params.app,
-                requirement: params.requirement,
-                account: params.account,
-                subject: user,
-                linkedBy: user,
-              }),
+            {
+              app: params.app,
+              requirement: params.requirement,
+              subject: user,
+              account: params.account,
+            },
+            lockedChange(
+              executor,
+              { app: params.app, access: "use", account: params.account },
+              (sql) =>
+                addLink(sql, executor.webhooks, {
+                  app: params.app,
+                  requirement: params.requirement,
+                  account: params.account,
+                  subject: user,
+                  linkedBy: user,
+                }),
+            ),
           );
           if (changed) yield* wake;
           return yield* savedLink(
@@ -340,26 +391,7 @@ export const hostedAppAccountHandlers = HttpApiBuilder.group(HostedApi, "appAcco
           );
         }),
       )
-      .handle("userUnlink", ({ params }) =>
-        Effect.gen(function* () {
-          const user = yield* caller;
-          const owner = yield* currentOwner;
-          const executor = yield* Effect.flatten(HostedExecutor);
-          yield* executor.apps.get({ owner, app: params.app });
-          const sql = yield* policyDatabase;
-          const removed = yield* executor[StorageHost].transaction(
-            removeLink(sql, executor.webhooks, {
-              app: params.app,
-              requirement: params.requirement,
-              account: params.account,
-              subject: user,
-            }),
-          );
-          if (!removed) return yield* new AccountNotFound({ account: params.account });
-          yield* wake;
-          return { requirement: params.requirement, account: params.account };
-        }),
-      )
+      .handle("userUnlink", ({ params }) => unlink("user", params))
       .handle("userConnect", ({ params, payload }) => connect(services, "user", params, payload));
   }),
 );

@@ -1,3 +1,9 @@
+import { AccountProvisioned } from "@executor-js/sdk/core";
+import {
+  InteractiveRetirementBusy,
+  InteractiveRetirementFailed,
+  InteractiveReconnectUnsupported,
+} from "@executor-js/sdk";
 import {
   blockedRecovery,
   LocalOwnerMigration,
@@ -223,13 +229,23 @@ export const AppAccountRequirement = Schema.Struct({
   accounts: Schema.Array(RequirementAccount),
 });
 export type AppAccountRequirement = typeof AppAccountRequirement.Type;
-const linkErrors = [StorageError, AppNotFound, AccountNotFound, RequirementMismatch] as const;
+const linkErrors = [
+  AccountProvisioned,
+  StorageError,
+  AppNotFound,
+  AccountNotFound,
+  RequirementMismatch,
+] as const;
 const linkChangeErrors = [...linkErrors, AppAccountLinksBlocked] as const;
 
 export const AppAccountTarget = Schema.Struct({
   account: Schema.optional(AccountId),
 });
 const appConnectionErrors = [
+  AccountProvisioned,
+  InteractiveRetirementBusy,
+  InteractiveRetirementFailed,
+  InteractiveReconnectUnsupported,
   StorageError,
   CredentialsError,
   ProviderNotFound,
@@ -534,7 +550,15 @@ const dashboardApi = HttpApi.make("local-dashboard").add(
       HttpApiEndpoint.delete("deleteApp", "/dashboard/api/apps/:app", {
         params: { app: AppId },
         success: Schema.Struct({ app: AppId }),
-        error: [StorageError, AppWebhooksActive, AppWorkflowsActive, AppDeletionBlocked],
+        error: [
+          InteractiveRetirementBusy,
+          InteractiveRetirementFailed,
+          InteractiveReconnectUnsupported,
+          StorageError,
+          AppWebhooksActive,
+          AppWorkflowsActive,
+          AppDeletionBlocked,
+        ],
       }),
     )
     .add(
@@ -743,6 +767,9 @@ const dashboardApi = HttpApi.make("local-dashboard").add(
         params: { account: AccountId },
         success: Schema.Struct({ account: AccountId }),
         error: [
+          InteractiveRetirementBusy,
+          InteractiveRetirementFailed,
+          InteractiveReconnectUnsupported,
           StorageError,
           AccountLinkedToApp,
           AccountWebhooksActive,
@@ -769,6 +796,9 @@ const dashboardApi = HttpApi.make("local-dashboard").add(
         payload: Schema.Struct({ callbackUrl: Schema.RedactedFromValue(HttpUrl) }),
         success: Account,
         error: [
+          InteractiveRetirementBusy,
+          InteractiveRetirementFailed,
+          InteractiveReconnectUnsupported,
           StorageError,
           CredentialsError,
           ProviderNotFound,
@@ -776,6 +806,7 @@ const dashboardApi = HttpApi.make("local-dashboard").add(
           OAuthCompletionFailed,
           AccountConnectionNotFound,
           AccountConnectionClosed,
+          AccountProvisioned,
           AccountConnectionTargetChanged,
           AccountConnectionRefused,
         ],

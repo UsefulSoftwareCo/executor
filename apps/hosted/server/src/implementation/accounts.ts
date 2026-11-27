@@ -1,3 +1,9 @@
+import {
+  startInteractive,
+  interactiveStatus,
+  submitInteractive,
+  cancelInteractive,
+} from "./interactive-accounts.ts";
 import { accountOAuthRedirectUri } from "./auth.ts";
 import { audited } from "./security-audit.ts";
 import { ScheduleWakeup } from "../contracts/schedules.ts";
@@ -30,6 +36,7 @@ import {
   type OAuthClientSelection,
   type JsonObject,
   StorageError,
+  InteractiveHost,
 } from "@executor-js/sdk/core";
 import { connectionClient, usableOAuthClients } from "./oauth-clients.ts";
 import { Effect, Option, Redacted, Schema } from "effect";
@@ -93,6 +100,7 @@ export const getAccount = Effect.gen(function* () {
     health: visibleHealth(health, apps),
     revocation,
     canManage: true,
+    canReconnect: provider.definition.auth[metadata.method]?.type !== "interactive",
   };
 });
 const visibleHealth = (health: AccountHealth, apps: readonly App[]): AccountHealth => {
@@ -159,15 +167,19 @@ export const removeAccount = ({
     const executor = yield* Effect.flatten(HostedExecutor);
     yield* executor.accounts.get({ owner, account });
     const [first, ...rest] = yield* appLinkApps(yield* policyDatabase, account);
-    if (first !== undefined)
+    const binding = yield* executor[InteractiveHost].binding({ owner, account });
+    if (first !== undefined && binding === undefined)
       return yield* new AccountLinkedToApp({ account, apps: [first, ...rest] });
-    return yield* executor.accounts
-      .remove({ owner, account })
-      .pipe(
-        Effect.catchTag("AccountWebhooksActive", (refusal) =>
-          Effect.flatMap(visibleAccountRefusal(executor, refusal), Effect.fail),
+    return yield* executor[InteractiveHost].retire(
+      { owner, accounts: binding === undefined ? [] : [account] },
+      executor.accounts
+        .remove({ owner, account })
+        .pipe(
+          Effect.catchTag("AccountWebhooksActive", (refusal) =>
+            Effect.flatMap(visibleAccountRefusal(executor, refusal), Effect.fail),
+          ),
         ),
-      );
+    );
   });
 export const disconnectAccount = Effect.flatMap(AccountGrants.delete, removeAccount);
 export const updateAccount = (metadata: {
@@ -372,6 +384,14 @@ export const hostedAccountHandlers = HttpApiBuilder.group(HostedApi, "accounts",
           startOAuth(owner, { connection: params.connection, ...payload, redirectUri }),
         ),
       )
+      .handle("startInteractive", ({ params, payload }) =>
+        startInteractive(params.connection, payload.method),
+      )
+      .handle("interactiveStatus", ({ params }) => interactiveStatus(params.connection))
+      .handle("submitInteractive", ({ params, payload }) =>
+        submitInteractive(params.connection, payload.value),
+      )
+      .handle("cancelInteractive", ({ params }) => cancelInteractive(params.connection))
       .handle("completeOAuth", ({ params, payload }) =>
         Effect.flatMap(currentOwner, (owner) =>
           completeOAuth(owner, { connection: params.connection, ...payload }),

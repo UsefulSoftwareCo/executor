@@ -6,6 +6,8 @@ import {
   protocol2,
   protocol3,
   type HostAccounts,
+  type HostAccount,
+  type HostAccountSlots,
   type HostInvocation,
   type HostRequest,
   type ResolvedAccount,
@@ -31,20 +33,6 @@ export interface AppProtocol {
   readonly accounts: (accounts: ResolvedAccounts) => ResolvedAccounts;
 }
 
-const protocol14: AppProtocol = {
-  version: 14,
-  workerEntry: appBridge,
-  nodeEntry: nodeAppEntry(14),
-  invocation: (input) => JSON.stringify(input),
-  request: (command) => command,
-  refuse: () => undefined,
-  response: (_command, body) => Effect.succeed(body),
-  workflow: (execution) => execution,
-  concurrentData: true,
-  sealedCredentials: true,
-  accounts: (accounts) => accounts,
-};
-
 const underscored = (host: string) => host.includes("_");
 
 const withoutUnderscoredHosts = (account: ResolvedAccount): ResolvedAccount => {
@@ -64,17 +52,116 @@ const slotsWithoutUnderscoredHosts = (slots: ResolvedAccountSlots): ResolvedAcco
     ]),
   );
 
+const withoutProvisionedAccount = (account: HostAccount): HostAccount => ({
+  ...account,
+  provider: {
+    ...account.provider,
+    auth: Object.fromEntries(
+      Object.entries(account.provider.auth).map(([name, method]) => {
+        if (method.type !== "secrets") return [name, method];
+        const { provisioned: _provisioned, ...retained } = method;
+        return [name, retained];
+      }),
+    ),
+  },
+});
+
+const withoutInteractiveAccount = (account: HostAccount): HostAccount => ({
+  ...account,
+  provider: {
+    ...account.provider,
+    auth: Object.fromEntries(
+      Object.entries(withoutProvisionedAccount(account).provider.auth).filter(
+        ([, method]) => method.type !== "interactive",
+      ),
+    ),
+  },
+});
+const withoutInteractiveAccounts = (accounts: HostAccounts): HostAccounts => {
+  const strip = (slots: HostAccountSlots): HostAccountSlots =>
+    Object.fromEntries(
+      Object.entries(slots).map(([slot, selected]) => [
+        slot,
+        "id" in selected
+          ? withoutInteractiveAccount(selected)
+          : selected.map(withoutInteractiveAccount),
+      ]),
+    );
+  return {
+    app: strip(accounts.app),
+    ...(accounts.user === undefined ? {} : { user: strip(accounts.user) }),
+  };
+};
+
+const withoutCaller = ({ caller: _caller, ...input }: HostInvocation) => input;
+
+const protocol14: AppProtocol = {
+  version: 14,
+  workerEntry: appBridge,
+  nodeEntry: nodeAppEntry(14),
+  invocation: (input) =>
+    JSON.stringify({ ...input, accounts: withoutInteractiveAccounts(input.accounts) }),
+  request: (command) => command,
+  refuse: (command) =>
+    command.operation === "connect"
+      ? Schema.encodeSync(HostOperationNotFound)(new HostOperationNotFound())
+      : undefined,
+  response: (_command, body) => Effect.succeed(body),
+  workflow: (execution) => ({
+    ...execution,
+    resolve: () =>
+      execution.resolve().pipe(
+        Effect.map((context) => ({
+          ...context,
+          accounts: Redacted.make(withoutInteractiveAccounts(Redacted.value(context.accounts))),
+        })),
+      ),
+  }),
+  concurrentData: true,
+  sealedCredentials: true,
+  accounts: (accounts) => withoutInteractiveAccounts(accounts),
+};
+
+const protocol15: AppProtocol = {
+  ...protocol14,
+  version: 15,
+  nodeEntry: nodeAppEntry(15),
+  invocation: (input) => JSON.stringify(input),
+  refuse: () => undefined,
+  workflow: (execution) => execution,
+  accounts: (accounts) => accounts,
+};
+
+const protocol13Accounts = (accounts: ResolvedAccounts): ResolvedAccounts => {
+  const filtered = withoutInteractiveAccounts(accounts);
+  return filtered.user === undefined
+    ? { app: slotsWithoutUnderscoredHosts(filtered.app) }
+    : {
+        app: slotsWithoutUnderscoredHosts(filtered.app),
+        user: slotsWithoutUnderscoredHosts(filtered.user),
+      };
+};
+
 const protocol13: AppProtocol = {
   ...protocol14,
   version: 13,
   nodeEntry: nodeAppEntry(13),
-  accounts: (accounts) =>
-    accounts.user === undefined
-      ? { app: slotsWithoutUnderscoredHosts(accounts.app) }
-      : {
-          app: slotsWithoutUnderscoredHosts(accounts.app),
-          user: slotsWithoutUnderscoredHosts(accounts.user),
-        },
+  invocation: (input) =>
+    JSON.stringify({
+      ...withoutCaller(input),
+      accounts: protocol13Accounts(input.accounts),
+    }),
+  workflow: (execution) => ({
+    ...execution,
+    resolve: () =>
+      execution.resolve().pipe(
+        Effect.map((context) => ({
+          ...context,
+          accounts: Redacted.make(protocol13Accounts(Redacted.value(context.accounts))),
+        })),
+      ),
+  }),
+  accounts: protocol13Accounts,
 };
 
 const unscopedAccounts = <Slots>(accounts: {
@@ -93,8 +180,11 @@ const scopedRequirements = (command: HostRequest, body: unknown) =>
     : body;
 
 const unscoped = {
-  invocation: <Input extends Pick<HostInvocation, "accounts">>(input: Input) =>
-    JSON.stringify({ ...input, accounts: unscopedAccounts(input.accounts) }),
+  invocation: (input: HostInvocation) =>
+    JSON.stringify({
+      ...withoutCaller(input),
+      accounts: unscopedAccounts(protocol13Accounts(input.accounts)),
+    }),
   workflow: (execution: WorkflowExecution): WorkflowExecution => ({
     ...execution,
     resolve: () =>
@@ -102,7 +192,9 @@ const unscoped = {
         Effect.map((context) => ({
           ...context,
           accounts: Redacted.make(
-            unscopedAccounts(Redacted.value(context.accounts)) as unknown as HostAccounts,
+            unscopedAccounts(
+              protocol13Accounts(Redacted.value(context.accounts)),
+            ) as unknown as HostAccounts,
           ),
         })),
       ),
@@ -131,7 +223,7 @@ const protocol9: AppProtocol = {
   version: 9,
   nodeEntry: nodeAppEntry(9),
   refuse: (command) =>
-    command.operation === "migrate"
+    command.operation === "migrate" || command.operation === "connect"
       ? Schema.encodeSync(HostOperationNotFound)(new HostOperationNotFound())
       : undefined,
   concurrentData: false,
@@ -157,7 +249,7 @@ type LegacyVersion = keyof typeof legacyProtocols;
 
 const prefixKind = (tool: string) =>
   tool.startsWith("queries.") ? "query" : tool.startsWith("mutations.") ? "mutation" : undefined;
-const legacyCommand = (command: HostRequest) =>
+const legacyCommand = (command: HostRequest): HostRequest =>
   command.operation === "call"
     ? { operation: "call", tool: command.tool, input: command.input }
     : command;
@@ -172,6 +264,8 @@ const legacyProtocol = (version: LegacyVersion): AppProtocol => {
     invocation: (input) => unscoped.invocation({ ...input, command: legacyCommand(input.command) }),
     request: legacyCommand,
     refuse: (command) => {
+      if (command.operation === "connect")
+        return Schema.encodeSync(HostOperationNotFound)(new HostOperationNotFound());
       if (command.operation !== "call" || command.kind === undefined) return undefined;
       const actual = prefixKind(command.tool);
       return actual === undefined || actual === command.kind
@@ -217,6 +311,7 @@ const protocols: ReadonlyMap<number, AppProtocol> = new Map(
     protocol12,
     protocol13,
     protocol14,
+    protocol15,
   ].map((protocol) => [protocol.version, protocol]),
 );
 
@@ -232,3 +327,18 @@ export const appProtocol = (
       )
     : Effect.succeed(protocol);
 };
+
+export const interactiveProtocolAdditions = [
+  {
+    message: "request",
+    path: "operation=connect",
+    since: 15,
+    gate: "appProtocol.refuse rejects connect for protocols before 15",
+  },
+];
+export const interactiveProtocolAdaptations = [
+  { message: "invocation", protocols: [13], adapter: "protocol13.invocation" },
+  { message: "invocation", protocols: [14], adapter: "protocol14.invocation" },
+  { message: "accounts", protocols: [13], adapter: "protocol13.accounts" },
+  { message: "accounts", protocols: [14], adapter: "protocol14.accounts" },
+];

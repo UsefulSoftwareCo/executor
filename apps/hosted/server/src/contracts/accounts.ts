@@ -1,3 +1,4 @@
+import { InteractiveRetirementBusy, InteractiveRetirementFailed } from "@executor-js/sdk/core";
 import { RequiredAction } from "./authorization.ts";
 import { requireAccount } from "./account-grants.ts";
 import { AccountWorkflowsActive } from "@executor-js/sdk/core";
@@ -21,6 +22,8 @@ import {
   AccountFieldsInvalid,
   AppId,
   AppNotFound,
+  AppNotDeployed,
+  AccountRequired,
   AuthMethodInvalid,
   CredentialsError,
   OAuthClientNotFound,
@@ -28,6 +31,7 @@ import {
   OAuthClientUnavailable,
   OAuthConnectOptions,
   ProviderId,
+  AccountProvisioned,
   AuthMethodName,
   OAuthCompletionFailed,
   OAuthSetupFailed,
@@ -36,7 +40,10 @@ import {
   HttpUrl,
   ProviderNotFound,
   StorageError,
+  InteractiveConnectionFailed,
+  InteractiveConnectionStatus,
 } from "@executor-js/sdk/core";
+import { InteractiveInstructions } from "apps/contracts";
 import { Schema } from "effect";
 import { HttpApiEndpoint, HttpApiGroup, OpenApi } from "effect/http-api";
 import {
@@ -108,6 +115,9 @@ const params = { organization: OrganizationReference };
 const app = { ...params, app: AppId };
 const connection = { ...params, connection: AccountConnectionId };
 const connectionErrors = [
+  AccountProvisioned,
+  AccountConnectionClosed,
+  AccountConnectionTargetChanged,
   StorageError,
   AccountConnectionNotFound,
   ProviderNotFound,
@@ -116,6 +126,8 @@ const connectionErrors = [
   OrganizationForbidden,
 ] as const;
 const completionErrors = [
+  InteractiveRetirementBusy,
+  InteractiveRetirementFailed,
   ...connectionErrors,
   AccountConnectionClosed,
   AccountConnectionTargetChanged,
@@ -153,6 +165,7 @@ export const HostedAccountDetail = Schema.Struct({
   health: AccountHealth,
   revocation: AccountRevocation.fields.revocation,
   canManage: Schema.Boolean,
+  canReconnect: Schema.Boolean,
 });
 export const HostedAccounts = HttpApiGroup.make("accounts")
   .add(
@@ -194,6 +207,8 @@ export const HostedAccounts = HttpApiGroup.make("accounts")
       error: [
         StorageError,
         AccountLinkedToApp,
+        InteractiveRetirementBusy,
+        InteractiveRetirementFailed,
         AccountWebhooksActive,
         AccountWorkflowsActive,
         AccountNotFound,
@@ -282,6 +297,80 @@ export const HostedAccounts = HttpApiGroup.make("accounts")
       success: Account,
       error: [...completionErrors, OAuthCompletionFailed],
     }).annotate(RequiredAction, "manage"),
+  )
+  .add(
+    HttpApiEndpoint.post(
+      "startInteractive",
+      `${prefix}/connections/:connection/interactive/start`,
+      {
+        params: connection,
+        payload: Schema.Struct({ method: AuthMethodName }),
+        success: InteractiveInstructions,
+        error: [
+          ...connectionErrors,
+          AppNotDeployed,
+          AccountRequired,
+          InteractiveConnectionFailed,
+          InteractiveRetirementBusy,
+          InteractiveRetirementFailed,
+        ],
+      },
+    ).annotate(RequiredAction, "manage"),
+  )
+  .add(
+    HttpApiEndpoint.get(
+      "interactiveStatus",
+      `${prefix}/connections/:connection/interactive/status`,
+      {
+        params: connection,
+        success: InteractiveConnectionStatus,
+        error: [
+          ...connectionErrors,
+          AppNotDeployed,
+          AccountRequired,
+          InteractiveConnectionFailed,
+          InteractiveRetirementBusy,
+          InteractiveRetirementFailed,
+        ],
+      },
+    ).annotate(RequiredAction, "manage"),
+  )
+  .add(
+    HttpApiEndpoint.post(
+      "submitInteractive",
+      `${prefix}/connections/:connection/interactive/submit`,
+      {
+        params: connection,
+        payload: Schema.Struct({ value: Schema.String.check(Schema.isMaxLength(16384)) }),
+        success: InteractiveConnectionStatus,
+        error: [
+          ...connectionErrors,
+          AppNotDeployed,
+          AccountRequired,
+          InteractiveConnectionFailed,
+          InteractiveRetirementBusy,
+          InteractiveRetirementFailed,
+        ],
+      },
+    ).annotate(RequiredAction, "manage"),
+  )
+  .add(
+    HttpApiEndpoint.post(
+      "cancelInteractive",
+      `${prefix}/connections/:connection/interactive/cancel`,
+      {
+        params: connection,
+        success: Schema.Void,
+        error: [
+          ...connectionErrors,
+          AppNotDeployed,
+          AccountRequired,
+          InteractiveConnectionFailed,
+          InteractiveRetirementBusy,
+          InteractiveRetirementFailed,
+        ],
+      },
+    ).annotate(RequiredAction, "manage"),
   )
   .middleware(RequireOrganization);
 
