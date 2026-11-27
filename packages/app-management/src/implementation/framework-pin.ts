@@ -98,6 +98,20 @@ export const pinnedOnly = (workspace: SourceFiles, running: SourceFiles): boolea
   );
 };
 
+export const withFrameworkPin = (workspace: SourceFiles, files: SourceFiles) =>
+  Effect.gen(function* () {
+    const declared = Option.flatMap(
+      Schema.decodeUnknownOption(Schema.fromJsonString(JsonObject))(manifestOf(workspace) ?? ""),
+      (document) => Schema.decodeUnknownOption(Dependencies)(document.dependencies),
+    ).pipe(Option.flatMapNullishOr((dependencies) => dependencies.apps));
+    const release = Option.filter(declared, (apps) =>
+      [frameworkPinRelease, frameworkPinCatchUpRelease].includes(apps),
+    );
+    if (Option.isNone(release)) return files;
+    const manifest = pinManifest(manifestOf(files), release.value);
+    return manifest.kind === "pin" ? yield* withManifest(files, manifest.content) : files;
+  });
+
 const canonical = (value: unknown): unknown =>
   Array.isArray(value)
     ? value.map(canonical)

@@ -74,6 +74,7 @@ export interface AppVersionsProps<E> {
   readonly file: (version: VersionId, path: string) => Query<SourceDisplayFile, E>;
   readonly Failure: ComponentType<FailureProps<NoInfer<E>>>;
   readonly actions?: ReactNode;
+  readonly notice?: ReactNode;
 }
 export interface InstallApp extends CatalogImport {
   readonly name: string;

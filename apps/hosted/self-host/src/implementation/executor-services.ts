@@ -44,8 +44,11 @@ import {
   withExecutorAnalytics,
   executorDefaultRedeployed,
   hostedAppCopies,
+  queueCatalogAppUpdates,
+  withCatalogAppUpdates,
   pruneToolCallLog,
 } from "@executor-js/hosted-server";
+import { catalogFeedSetting } from "@executor-js/catalog/contracts";
 import { hostedResourceLifecycle } from "@executor-js/hosted-server/resource-lifecycle";
 import { hostedEventAuthority } from "@executor-js/hosted-server/events";
 import { deliverEvents } from "@executor-js/sdk/scheduling";
@@ -196,7 +199,19 @@ export const selfHostExecutorServices = <E, R>(
           Effect.repeat(Schedule.spaced("5 minutes")),
         ),
       );
-      const initialize = yield* organizationDefaults(executor, origin, api.document, false);
+      const feed = yield* catalogFeedSetting;
+      if (feed !== undefined)
+        yield* Effect.forkScoped(
+          queueCatalogAppUpdates(feed).pipe(
+            Effect.catch(() => Effect.logWarning("Catalog app update queueing failed")),
+            Effect.repeat(Schedule.spaced("1 day")),
+          ),
+        );
+      const initialize = yield* withCatalogAppUpdates(
+        executor,
+        feed === undefined ? undefined : { egress, url: feed },
+        yield* organizationDefaults(executor, origin, api.document, false),
+      );
       const scheduleAuthority = yield* makeScheduledAuthority(executor);
       const hosted = withDeploySetupWake(withExecutorAnalytics(executor));
       const groupDatabase = yield* SqlClient.SqlClient;

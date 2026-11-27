@@ -84,6 +84,9 @@ const appQuery = Atom.family(
 const versionsQuery = Atom.family((key: AppKey) =>
   HostedClient.query("apps", "versions", hydrated({ params: key })).pipe(revalidated),
 );
+const catalogUpdateQuery = Atom.family((key: AppKey) =>
+  HostedClient.query("apps", "catalogUpdate", hydrated({ params: key })).pipe(revalidated),
+);
 const sourceQuery = Atom.family((key: SourceKey) =>
   HostedClient.query(
     "apps",
@@ -137,9 +140,24 @@ const activateApp = Atom.family((key: AppKey) =>
             acknowledgeApp(get, key.organization, saved);
             get.refresh(toolsAtom(key));
             get.refresh(versionsAtom(key));
+            get.refresh(catalogUpdateQuery(key));
           }),
         ),
       ),
+  ),
+);
+const applyCatalogUpdate = Atom.family((key: AppKey) =>
+  HostedClient.runtime.fn((_: void, get) =>
+    Effect.flatMap(HostedClient, (client) => client.apps.applyCatalogUpdate({ params: key })).pipe(
+      Effect.tap((saved) =>
+        Effect.sync(() => {
+          acknowledgeApp(get, key.organization, saved);
+          get.refresh(toolsAtom(key));
+          get.refresh(versionsAtom(key));
+          get.refresh(catalogUpdateQuery(key));
+        }),
+      ),
+    ),
   ),
 );
 const renameApp = Atom.family((key: AppKey) =>
@@ -184,6 +202,8 @@ const removeApp = Atom.family((key: AppKey) =>
 );
 export const activateAppAtom = (key: { organization: OrganizationReference; app: AppId }) =>
   activateApp(new AppKey(key));
+export const applyCatalogUpdateAtom = (key: { organization: OrganizationReference; app: AppId }) =>
+  applyCatalogUpdate(new AppKey(key));
 export const renameAppAtom = (key: { organization: OrganizationReference; app: AppId }) =>
   renameApp(new AppKey(key));
 export const removeAppAtom = (key: { organization: OrganizationReference; app: AppId }) =>
@@ -420,6 +440,10 @@ export const versionsAtom = (key: {
   readonly organization: OrganizationReference;
   readonly app: AppId;
 }) => versionsQuery(new AppKey(key));
+export const catalogUpdateAtom = (key: {
+  readonly organization: OrganizationReference;
+  readonly app: AppId;
+}) => catalogUpdateQuery(new AppKey(key));
 
 export function acknowledgeApp(
   get: Atom.FnContext,

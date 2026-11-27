@@ -175,7 +175,10 @@ export const AppName = Schema.String.check(
   Schema.isPattern(oneVisibleLine),
 );
 
-/** Informational origin captured when a copy is made. It never grants access or drives updates. */
+/**
+ * Origin captured when a copy is made. It never grants access; hosted products update copies of
+ * their official app feed from it.
+ */
 export const AppCopyOrigin = Schema.Struct({
   reference: Schema.NonEmptyString,
   name: Schema.NonEmptyString,
@@ -220,6 +223,11 @@ export const DeployedApp = DeployedAppFields.pipe(
 );
 export type DeployedApp = typeof DeployedApp.Type;
 
+/**
+ * The active version a deploy to an existing app expects; another one fails it with
+ * AppVersionChanged before it activates. Omitted, a deploy does not check.
+ */
+const ExpectedVersion = Schema.optional(Schema.NullOr(VersionId));
 /** Deploy complete files or read an existing commit; deploying never edits Git. */
 export const DeployAppInput = Schema.Union([
   Schema.Struct({
@@ -228,6 +236,7 @@ export const DeployAppInput = Schema.Union([
     files: SourceFiles,
     app: Schema.optional(Schema.Never),
     commit: Schema.optional(Schema.Never),
+    expectedVersion: Schema.optional(Schema.Never),
   }),
   Schema.Struct({
     owner: OwnerId,
@@ -235,6 +244,7 @@ export const DeployAppInput = Schema.Union([
     files: SourceFiles,
     commit: Schema.optional(Schema.Never),
     name: Schema.optional(Schema.Never),
+    expectedVersion: ExpectedVersion,
   }),
   Schema.Struct({
     owner: OwnerId,
@@ -242,6 +252,7 @@ export const DeployAppInput = Schema.Union([
     commit: SourceCommit,
     files: Schema.optional(Schema.Never),
     name: Schema.optional(Schema.Never),
+    expectedVersion: ExpectedVersion,
   }),
 ]);
 
@@ -624,6 +635,7 @@ export const AppsGroup = HttpApiGroup.make("apps")
       error: [
         ...sourceErrors,
         StorageError,
+        AppVersionChanged,
         VersionBuildFailed,
         BuildMemoryExceeded,
         MarkdownUnavailable,
@@ -635,7 +647,7 @@ export const AppsGroup = HttpApiGroup.make("apps")
       ],
     }).annotate(
       OpenApi.Description,
-      "Deploy app source files. index.ts exports defineApp from apps. Creates a new named app, or deploys files or an existing commit by app ID. Never writes Git. The newest successful version activates automatically. Returns the app and the new version's metadata; the files are not echoed. Discover tools in the next execute call.",
+      "Deploy app source files. index.ts exports defineApp from apps. Creates a new named app, or deploys files or an existing commit by app ID. Never writes Git. The newest successful version activates automatically. With expectedVersion, a deploy to an existing app fails with AppVersionChanged unless that version is still active when it would activate. Returns the app and the new version's metadata; the files are not echoed. Discover tools in the next execute call.",
     ),
   )
   .add(

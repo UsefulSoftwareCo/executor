@@ -411,12 +411,26 @@ export const makeApps = (
     },
   ) =>
     Effect.gen(function* () {
+      const expectActive = (app: {
+        readonly id: AppId;
+        readonly activeVersion: VersionId | null;
+      }) =>
+        input.expectedVersion === undefined || app.activeVersion === input.expectedVersion
+          ? Effect.void
+          : Effect.fail(
+              new AppVersionChanged({
+                app: app.id,
+                expected: input.expectedVersion,
+                current: app.activeVersion,
+              }),
+            );
       const before =
         input.app === undefined
           ? null
           : yield* transaction(db, (tx) =>
               Effect.gen(function* () {
                 const current = yield* lockApp(tx, { app: input.app, owner: input.owner });
+                yield* expectActive(current);
                 if (replacing !== undefined) yield* replacing.guard(current, true);
                 const deploySequence = current.deploySequence + 1;
                 yield* query(() =>
@@ -506,6 +520,10 @@ export const makeApps = (
         }).pipe(Effect.mapError(() => new StorageError()));
       const retainedFiles: SourceFiles = [...codeFiles, ...publicFiles.retained];
       if (before !== null) yield* droppedMigrations(db, before.code);
+      if (before !== null && input.expectedVersion !== undefined && requirements.sql === true)
+        yield* transaction(db, (tx) =>
+          lockApp(tx, { app: before.id, owner: input.owner }).pipe(Effect.flatMap(expectActive)),
+        );
       if (requirements.sql === true)
         yield* runtime.migrate({ app: appId, build: built.build }).pipe(
           Effect.mapError((error) => {
@@ -551,6 +569,7 @@ export const makeApps = (
             return yield* Effect.fail(new AppNotFound({ app: input.app }));
           if (existing !== undefined && input.app === undefined)
             return yield* Effect.fail(new AppNameTaken({ owner: input.owner, name: deployName }));
+          if (existing !== undefined) yield* expectActive(existing);
           if (existing !== undefined) yield* droppedMigrations(tx, existing.code);
           const createdAt = new Date(yield* Clock.currentTimeMillis);
           const promote = existing === undefined || sequence > existing.activatedSequence;
@@ -676,7 +695,9 @@ export const makeApps = (
             });
       const create = { owner: input.owner, name: input.name, files: snapshot.files };
       return snapshot.activation === "deploy" && reserved?.save !== true
-        ? (yield* deploy(create, snapshot.origin, snapshot.stored, reserved?.id)).app
+        ? (yield* deploy(create, snapshot.origin, snapshot.stored, reserved?.id).pipe(
+            Effect.catchTag("AppVersionChanged", Effect.die),
+          )).app
         : yield* authoring.create(create, snapshot.origin, snapshot.stored, reserved?.id);
     }).pipe(Effect.withSpan("sdk.apps.copy"));
   return {

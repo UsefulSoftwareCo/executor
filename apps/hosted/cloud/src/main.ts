@@ -33,6 +33,7 @@ import {
 import {
   HostedExecutor,
   lazyHostedApiDocument,
+  queueCatalogAppUpdates,
   pruneToolCallLog,
 } from "@executor-js/hosted-server";
 import { BillingMeter } from "./contracts/billing-meter.ts";
@@ -369,6 +370,21 @@ export default Api.make(
       Effect.as(jobCompleted),
       handledJob(Effect.logWarning("Idle agent grant expiry failed")),
     );
+    const feedUrl = yield* Config.String("EXECUTOR_CATALOG_URL").pipe(Config.option);
+    const catalogAppUpdates = Effect.gen(function* () {
+      if (Option.isNone(feedUrl)) return;
+      const sql = yield* Effect.flatten(GroupDatabase);
+      yield* queueCatalogAppUpdates(feedUrl.value).pipe(
+        Effect.provideService(SqlClient.SqlClient, sql),
+      );
+    }).pipe(
+      Effect.provide(executor),
+      reportErrors,
+      Effect.scoped,
+      Effect.withSpan("job.catalog-app-updates"),
+      Effect.as(jobCompleted),
+      handledJob(Effect.logWarning("Catalog app update queueing failed")),
+    );
     const toolCallLog = Effect.gen(function* () {
       const sql = yield* Effect.flatten(GroupDatabase);
       yield* pruneToolCallLog.pipe(Effect.provideService(SqlClient.SqlClient, sql));
@@ -396,7 +412,12 @@ export default Api.make(
       "app-domain-heartbeat",
       "tool-call-log",
     );
-    yield* jobs.schedule("17 4 * * *", "billing-reconcile", "agent-grant-expiry");
+    yield* jobs.schedule(
+      "17 4 * * *",
+      "billing-reconcile",
+      "agent-grant-expiry",
+      "catalog-app-updates",
+    );
     const backgroundJobs = {
       "organization-removal": organizationRemovals,
       provisioning: dispatch,
@@ -409,15 +430,14 @@ export default Api.make(
       "workflow-reconcile": workflowReconcile,
       "billing-reconcile": billingReconcile,
       "agent-grant-expiry": agentGrantExpiry,
+      "catalog-app-updates": catalogAppUpdates,
       "tool-call-log": toolCallLog,
     } satisfies Record<BackgroundJob, unknown>;
 
     const egress = yield* cloudEgress;
     const clientMetadata = yield* cloudClientMetadata.pipe(Effect.orDie);
     const deploymentDocument = yield* deploymentClientMetadata(clientMetadata).pipe(Effect.orDie);
-    const catalogFeedUrl = Option.getOrUndefined(
-      yield* Config.String("EXECUTOR_CATALOG_URL").pipe(Config.option),
-    );
+    const catalogFeedUrl = Option.getOrUndefined(feedUrl);
     const apiOrigin = auth.resourceOrigins.api[0];
     const serverId = yield* serverIdentity("cloud", auth.origin);
     const document = lazyHostedApiDocument(() => executorCloudApiDocument(apiOrigin));

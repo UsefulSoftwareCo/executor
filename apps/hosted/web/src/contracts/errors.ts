@@ -190,6 +190,13 @@ const errorMessage = Match.type<HostedError>().pipe(
       const { description, recovery } = new CatalogFeedUnavailable();
       return `${description} ${recovery.action}`;
     },
+    CatalogUpdateUnavailable: ({ reason }) =>
+      ({
+        none: "No catalog update is waiting for this app. Reload the page.",
+        edited:
+          "This app's workspace has changes that are not deployed. Deploy or discard them, then update.",
+        changed: "This app changed while updating. Reload the page and try again.",
+      })[reason],
     FeedbackUnavailable: () => "Feedback could not be sent. Try again.",
     FeedbackDisabled: ({ message }) => message,
     HttpClientError: () =>

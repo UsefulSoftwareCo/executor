@@ -337,7 +337,15 @@ export default defineApp({ user: { accounts: { service } } }, async () => ({ too
         expect(prompt).toContain("What it should do: Summarize my Linear issues every Monday.");
         yield* browser.checkpoint("From scratch hands the description to the agent");
         yield* browser.use("Close the From scratch dialog", (page) =>
-          page.keyboard.press("Escape"),
+          page
+            .getByRole("dialog", { name: "Create from scratch" })
+            .getByRole("button", { name: "Close" })
+            .click()
+            .then(() =>
+              page.getByRole("dialog", { name: "Create from scratch" }).waitFor({
+                state: "detached",
+              }),
+            ),
         );
 
         yield* choose("From an MCP server");
@@ -363,7 +371,15 @@ export default defineApp({ user: { accounts: { service } } }, async () => ({ too
             .then(() => page.getByRole("dialog", { name: "Create from scratch" }).waitFor()),
         );
         yield* browser.use("Close the From scratch dialog", (page) =>
-          page.keyboard.press("Escape"),
+          page
+            .getByRole("dialog", { name: "Create from scratch" })
+            .getByRole("button", { name: "Close" })
+            .click()
+            .then(() =>
+              page.getByRole("dialog", { name: "Create from scratch" }).waitFor({
+                state: "detached",
+              }),
+            ),
         );
 
         yield* choose("Browse app catalog");
