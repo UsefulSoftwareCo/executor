@@ -17,6 +17,16 @@ import { Billing } from "../contracts/billing.ts";
 import { cloudSentry } from "../implementation/error-reporting.ts";
 import { EventCleanup, sqlCancellation } from "./event-cleanup.ts";
 import type { OrganizationRemovalRecovery } from "./organization-removal-recovery.ts";
+import {
+  encryptedWorkflowParams,
+  workflowEncryptionEnabled,
+  encryptedWorkflowResult,
+  encryptedWorkflowTask,
+  type WorkflowResults,
+  workflowEncryptionKey,
+  workflowResults,
+  workflowResultInput,
+} from "./workflow-results.ts";
 
 class RemovalAttemptFailed extends Schema.TaggedError<RemovalAttemptFailed>()(
   "RemovalAttemptFailed",
@@ -26,33 +36,69 @@ class RemovalAttemptFailed extends Schema.TaggedError<RemovalAttemptFailed>()(
 const runner =
   (
     organization: OrganizationId,
+    results?: WorkflowResults,
   ): OrganizationRemovalStepRunner<Cloudflare.Workflows.WorkflowStep> =>
   <A>(
     name: Parameters<OrganizationRemovalStepRunner>[0],
     retries: Parameters<OrganizationRemovalStepRunner>[1],
     work: Effect.Effect<A, unknown>,
-  ) =>
-    Cloudflare.Workflows.task(
-      name,
-      work.pipe(
-        Effect.withSpan("organization.removal.step", {
-          attributes: { "executor.organization.id": organization, "executor.removal.step": name },
-        }),
-        Effect.catchCause((cause) =>
-          Cause.hasInterrupts(cause)
-            ? Effect.interrupt
-            : Effect.logError("Organization removal step failed", cause).pipe(
-                Effect.andThen(Effect.fail(new RemovalAttemptFailed())),
+  ) => {
+    const stepWork = work.pipe(
+      Effect.withSpan("organization.removal.step", {
+        attributes: {
+          "executor.organization.id": organization,
+          "executor.removal.step": name,
+        },
+      }),
+    );
+    const step =
+      results === undefined
+        ? Cloudflare.Workflows.task(
+            name,
+            stepWork.pipe(
+              Effect.catchCause((cause) =>
+                Cause.hasInterrupts(cause)
+                  ? Effect.interrupt
+                  : Effect.logError("Organization removal step failed", cause).pipe(
+                      Effect.andThen(Effect.fail(new RemovalAttemptFailed())),
+                    ),
               ),
-        ),
-      ),
-      { retries },
-    ).pipe(Effect.mapError(() => new OrganizationRemovalFailed({ organization, step: name })));
+            ),
+            { retries },
+          )
+        : encryptedWorkflowTask({
+            results,
+            name,
+            options: { retries },
+            work: () =>
+              stepWork.pipe(
+                Effect.tapCause((cause) =>
+                  Cause.hasInterrupts(cause)
+                    ? Effect.void
+                    : Effect.logError("Organization removal step failed", cause),
+                ),
+              ),
+            encodeFailure: (error) =>
+              error instanceof Error ? error.message : "Organization removal failed",
+            isRetryable: (error) =>
+              !(
+                typeof error === "object" &&
+                error !== null &&
+                "retryable" in error &&
+                error.retryable === false
+              ),
+            restoreFailure: () => new RemovalAttemptFailed(),
+          });
+    return step.pipe(
+      Effect.mapError(() => new OrganizationRemovalFailed({ organization, step: name })),
+    );
+  };
 
 export class OrganizationRemoval extends Cloudflare.Workflow<OrganizationRemoval>()(
   "OrganizationRemoval",
   Effect.gen(function* () {
     const reportErrors = yield* cloudSentry;
+    const encryptionKey = yield* workflowEncryptionKey;
     const services = yield* Effect.context<
       HostedExecutor | OrganizationIcons | OrganizationRemovals | SessionAuthentication | Billing
     >().pipe(
@@ -70,15 +116,30 @@ export class OrganizationRemoval extends Cloudflare.Workflow<OrganizationRemoval
     const cancellation = OrganizationBilling.of({
       cancel: (organization: OrganizationId) => billing.cancel(organization),
     });
-    return (input: { organization: string }) =>
-      Effect.suspend(() => {
-        const organization = OrganizationId.make(input.organization);
-        return removeOrganizationDurably(organization, runner(organization)).pipe(
+    return (input: unknown) =>
+      Effect.gen(function* () {
+        const request = yield* workflowResultInput(input);
+        const params = yield* Schema.decodeUnknownEffect(
+          Schema.Struct({ organization: OrganizationId }),
+        )(request.params);
+        const organization = params.organization;
+        const results =
+          request.mode === "encrypted"
+            ? yield* workflowResults(`organization-removal:${organization}`, encryptionKey)
+            : undefined;
+        const work = removeOrganizationDurably(organization, runner(organization, results)).pipe(
           Effect.provide(services),
           Effect.provideService(OrganizationBilling, cancellation),
           reportErrors,
-          Effect.orDie,
         );
+        if (results === undefined) return yield* work.pipe(Effect.orDie);
+        return yield* encryptedWorkflowResult({
+          results,
+          work,
+          encodeFailure: (error) =>
+            error instanceof Error ? error.message : "Organization removal failed",
+          isRetryable: () => false,
+        });
       });
   }),
 ) {}
@@ -96,31 +157,39 @@ const callDeadline = "3 seconds";
 export const startOrganizationRemoval =
   (workflow: Pick<Effect.Success<typeof OrganizationRemoval>, "create" | "get">) =>
   (organization: OrganizationId, instance: string) =>
-    workflow.create({ id: instance, params: { organization } }).pipe(
-      Effect.timeout(callDeadline),
-      Effect.asVoid,
-      Effect.catchCause((cause) =>
-        Cause.hasInterrupts(cause)
-          ? Effect.interrupt
-          : workflow.get(instance).pipe(
-              Effect.flatMap((run) => run.status()),
-              Effect.timeout(callDeadline),
-              Effect.catchCause((cause) =>
-                Cause.hasInterrupts(cause)
-                  ? Effect.interrupt
-                  : Effect.succeed({ status: "unknown" }),
-              ),
-              Effect.flatMap((state) =>
-                state.status === "unknown"
-                  ? Effect.fail(new OrganizationRemovalUnavailable())
-                  : Effect.void,
-              ),
-            ),
-      ),
-      Effect.withSpan("organization.removal.start", {
-        attributes: { "executor.organization.id": organization },
-      }),
-    );
+    Effect.gen(function* () {
+      const encrypted = yield* workflowEncryptionEnabled;
+      return yield* workflow
+        .create({
+          id: instance,
+          params: encryptedWorkflowParams({ organization }, encrypted),
+        })
+        .pipe(
+          Effect.timeout(callDeadline),
+          Effect.asVoid,
+          Effect.catchCause((cause) =>
+            Cause.hasInterrupts(cause)
+              ? Effect.interrupt
+              : workflow.get(instance).pipe(
+                  Effect.flatMap((run) => run.status()),
+                  Effect.timeout(callDeadline),
+                  Effect.catchCause((cause) =>
+                    Cause.hasInterrupts(cause)
+                      ? Effect.interrupt
+                      : Effect.succeed({ status: "unknown" }),
+                  ),
+                  Effect.flatMap((state) =>
+                    state.status === "unknown"
+                      ? Effect.fail(new OrganizationRemovalUnavailable())
+                      : Effect.void,
+                  ),
+                ),
+          ),
+          Effect.withSpan("organization.removal.start", {
+            attributes: { "executor.organization.id": organization },
+          }),
+        );
+    });
 
 export const dispatchAcceptedRemoval = (
   start: OrganizationRemovalStart["Service"],

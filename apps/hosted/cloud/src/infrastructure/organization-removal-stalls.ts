@@ -3,6 +3,7 @@ import * as Cloudflare from "alchemy/Cloudflare";
 import { Effect, Layer, Schema } from "effect";
 import { GroupDatabase } from "@executor-js/hosted-server/groups";
 import type { OrganizationRemoval } from "./organization-removal-workflow.ts";
+import { workflowResultInput } from "./workflow-results.ts";
 
 export const removalStallBindings = Effect.gen(function* () {
   return { ORGANIZATION_REMOVAL_STALLS: (yield* AlchemyContext).dev };
@@ -30,8 +31,13 @@ export const localRemovalStalls = <E>(
       }).pipe(Effect.provide(database), Effect.scoped, Effect.orDie);
     return {
       create: (options) =>
-        stalled(options?.params?.organization ?? "").pipe(
+        workflowResultInput(options?.params).pipe(
+          Effect.flatMap(({ params }) =>
+            Schema.decodeUnknownEffect(Schema.Struct({ organization: Schema.String }))(params),
+          ),
+          Effect.flatMap(({ organization }) => stalled(organization)),
           Effect.flatMap((stall) => (stall ? Effect.never : workflow.create(options))),
+          Effect.orDie,
         ),
       get: (instance) => workflow.get(instance),
     };

@@ -23,6 +23,15 @@ import { BillingMeter } from "../contracts/billing-meter.ts";
 import { cloudAnalytics } from "../implementation/product-analytics.ts";
 import { jobUnits } from "../contracts/job-outcome.ts";
 import { cloudBackgroundJobs } from "./background-jobs.ts";
+import {
+  encryptedWorkflowParams,
+  workflowEncryptionEnabled,
+  encryptedWorkflowResult,
+  encryptedWorkflowTask,
+  workflowEncryptionKey,
+  workflowResults,
+  workflowResultInput,
+} from "./workflow-results.ts";
 
 export class Provisioning extends Cloudflare.Workflow<Provisioning>()(
   "Provisioning",
@@ -36,6 +45,7 @@ export class Provisioning extends Cloudflare.Workflow<Provisioning>()(
     const meter = yield* BillingMeter.pipe(Effect.provide(yield* billingLive.pipe(Effect.orDie)));
     const analytics = yield* cloudAnalytics;
     const jobs = yield* cloudBackgroundJobs;
+    const encryptionKey = yield* workflowEncryptionKey;
     const services: ProvisioningServices = {
       requireVerifiedEmail: true,
       user: (id) =>
@@ -49,69 +59,129 @@ export class Provisioning extends Cloudflare.Workflow<Provisioning>()(
         Effect.mapError(() => new ProvisioningFailed()),
       ),
     };
-    return (input: { id: string }) =>
+    return (input: unknown) =>
       Effect.scoped(
         analytics.wrap(
           Effect.gen(function* () {
-            const id = yield* Schema.decodeUnknownEffect(Schema.NonEmptyString)(input.id);
-            const step = yield* Cloudflare.Workflows.WorkflowStep;
-            const context = yield* Effect.context<never>();
-            yield* step
-              .do({
-                name: "provision",
-                retries: { limit: 8, delay: "5 seconds", backoff: "exponential" },
-                timeout: "5 minutes",
-                effect: Effect.gen(function* () {
-                  const sql = yield* Effect.flatten(GroupDatabase);
-                  yield* provision(id, services).pipe(
-                    Effect.provideService(SqlClient.SqlClient, sql),
-                  );
-                }).pipe(
-                  Effect.provideService(ScheduleWakeup, Effect.void),
-                  Effect.provide(executor),
-                  Effect.scoped,
-                  Effect.provideContext(context),
-                  Effect.mapError(() => new ProvisioningFailed()),
-                ),
-              })
-              .pipe(
-                Effect.catchCause((cause) =>
-                  Cause.hasInterrupts(cause)
-                    ? Effect.interrupt
-                    : Effect.gen(function* () {
-                        const sql = yield* Effect.flatten(GroupDatabase).pipe(
-                          Effect.provide(executor),
-                        );
-                        yield* sql`update hosted_provisioning set status = 'failed', updated_at = now() where id = ${id} and status <> 'succeeded'`;
-                        yield* Effect.logError("Provisioning workflow failed", { job: id });
-                        return yield* Effect.die(new Error("Provisioning failed"));
-                      }),
-                ),
+            const request = yield* workflowResultInput(input);
+            const { id } = yield* Schema.decodeUnknownEffect(
+              Schema.Struct({ id: Schema.NonEmptyString }),
+            )(request.params);
+            const results =
+              request.mode === "encrypted"
+                ? yield* workflowResults(`provisioning:${id}`, encryptionKey)
+                : undefined;
+            const work = Effect.gen(function* () {
+              const step = yield* Cloudflare.Workflows.WorkflowStep;
+              const context = yield* Effect.context<never>();
+              const provisionWork = Effect.gen(function* () {
+                const sql = yield* Effect.flatten(GroupDatabase);
+                yield* provision(id, services).pipe(
+                  Effect.provideService(SqlClient.SqlClient, sql),
+                );
+              }).pipe(
+                Effect.provideService(ScheduleWakeup, Effect.void),
+                Effect.provide(executor),
+                Effect.scoped,
+                Effect.provideContext(context),
+                Effect.mapError(() => new ProvisioningFailed()),
               );
-            yield* step
-              .do({
-                name: "schedule-wake",
-                retries: { limit: 5, delay: "2 seconds", backoff: "exponential" },
-                timeout: "1 minute",
-                effect: jobs
-                  .request("schedule-wake")
-                  .pipe(Effect.provideContext(context), Effect.orDie),
-              })
-              .pipe(
+              const provisionStep =
+                results === undefined
+                  ? step.do({
+                      name: "provision",
+                      retries: { limit: 8, delay: "5 seconds", backoff: "exponential" },
+                      timeout: "5 minutes",
+                      effect: provisionWork,
+                    })
+                  : encryptedWorkflowTask({
+                      results,
+                      name: "provision",
+                      options: {
+                        retries: { limit: 8, delay: "5 seconds", backoff: "exponential" },
+                        timeout: "5 minutes",
+                      },
+                      work: () => provisionWork,
+                      encodeFailure: (error) =>
+                        error instanceof Error ? error.message : "Provisioning failed",
+                      isRetryable: (error) =>
+                        !(
+                          typeof error === "object" &&
+                          error !== null &&
+                          "retryable" in error &&
+                          error.retryable === false
+                        ),
+                      restoreFailure: () => new ProvisioningFailed(),
+                    }).pipe(Effect.provideService(Cloudflare.Workflows.WorkflowStep, step));
+              const reportProvisioningFailure = (cause: Cause.Cause<unknown>) =>
+                Cause.hasInterrupts(cause)
+                  ? Effect.interrupt
+                  : Effect.gen(function* () {
+                      const sql = yield* Effect.flatten(GroupDatabase).pipe(
+                        Effect.provide(executor),
+                      );
+                      yield* sql`update hosted_provisioning set status = 'failed', updated_at = now() where id = ${id} and status <> 'succeeded'`;
+                      yield* Effect.logError("Provisioning workflow failed", { job: id });
+                      return yield* Effect.die(new Error("Provisioning failed"));
+                    });
+              yield* provisionStep.pipe(Effect.catchCause(reportProvisioningFailure));
+
+              const wakeWork = jobs
+                .request("schedule-wake")
+                .pipe(Effect.provideContext(context), Effect.orDie);
+              const wakeStep =
+                results === undefined
+                  ? step.do({
+                      name: "schedule-wake",
+                      retries: { limit: 5, delay: "2 seconds", backoff: "exponential" },
+                      timeout: "1 minute",
+                      effect: wakeWork,
+                    })
+                  : encryptedWorkflowTask({
+                      results,
+                      name: "schedule-wake",
+                      options: {
+                        retries: { limit: 5, delay: "2 seconds", backoff: "exponential" },
+                        timeout: "1 minute",
+                      },
+                      work: () => wakeWork,
+                      encodeFailure: (error) =>
+                        error instanceof Error ? error.message : "Schedule wake failed",
+                      isRetryable: () => false,
+                      restoreFailure: (failure) => new Error(failure.message),
+                    }).pipe(Effect.provideService(Cloudflare.Workflows.WorkflowStep, step));
+              yield* wakeStep.pipe(
                 Effect.catchCause((cause) =>
                   Cause.hasInterrupts(cause)
                     ? Effect.interrupt
                     : Effect.logError("Schedule wake after provisioning failed", { job: id }),
                 ),
               );
-          }).pipe(Effect.orDie),
+            });
+            if (results === undefined) {
+              yield* work.pipe(Effect.orDie);
+              return;
+            }
+            return yield* encryptedWorkflowResult({
+              results,
+              work,
+              encodeFailure: (error) =>
+                error instanceof Error ? error.message : "Provisioning failed",
+              isRetryable: () => false,
+            });
+          }),
         ),
       );
   }),
 ) {}
 
 const NativeProvisioning = Schema.declare(
-  (value): value is Pick<Workflow<{ id: string }>, "get" | "create"> =>
+  (
+    value,
+  ): value is Pick<
+    Workflow<{ id: string } | { __executorWorkflowResults: 1; params: { id: string } }>,
+    "get" | "create"
+  > =>
     typeof value === "object" &&
     value !== null &&
     "get" in value &&
@@ -130,6 +200,7 @@ export const dispatchProvisioning = <R>(
 ) =>
   Effect.gen(function* () {
     const environment = yield* Cloudflare.WorkerEnvironment;
+    const encrypted = yield* workflowEncryptionEnabled;
     const binding = yield* Schema.decodeUnknownEffect(NativeProvisioning)(environment.Provisioning);
     const sql = yield* Effect.flatten(GroupDatabase);
     const jobs = yield* sql`with candidates as (
@@ -148,7 +219,10 @@ export const dispatchProvisioning = <R>(
           const status = yield* Effect.tryPromise({
             try: async () => {
               try {
-                await binding.create({ id: job.id, params: { id: job.id } });
+                await binding.create({
+                  id: job.id,
+                  params: encryptedWorkflowParams({ id: job.id }, encrypted),
+                });
                 return "running" as const;
               } catch {
                 const instance = await (await binding.get(job.id)).status();
