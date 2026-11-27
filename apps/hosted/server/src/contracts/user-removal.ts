@@ -5,6 +5,8 @@ import {
   AccountWebhooksActive,
   AccountWorkflowsActive,
   AppWorkflowsActive,
+  InteractiveRetirementBusy,
+  InteractiveRetirementFailed,
   StorageError,
 } from "@executor-js/sdk/core";
 import { AccountLinkedToApp } from "./accounts.ts";
@@ -65,6 +67,8 @@ export const HostedUserRemoval = HttpApiGroup.make("userRemoval")
         StorageError,
         AppWorkflowsActive,
         AccountWorkflowsActive,
+        InteractiveRetirementBusy,
+        InteractiveRetirementFailed,
         AccountWebhooksActive,
         AccountLinkedToApp,
       ],

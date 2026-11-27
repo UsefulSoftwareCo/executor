@@ -23,7 +23,8 @@ const vercel = defineProvider({
 ```
 
 `apiKey` is the method name. `secrets` means fields you paste; `oauth2` means a
-browser sign-in.
+browser sign-in. `interactive({ label })` means the requiring app acquires its
+own credential through `connect.<slot>` handlers and the standard Connect dialog.
 
 Tell people where to get credentials with each field's `description` and, for
 ordered setup or prerequisites, a `guide` on a `secrets` method. `title`
@@ -55,6 +56,12 @@ account saved for one can be used by the other. You do not coordinate an
 identifier between apps; matching definitions are enough. Setup help is not part
 of what has to match: editing it keeps the provider and its accounts, and two
 apps may explain one provider differently.
+
+An interactive account is an exception to reuse: its opaque reference belongs
+to the app that acquired it. Matching provider definitions do not let another
+app link it. The app keeps the service's tokens and handles their lifecycle;
+Executor retains only the reference, ownership and links. See
+[app-owned sign-in](/docs/build/accounts#app-owned-sign-in).
 
 A provider reference is also not permission. Knowing it does not let an app read
 an account. Access is authorized separately.

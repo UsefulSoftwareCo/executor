@@ -56,7 +56,7 @@ export const accountFields = (
         readonly plain?: readonly string[];
         readonly raw?: readonly string[];
       }
-    | { readonly type: "oauth2" },
+    | { readonly type: "oauth2" | "interactive" },
 ) =>
   method.type === "secrets"
     ? Option.gen(function* () {
@@ -100,6 +100,13 @@ export interface AccountOAuthProps {
   readonly clientGuide: string | undefined;
   readonly onPendingChange: (pending: boolean) => void;
   readonly access: ReactNode;
+}
+
+export interface AccountInteractiveProps {
+  readonly method: string;
+  readonly label: string;
+  readonly disabled: boolean;
+  readonly onPendingChange: (pending: boolean) => void;
 }
 
 export interface OAuthSubmission {

@@ -83,6 +83,8 @@ export function AppAccounts({
   const [renaming, setRenaming] = useState<AccountSummary["id"]>();
   const [connecting, setConnecting] = useState(false);
   const usable = (account: AccountSummary) => accounts.some((item) => item.id === account.id);
+  const appBound = (requirement: AccountRequirement, account: AccountSummary) =>
+    requirement.definition.auth[account.method]?.type === "interactive";
   const reconnect = (scope: AccountScope, slot: string, account: AccountSummary) => {
     const requirement = app.requirements.accounts[slot];
     if (requirement !== undefined)
@@ -122,6 +124,7 @@ export function AppAccounts({
             linked && (
               <LinkedAccountMenu
                 label={account.label || "Unnamed account"}
+                bound={appBound(requirement, account) ? { app: app.name } : undefined}
                 unlink={unlinkAccountAtom({
                   ...target(scope),
                   requirement: slot,
@@ -135,7 +138,7 @@ export function AppAccounts({
                     Edit details
                   </DropdownMenuItem>
                 )}
-                {usable(account) && (
+                {usable(account) && !appBound(requirement, account) && (
                   <DropdownMenuItem
                     disabled={connecting}
                     onSelect={() => reconnect(scope, slot, account)}
@@ -147,8 +150,9 @@ export function AppAccounts({
                 )}
               </LinkedAccountMenu>
             ),
-          reconnectAction: (account, slot) =>
-            usable(account) && (
+          reconnectAction: (account, slot, requirement) =>
+            usable(account) &&
+            !appBound(requirement, account) && (
               <Button
                 variant="outline"
                 size="sm"
@@ -317,6 +321,12 @@ function AppConnectionFields({
   useAtomMount(atoms.request);
   const submit = useAtomSet(atoms.submit, { mode: "promiseExit" });
   const start = useAtomSet(atoms.startOAuth, { mode: "promiseExit" });
+  const interactive = {
+    start: useAtomSet(atoms.interactive.start, { mode: "promiseExit" }),
+    status: useAtomSet(atoms.interactive.status, { mode: "promiseExit" }),
+    submit: useAtomSet(atoms.interactive.submit, { mode: "promiseExit" }),
+    cancel: useAtomSet(atoms.interactive.cancel, { mode: "promiseExit" }),
+  };
   return (
     <HostedAccountForm<HostedOAuthSignIn & { readonly connection: AccountConnectionId }>
       provider={form.provider}
@@ -326,6 +336,7 @@ function AppConnectionFields({
       initialMethod={form.method}
       submit={submit}
       start={start}
+      interactive={interactive}
       onPendingChange={onPendingChange}
       onSaved={onSaved}
       onAuthorized={(value) =>

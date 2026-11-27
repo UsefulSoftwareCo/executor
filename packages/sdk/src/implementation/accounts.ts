@@ -1,6 +1,6 @@
 import { AccountWorkflowsActive } from "../contracts/account.ts";
 import { AccountWebhookDependent, AccountWebhooksActive } from "../contracts/account.ts";
-import { Clock, Effect, Redacted, Schema } from "effect";
+import { Clock, Effect, Option, Redacted, Schema } from "effect";
 import type { HostCrypto } from "./host-crypto.ts";
 import {
   Account,
@@ -11,10 +11,16 @@ import {
 import { OAuthGrant } from "../contracts/oauth.ts";
 import type { Executor, ResourceLifecycle } from "../contracts/executor.ts";
 import { Provider, ProviderNotFound } from "../contracts/provider.ts";
-import { AccountId, StorageError, type OwnerId, type ProviderId } from "../contracts/shared.ts";
+import {
+  AccountId,
+  JsonObject,
+  StorageError,
+  type OwnerId,
+  type ProviderId,
+} from "../contracts/shared.ts";
 import { StoredAccount, type Credentials } from "../contracts/storage.ts";
 import { query, transaction, type Query } from "./database.ts";
-import { validateFields } from "./provider.ts";
+import { canonical, validateFields } from "./provider.ts";
 
 const fingerprint = (bytes: Uint8Array) =>
   Effect.promise(async () =>
@@ -100,6 +106,9 @@ export const defaultLabel = (tx: Query, owner: OwnerId, provider: ProviderId) =>
 export const ownedAccount = (db: Query, input: Parameters<Executor["accounts"]["get"]>[0]) =>
   storedAccount(db, input.account, input.owner);
 
+export const publicAccount = (stored: Account) =>
+  Schema.decodeUnknownEffect(Account)(stored).pipe(Effect.mapError(() => new StorageError()));
+
 export const lockedAccount = (tx: Query, input: Parameters<Executor["accounts"]["get"]>[0]) =>
   Effect.gen(function* () {
     const found = yield* ownedAccount(tx, input);
@@ -111,7 +120,6 @@ export const lockedAccount = (tx: Query, input: Parameters<Executor["accounts"][
     );
     return yield* ownedAccount(tx, input);
   });
-
 export interface RemovedGrant {
   readonly account: AccountId;
   readonly owner: OwnerId;
@@ -350,7 +358,7 @@ export const makeAccounts = (
       );
       const method = provider.definition.auth[account.method];
       if (method === undefined) return unavailable;
-      if (method.type === "secrets")
+      if (method.type === "secrets" || method.type === "interactive")
         return {
           state: "saved",
           reconnectAt: null,
@@ -379,3 +387,83 @@ export const makeAccounts = (
         : ({ state: "saved", reconnectAt, credentialsFingerprint } satisfies AccountSignIn);
     }).pipe(Effect.withSpan("sdk.accounts.signIn")),
 });
+export const credentialsReadable = (db: Query, credentials: Credentials) => (account: AccountId) =>
+  Effect.gen(function* () {
+    const stored = yield* storedAccount(db, account).pipe(
+      Effect.map(Option.some),
+      Effect.catchTag("AccountNotFound", () => Effect.succeed(Option.none<StoredAccount>())),
+    );
+    if (Option.isNone(stored)) return false;
+    const fields = yield* credentials
+      .decrypt(account, stored.value.encryptedCredentials)
+      .pipe(Effect.option);
+    if (Option.isNone(fields)) return false;
+    const row = yield* query(() =>
+      db.findFirst("providers", { where: (b) => b("id", "=", stored.value.provider) }),
+    );
+    if (row === null) return false;
+    const provider = yield* Schema.decodeUnknownEffect(Provider)(row).pipe(
+      Effect.mapError(() => new StorageError()),
+    );
+    const method = provider.definition.auth[stored.value.method];
+    if (method === undefined) return false;
+    if (method.type === "secrets" || method.type === "interactive") return true;
+    const grant = yield* query(() =>
+      db.findFirst("oauthGrants", { where: (b) => b("id", "=", account) }),
+    );
+    if (grant === null) return false;
+    const decoded = yield* credentials.decrypt(account, Redacted.make(grant.encrypted)).pipe(
+      Effect.flatMap((value) => Schema.decodeUnknownEffect(OAuthGrant)(Redacted.value(value))),
+      Effect.option,
+    );
+    return Option.isSome(decoded);
+  }).pipe(Effect.withSpan("sdk.accounts.credentialsReadable"));
+
+export const moveImportedAccount =
+  (db: Query) =>
+  (input: {
+    readonly account: AccountId;
+    readonly provider: ProviderId;
+    readonly method: string;
+  }) =>
+    Effect.gen(function* () {
+      const stored = yield* storedAccount(db, input.account).pipe(
+        Effect.map(Option.some),
+        Effect.catchTag("AccountNotFound", () => Effect.succeed(Option.none<StoredAccount>())),
+      );
+      if (Option.isNone(stored) || stored.value.provider === input.provider) return false;
+      const account = stored.value;
+      const methodOf = (provider: ProviderId, method: string) =>
+        Effect.gen(function* () {
+          const row = yield* query(() =>
+            db.findFirst("providers", { where: (b) => b("id", "=", provider) }),
+          );
+          if (row === null) return undefined;
+          const { definition } = yield* Schema.decodeUnknownEffect(Provider)(row).pipe(
+            Effect.mapError(() => new StorageError()),
+          );
+          if (!Object.hasOwn(definition.auth, method)) return undefined;
+          const json = yield* Schema.decodeUnknownEffect(JsonObject)(definition.auth[method]).pipe(
+            Effect.mapError(() => new StorageError()),
+          );
+          return canonical(json);
+        });
+      const from = yield* methodOf(account.provider, account.method);
+      const to = yield* methodOf(input.provider, input.method);
+      if (from === undefined || from !== to) return false;
+      yield* query(() =>
+        db.updateMany("accounts", {
+          where: (b) =>
+            b.and(
+              b("id", "=", input.account),
+              b("provider", "=", account.provider),
+              b("method", "=", account.method),
+            ),
+          set: { provider: input.provider, method: input.method },
+        }),
+      );
+      return yield* storedAccount(db, input.account).pipe(
+        Effect.map((moved) => moved.provider === input.provider && moved.method === input.method),
+        Effect.catchTag("AccountNotFound", () => Effect.succeed(false)),
+      );
+    }).pipe(Effect.withSpan("sdk.accounts.moveImportedAccount"));

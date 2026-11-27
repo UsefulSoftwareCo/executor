@@ -22,6 +22,7 @@ import {
   credentialValues,
   type AccountSubmission,
   type AccountOAuthProps,
+  type AccountInteractiveProps,
 } from "../../contracts/credentials.ts";
 import { CredentialFields } from "../components/credential-fields.tsx";
 import { Button } from "../components/button.tsx";
@@ -46,6 +47,7 @@ export function AccountForm<A, E>({
   submit,
   onSaved,
   oauth,
+  interactive,
   Failure,
   onPendingChange,
   initialMethod,
@@ -64,6 +66,7 @@ export function AccountForm<A, E>({
   readonly submit: (input: AccountSubmission) => Promise<Exit.Exit<A, E>>;
   readonly onSaved: (value: NoInfer<A>) => void;
   readonly oauth: (props: AccountOAuthProps) => ReactNode;
+  readonly interactive?: ((props: AccountInteractiveProps) => ReactNode) | undefined;
   readonly Failure: ComponentType<FailureProps<NoInfer<E>>>;
   readonly disabled?: boolean;
   readonly onPendingChange?: (pending: boolean) => void;
@@ -182,6 +185,10 @@ export function AccountForm<A, E>({
               <SignInAccess provider={provider.definition.name} hosts={provider.definition.hosts} />
             ),
           })}
+        </div>
+      ) : auth?.type === "interactive" && interactive ? (
+        <div key={method} className="flex flex-col gap-4">
+          {interactive({ method, label: auth.label, disabled, onPendingChange: updatePending })}
         </div>
       ) : fields ? (
         <>

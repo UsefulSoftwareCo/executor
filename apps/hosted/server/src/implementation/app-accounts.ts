@@ -1,3 +1,5 @@
+import { InteractiveRemovalDone } from "@executor-js/sdk/core";
+import { canDeleteAccountWithSql } from "./interactive-retirement.ts";
 import {
   AccountId,
   AccountNotFound,
@@ -136,12 +138,13 @@ const callerRequirements = (version: AppVersion, links?: CallerLinks) =>
     };
   });
 
-export const versionAccounts = (version: AppVersion, links?: CallerLinks) =>
+export const versionAccounts = (version: AppVersion, links?: CallerLinks, connecting?: string) =>
   Effect.gen(function* () {
     const resolved = yield* resolveLinkedAccounts({
       app: version.app,
       version: version.version,
       ...(yield* callerRequirements(version, links)),
+      ...(connecting === undefined ? {} : { connecting }),
     });
     const policy = yield* CurrentPolicy;
     if (!permitsAccounts(policy, version.app, userAccountIds(resolved)))
@@ -275,6 +278,8 @@ const RequiredRow = Schema.Struct({
   provider: Schema.NullOr(Schema.String),
   cardinality: Schema.NullOr(Schema.String),
   accountProvider: Schema.NullOr(Schema.String),
+  interactive: Schema.Boolean,
+  acquiringApp: Schema.NullOr(Schema.String),
 });
 const AccountRow = Schema.Struct({ account: AccountId });
 
@@ -309,7 +314,11 @@ export const addLink = (
         d.requirements::jsonb -> 'accounts' -> ${input.requirement} ->> 'scope' as scope,
         d.requirements::jsonb -> 'accounts' -> ${input.requirement} ->> 'provider' as provider,
         d.requirements::jsonb -> 'accounts' -> ${input.requirement} ->> 'cardinality' as cardinality,
-        a.provider as "accountProvider"
+        a.provider as "accountProvider",
+        coalesce((d.requirements::jsonb -> 'accounts' -> ${input.requirement} -> 'definition' -> 'auth' -> a.method ->> 'type') = 'interactive', false) as interactive,
+        (select c.state -> 'interactive' ->> 'app' from executor_account_connections c
+          where c.owner = a.owner and c.state ->> 'status' = 'completed' and c.state -> 'account' ->> 'id' = a.id
+          order by c.created_at desc limit 1) as "acquiringApp"
       from executor_apps app
       left join executor_deployments d on d.id = app.active_deployment
       left join executor_accounts a on a.id = ${input.account} and a.owner = app.owner
@@ -323,6 +332,14 @@ export const addLink = (
     if (required.provider === null || (required.scope ?? "user") !== scope)
       return yield* refuse("requirement");
     if (required.provider !== required.accountProvider) return yield* refuse("provider");
+    if (required.interactive && required.acquiringApp !== input.app)
+      return yield* refuse("app_bound");
+    const retiring =
+      yield* sql`select id from executor_account_connections where state ->> 'status' = 'completed'
+      and state -> 'account' ->> 'id' = ${input.account} and ((state -> 'interactive' -> 'retirement' ->> 'token' is not null
+        and coalesce((state -> 'interactive' -> 'retirement' ->> 'expiresAt')::double precision, 0) > extract(epoch from clock_timestamp()) * 1000)
+        or state -> 'interactive' -> 'retirement' ->> 'removed' = 'true')`;
+    if (retiring.length > 0) return yield* new StorageError();
     const replaced =
       required.cardinality === "many"
         ? []
@@ -332,7 +349,18 @@ export const addLink = (
                 and ${sameSubject(sql, input.subject)} and account <> ${input.account}
               order by created_at, account`,
           );
-    for (const { account } of replaced) yield* removeLink(sql, webhooks, { ...input, account });
+    const retired = yield* InteractiveRemovalDone;
+    for (const { account } of replaced) {
+      const bindings =
+        yield* sql`select id from executor_account_connections where state ->> 'status' = 'completed' and state -> 'account' ->> 'id' = ${account} and state -> 'interactive' is not null`;
+      if (
+        bindings.length > 0 &&
+        (yield* canDeleteAccountWithSql(sql, account)) &&
+        !retired.has(account)
+      )
+        return yield* new StorageError();
+      yield* removeLink(sql, webhooks, { ...input, account });
+    }
     const inserted = yield* sql`insert into hosted_app_account_links
         (app, requirement, subject, account, linked_by, created_at)
       values (${input.app}, ${input.requirement}, ${input.subject}, ${input.account},
