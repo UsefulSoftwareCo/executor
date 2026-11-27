@@ -61,13 +61,13 @@ An app-owned interactive account is an exception to reuse: its opaque reference
 belongs to the app that acquired it. Matching provider definitions do not let
 another app link it. The app keeps the service's tokens and handles their
 lifecycle; Executor retains only the reference, ownership and links. See
-[app-owned sign-in](/author-an-app#app-owned-sign-in).
+[app-owned sign-in](/docs/build/accounts#app-owned-sign-in).
 
 A method declared with `interactive({ label, acquisition: "host" })` uses the
 host's registered credential driver instead. Its saved accounts are reusable
 across matching apps and survive app removal. Permission still controls who
 can use or link each account. See
-[host-owned sign-in](/author-an-app#host-owned-sign-in).
+[host-owned sign-in](/docs/build/accounts#host-owned-sign-in).
 
 A provider reference is also not permission. Knowing it does not let an app read
 an account. Access is authorized separately.
