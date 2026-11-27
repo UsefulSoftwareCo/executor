@@ -1,12 +1,18 @@
 import { recordUnclassifiedRefusals, requestServices } from "@executor-js/hosted-server";
 import { previewActivity } from "./infrastructure/preview-activity.ts";
 import { previewLifetime } from "./infrastructure/test-stage-expiry.ts";
-import { appSessionCookie, hostedAppUi, appAddresses } from "@executor-js/hosted-server/app-ui";
+import {
+  appSessionCookie,
+  appUiAddressScheme,
+  appUiEmbedded,
+  hostedAppUi,
+  appAddresses,
+} from "@executor-js/hosted-server/app-ui";
 import { appPrivateHeaders, appSignInCallbackPath } from "apps/ui/auth";
 import { AppUiApi, appIconRoute, appMenuBarRoute } from "apps/ui/contracts";
 import { AlchemyContext } from "alchemy/AlchemyContext";
 import * as Cloudflare from "alchemy/Cloudflare";
-import { Config, Effect, Layer, Option } from "effect";
+import { Cause, Config, Effect, Layer, Option, Predicate } from "effect";
 import { HttpApiBuilder } from "effect/http-api";
 import { HttpRouter, HttpServer, HttpServerError, HttpServerResponse } from "effect/http";
 import { cloudAppUiBase, cloudAppUiPort, cloudAppUiRoute } from "./contracts/app-ui.ts";
@@ -15,6 +21,7 @@ import {
   recordRequestRejections,
   requestTiming,
 } from "@executor-js/telemetry/http";
+import { recordedCause } from "@executor-js/telemetry/recorded-failure";
 import { recordClientNetwork } from "./implementation/client-network.ts";
 import { cloudSentry } from "./implementation/error-reporting.ts";
 import { cloudAnalytics } from "./implementation/product-analytics.ts";
@@ -34,6 +41,52 @@ import {
 
 import { workerBuild } from "./infrastructure/worker-build.ts";
 import { servedRequest } from "./infrastructure/served-request.ts";
+
+const configIssues = (error: unknown): string[] => {
+  if (!Predicate.hasProperty(error, "_tag") || error._tag !== "ConfigError") return [];
+  const cause = Predicate.hasProperty(error, "cause") ? error.cause : undefined;
+  if (!Predicate.hasProperty(cause, "issue")) return ["(source unavailable)"];
+  const found: string[] = [];
+  const walk = (issue: unknown, path: readonly PropertyKey[]): void => {
+    if (!Predicate.hasProperty(issue, "_tag") || typeof issue._tag !== "string") return;
+    if (
+      issue._tag === "Pointer" &&
+      Predicate.hasProperty(issue, "path") &&
+      Array.isArray(issue.path)
+    )
+      walk(Predicate.hasProperty(issue, "issue") ? issue.issue : undefined, [
+        ...path,
+        ...issue.path,
+      ]);
+    else if (Predicate.hasProperty(issue, "issue")) walk(issue.issue, path);
+    else if (
+      Predicate.hasProperty(issue, "issues") &&
+      Array.isArray(issue.issues) &&
+      issue.issues.length > 0
+    )
+      for (const nested of issue.issues) walk(nested, path);
+    else found.push(`${path.map(String).join(".") || "(root)"}: ${issue._tag}`);
+  };
+  try {
+    walk(cause.issue, []);
+  } catch {
+    return ["(unreadable)"];
+  }
+  return found;
+};
+
+const logFailure = (cause: Cause.Cause<unknown>) => {
+  const keys = cause.reasons.flatMap((reason) =>
+    Cause.isFailReason(reason)
+      ? configIssues(reason.error)
+      : Cause.isDieReason(reason)
+        ? configIssues(reason.defect)
+        : [],
+  );
+  return Effect.logError(
+    Cause.pretty(recordedCause(cause)) + (keys.length ? `\nconfig: ${keys.join("; ")}` : ""),
+  );
+};
 
 export default class AppPages extends Cloudflare.Worker<AppPages>()(
   "AppPages",
@@ -58,6 +111,8 @@ export default class AppPages extends Cloudflare.Worker<AppPages>()(
         }),
         ...(yield* telemetryBindings),
         ...(yield* sentryBindings).env,
+        EXECUTOR_APP_UI_ADDRESS_SCHEME: yield* appUiAddressScheme,
+        EXECUTOR_APP_UI_EMBEDDED: String(yield* appUiEmbedded),
       },
       compatibility: {
         date: "2026-09-08",
@@ -69,17 +124,27 @@ export default class AppPages extends Cloudflare.Worker<AppPages>()(
             onNone: () => ({}),
             onSome: (region) => ({ placement: { region } }),
           })),
-      ...(dev ? {} : { routes: [{ pattern: yield* cloudAppUiRoute.pipe(Effect.orDie) }] }),
+      ...(dev ||
+      !(yield* Config.Boolean("EXECUTOR_APP_UI_MANAGED_ROUTE").pipe(Config.withDefault(true)))
+        ? {}
+        : { routes: [{ pattern: yield* cloudAppUiRoute.pipe(Effect.orDie) }] }),
       dev: { host: "127.0.0.1", port: yield* cloudAppUiPort.pipe(Effect.orDie), strictPort: true },
     };
-  }),
+  }).pipe(Effect.tapCause(logFailure)),
   Effect.gen(function* () {
     const reportErrors = yield* cloudSentry;
     const analytics = yield* cloudAnalytics;
     const appSessions = yield* cloudAppSessions;
     const executor = yield* cloudServingProduct(yield* appDataSupervisors);
     const base = yield* cloudAppUiBase.pipe(Effect.orDie);
-    const appUi = hostedAppUi(appAddresses((yield* cloudHosts.pipe(Effect.orDie)).browser, base));
+    const appUi = hostedAppUi(
+      appAddresses(
+        (yield* cloudHosts.pipe(Effect.orDie)).browser,
+        base,
+        yield* appUiAddressScheme.pipe(Effect.orDie),
+        yield* appUiEmbedded.pipe(Effect.orDie),
+      ),
+    );
     const services = requestServices(Layer.mergeAll(appSessions, executor));
     const notFound = HttpServerResponse.empty({ status: 404 });
     const protectedRoutes = Layer.mergeAll(
@@ -111,7 +176,7 @@ export default class AppPages extends Cloudflare.Worker<AppPages>()(
     const lifetime = yield* previewLifetime;
     const activity = yield* previewActivity;
     return {
-      fetch: handle.pipe(
+      fetch: appUi.frameResponse(handle).pipe(
         Effect.catchIf(
           (error): error is HttpServerError.HttpServerError =>
             HttpServerError.isHttpServerError(error) && error.reason._tag === "RouteNotFound",
@@ -121,11 +186,15 @@ export default class AppPages extends Cloudflare.Worker<AppPages>()(
         analytics.wrap,
         recordRequestRejections,
         reportErrors,
-        Effect.catch((error) =>
-          HttpServerError.isHttpServerError(error)
-            ? Effect.fail(error)
-            : Effect.succeed(HttpServerResponse.empty({ status: 500, headers: appPrivateHeaders })),
-        ),
+        Effect.tapCause(logFailure),
+        Effect.catchCause((cause) => {
+          const error = Option.getOrUndefined(Cause.findErrorOption(cause));
+          if (error !== undefined && HttpServerError.isHttpServerError(error))
+            return Effect.fail(error);
+          return Effect.succeed(
+            HttpServerResponse.empty({ status: 500, headers: appPrivateHeaders }),
+          );
+        }),
         requestTiming,
         recordClientNetwork,
         recordUnclassifiedRefusals,
@@ -136,5 +205,8 @@ export default class AppPages extends Cloudflare.Worker<AppPages>()(
         servedRequest,
       ),
     };
-  }).pipe(Effect.provide(Layer.mergeAll(cloudAuthDatabase, cloudTelemetry))),
+  }).pipe(
+    Effect.provide(Layer.mergeAll(cloudAuthDatabase, cloudTelemetry)),
+    Effect.tapCause(logFailure),
+  ),
 ) {}

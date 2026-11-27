@@ -1,3 +1,4 @@
+import { hostCookieName } from "../contracts/browser.ts";
 import { apiKeys, apiKeyManagement } from "./api-keys.ts";
 import { requestAuthentication } from "./batch-authentication.ts";
 import { recordNoSession, recordSessionCredential, refuse } from "./auth-telemetry.ts";
@@ -99,7 +100,14 @@ export const authOptions = (
       customRules: { "/get-session": false, "/organization/list": false },
     },
     advanced: {
-      cookiePrefix: "executor-hosted",
+      cookiePrefix: hostCookieName(settings.url, "executor-hosted"),
+      useSecureCookies: false,
+      crossSubDomainCookies: { enabled: false },
+      defaultCookieAttributes: {
+        secure: new URL(settings.url).protocol === "https:",
+        path: "/",
+        httpOnly: true,
+      },
       ipAddress: { ipAddressHeaders },
       database: { joins: true },
     },

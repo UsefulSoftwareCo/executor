@@ -172,7 +172,7 @@ const target = (sql: SqlClient.SqlClient, claims: Claims) =>
 
 const rememberedOrganization = (request: HttpServerRequest.HttpServerRequest, user: string) => {
   const value = Cookies.parseHeader(request.headers.cookie ?? "")[
-    lastOrganizationCookie(request.headers.host ?? "")
+    lastOrganizationCookie(request.headers.host ?? "", new URL(request.url).protocol === "https:")
   ];
   if (value === undefined) return undefined;
   const saved = Schema.decodeUnknownOption(Schema.fromJsonString(LastOrganization))(value);

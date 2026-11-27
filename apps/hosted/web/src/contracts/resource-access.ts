@@ -1,5 +1,6 @@
 import { hydrated } from "@executor-js/ui/contracts/http";
 import { revalidated } from "@executor-js/ui/contracts/refresh";
+import { loadedValue } from "@executor-js/dashboard-start/loaded-value";
 import { pollingQuery, whileLoaded } from "@executor-js/ui/contracts/polling";
 import { Data, Effect } from "effect";
 import { Atom, AsyncResult } from "effect/reactivity";
@@ -45,6 +46,16 @@ export const resourceDirectoryAtom = (
   organization: OrganizationReference,
   view: "available" | "managed" = "available",
 ) => directory(new DirectoryKey({ organization, view }));
+export const listedAppAtom = Atom.family((organization: OrganizationReference) =>
+  Atom.family((app: AppId) =>
+    Atom.readable((get) => {
+      const listed = loadedValue(get.registry, resourceDirectoryAtom(organization));
+      if (listed === undefined || !AsyncResult.isSuccess(listed)) return undefined;
+      const entry = listed.value.apps.find((item) => item.app.id === app);
+      return entry === undefined ? undefined : { entry, accounts: listed.value.accounts };
+    }),
+  ),
+);
 export const appAccessAtom = (key: { organization: OrganizationReference; app: AppId }) =>
   appAccess(new AppKey(key));
 export const refreshResourceDirectory = (

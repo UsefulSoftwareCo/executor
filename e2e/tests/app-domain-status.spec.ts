@@ -57,7 +57,7 @@ layer(HostedLive, { excludeTestServices: true })("App domain readiness", (it) =>
           ),
         );
         yield* browser.use("Open the deployed app details", (page) =>
-          page.goto(`/org/${actors.organization.slug}/apps/${app.id}`),
+          page.goto(`/org/${actors.organization.slug}/apps/${app.id}?view=overview`),
         );
         yield* browser.use("Pending setup is visible", (page) =>
           page.getByRole("status").filter({ hasText: "Preparing app domain…" }).waitFor(),

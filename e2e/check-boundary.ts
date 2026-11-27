@@ -82,6 +82,19 @@ const check = Effect.gen(function* () {
           if (label === `support${path.sep}os-credential.ts` && specifier === "@napi-rs/keyring")
             return;
           if (
+            label === `support${path.sep}app-origin-tls.ts` &&
+            specifier === "@effect/platform-node/NodeHttpClient"
+          )
+            return;
+          if (
+            [
+              `support${path.sep}mcp-auth-patterns.ts`,
+              `support${path.sep}app-origin-tls.ts`,
+            ].includes(label) &&
+            specifier === "node:https"
+          )
+            return;
+          if (
             label === `support${path.sep}lost-connections.ts` &&
             specifier === "node:diagnostics_channel"
           )

@@ -1,7 +1,6 @@
 import { ApiError } from "@executor-js/utils/api-error";
 import { RequiredAction } from "./authorization.ts";
 import {
-  App,
   Account,
   AccountHealth,
   Provider,
@@ -24,6 +23,7 @@ import {
   OrganizationReference,
   OrganizationForbidden,
   RequireOrganization,
+  AppScreenRecord,
 } from "./organization.ts";
 
 export const AccessRevision = Schema.NonEmptyString.pipe(Schema.brand("AccessRevision"));
@@ -90,7 +90,7 @@ export const ResourceDirectory = Schema.Struct({
   pendingApp: Schema.Boolean,
   apps: Schema.Array(
     Schema.Struct({
-      app: App,
+      app: AppScreenRecord,
       access: AppAccess,
       linkedAccounts: Schema.Array(AccountId),
       appLinks: Schema.Array(

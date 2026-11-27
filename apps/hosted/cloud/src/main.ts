@@ -7,7 +7,12 @@ import {
 import { previewActivity } from "./infrastructure/preview-activity.ts";
 import { previewLifetime } from "./infrastructure/test-stage-expiry.ts";
 import { ExecutorCloudApi, executorCloudApiDocument } from "./contracts/api.ts";
-import { hostedAppUi, appAddresses } from "@executor-js/hosted-server/app-ui";
+import {
+  appUiAddressScheme,
+  appUiEmbedded,
+  hostedAppUi,
+  appAddresses,
+} from "@executor-js/hosted-server/app-ui";
 import { cloudAppUiBase } from "./contracts/app-ui.ts";
 import { cloudAppDomains } from "./infrastructure/app-domains.ts";
 import { AppRepositoryRecovery, WorkflowHost } from "@executor-js/sdk/core";
@@ -336,7 +341,12 @@ export default Api.make(
       documentation: new URL("/docs/", auth.hosts.site).href,
     });
     const appUi = hostedAppUi(
-      appAddresses(auth.origin, yield* cloudAppUiBase.pipe(Effect.orDie)),
+      appAddresses(
+        auth.origin,
+        yield* cloudAppUiBase.pipe(Effect.orDie),
+        yield* appUiAddressScheme.pipe(Effect.orDie),
+        yield* appUiEmbedded.pipe(Effect.orDie),
+      ),
       appDomains.status,
     );
     const mcp = yield* cloudMcp;
@@ -564,13 +574,14 @@ export default Api.make(
                 page,
                 browserReturnTo(new URL(request.url, auth.origin).searchParams.get("redirect")),
                 new Headers(request.headers),
+                auth.origin,
               ),
             ),
             dashboard,
           ),
         ).pipe(HttpRouter.provideRequest(onboarding)),
       ),
-      HttpRouter.add("GET", "/api/entry", cloudEntryApi(auth.browserSession)).pipe(
+      HttpRouter.add("GET", "/api/entry", cloudEntryApi(auth.browserSession, auth.origin)).pipe(
         HttpRouter.provideRequest(onboarding),
       ),
       apiRoutes,

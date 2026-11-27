@@ -2,6 +2,9 @@ import { Option, Schema } from "effect";
 import { OrganizationId } from "./organization.ts";
 import type { ResourceOrigins } from "@executor-js/mcp-auth";
 
+export const hostCookieName = (origin: string, name: string): string =>
+  new URL(origin).protocol === "https:" && !name.startsWith("__Host-") ? `__Host-${name}` : name;
+
 export const BrowserSession = Schema.NullOr(
   Schema.Struct({
     user: Schema.Struct({
@@ -53,9 +56,9 @@ export const LastOrganization = Schema.Struct({
 });
 export type LastOrganization = typeof LastOrganization.Type;
 
-export const lastOrganizationCookie = (host: string) => {
+export const lastOrganizationCookie = (host: string, secure = false) => {
   const port = new URL(`http://${host}`).port;
-  return `executor-org${port === "" ? "" : `-${port}`}`;
+  return `${secure ? "__Host-" : ""}executor-org${port === "" ? "" : `-${port}`}`;
 };
 
 export const readLastOrganization = (

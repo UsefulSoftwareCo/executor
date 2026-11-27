@@ -1,5 +1,5 @@
 import type { DocumentApi } from "@executor-js/dashboard-start/document-api";
-import { Effect, Schema } from "effect";
+import { Config, Effect, Schema } from "effect";
 import { AuthenticationUnavailable } from "../contracts/auth.ts";
 import {
   BrowserSession,
@@ -26,7 +26,10 @@ export const hostedDocumentContext = (resourceOrigins: ResourceOrigins) => (api:
       Effect.mapError(() => new AuthenticationUnavailable()),
     );
     const saved = Cookies.parseHeader(request.headers.cookie ?? "")[
-      lastOrganizationCookie(request.headers.host ?? "")
+      lastOrganizationCookie(
+        request.headers.host ?? "",
+        new URL(yield* Config.String("BETTER_AUTH_URL")).protocol === "https:",
+      )
     ];
     return {
       session,

@@ -8,11 +8,13 @@ import {
   HttpUrl,
   RequestRejection,
   StorageError,
+  type BuildId,
   type Runtime,
+  type RuntimeBuildUnavailable,
 } from "@executor-js/sdk/core";
 import { AppReturnPath, AppSignInCode, AppSignInId } from "apps/ui/auth/contracts";
 import { UiFailed, UiForbidden, UiUnauthorized } from "apps/ui/contracts";
-import { Context, type Effect, Schema } from "effect";
+import { Config, Context, type Effect, Schema } from "effect";
 import { HttpApi, HttpApiEndpoint, HttpApiGroup, HttpApiSchema, OpenApi } from "effect/http-api";
 import { Principal } from "./auth.ts";
 import { DesktopReadable } from "./authorization.ts";
@@ -25,6 +27,14 @@ import {
   type OrganizationAccess,
 } from "./organization.ts";
 export { AppSignInFailure, AppSignInId } from "apps/ui/auth/contracts";
+
+export const appUiAddressScheme = Config.Literals(
+  ["nested", "opaque"],
+  "EXECUTOR_APP_UI_ADDRESS_SCHEME",
+).pipe(Config.withDefault("nested"));
+export const appUiEmbedded = Config.Boolean("EXECUTOR_APP_UI_EMBEDDED").pipe(
+  Config.withDefault(false),
+);
 
 export const AppUiTarget = Schema.Struct({
   app: AppId,
@@ -78,16 +88,22 @@ export const AppUiLocation = Schema.Union([
       description:
         "Whether the active version has ui/menubar.html, a desktop menu-bar page served at <url>/_executor/menubar.",
     }),
+    embedded: Schema.optional(Schema.Boolean),
   }),
   Schema.Struct({
     status: Schema.Literal("unavailable"),
+    embedded: Schema.optional(Schema.Boolean),
     url: Schema.Null,
     reason: Schema.Literals(["no_ui", "no_app_domain"]).annotate({
       description:
         "no_ui: the active version has no UI (no index.html), as for tool-only apps. no_app_domain: this Executor has no app domain configured, so no app UI has an address.",
     }),
   }),
-  Schema.Struct({ status: Schema.Literals(["pending", "failed"]), url: Schema.Null }),
+  Schema.Struct({
+    status: Schema.Literals(["pending", "failed"]),
+    url: Schema.Null,
+    embedded: Schema.optional(Schema.Boolean),
+  }),
 ]);
 export const AppUiAttempt = Schema.Struct({
   kind: Schema.Literal("attempt"),
@@ -164,9 +180,12 @@ export class HostedAppSessions extends Context.Service<
   }
 >()("hosted/AppSessions") {}
 
-export class HostedAppRuntime extends Context.Service<HostedAppRuntime, Pick<Runtime, "asset">>()(
-  "hosted/AppRuntime",
-) {}
+export class HostedAppRuntime extends Context.Service<
+  HostedAppRuntime,
+  Pick<Runtime, "asset"> & {
+    readonly screen?: (build: BuildId) => Effect.Effect<boolean, RuntimeBuildUnavailable>;
+  }
+>()("hosted/AppRuntime") {}
 
 export const HostedAppUi = HttpApiGroup.make("appUi")
   .add(

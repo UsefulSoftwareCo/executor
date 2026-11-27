@@ -1,4 +1,4 @@
-import { Context, Effect, Option } from "effect";
+import { Config, Context, Effect, Option } from "effect";
 import { inProcessOrigin } from "../contracts/api.ts";
 import type { DocumentApi } from "../contracts/document.ts";
 import { requestDisplayFormat, timeZoneCookie } from "@executor-js/ui/contracts/display";
@@ -70,6 +70,10 @@ export const inProcessApi = Effect.gen(function* () {
   const url = HttpServerRequest.toURL(document);
   if (Option.isNone(url)) return yield* Effect.die("Document request has no URL");
   const origin = url.value.origin;
+  const cookieOrigin = yield* Config.String("BETTER_AUTH_URL").pipe(
+    Config.withDefault(origin),
+    Effect.orDie,
+  );
   const identity = new Headers();
   for (const name of forwarded) {
     const value = document.headers[name];
@@ -110,7 +114,9 @@ export const inProcessApi = Effect.gen(function* () {
       path: url.value.pathname + url.value.search,
       display: requestDisplayFormat({
         acceptLanguage: document.headers["accept-language"],
-        timeZone: Cookies.parseHeader(document.headers.cookie ?? "")[timeZoneCookie],
+        timeZone: Cookies.parseHeader(document.headers.cookie ?? "")[
+          timeZoneCookie(new URL(cookieOrigin).protocol === "https:")
+        ],
       }),
     } satisfies DocumentApi,
     seal: () => {

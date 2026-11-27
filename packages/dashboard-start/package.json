@@ -9,6 +9,7 @@
     "./shell": "./src/implementation/shell.tsx",
     "./api": "./src/contracts/api.ts",
     "./registry": "./src/implementation/registry.tsx",
+    "./loaded-value": "./src/implementation/loaded-value.ts",
     "./in-process": "./src/implementation/in-process.ts",
     "./page": "./src/implementation/page.ts",
     "./document-api": "./src/contracts/document.ts",

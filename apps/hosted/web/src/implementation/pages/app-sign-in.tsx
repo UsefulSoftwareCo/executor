@@ -48,7 +48,7 @@ export function OpenAppAction({ app }: { readonly app: App }) {
       ui={{ status: "unavailable", reason: "Deploy this app before opening its page." }}
     />
   ) : (
-    <DeployedOpenAppAction app={app} version={app.activeVersion} />
+    <DeployedOpenAppAction app={app} />
   );
 }
 
@@ -83,7 +83,7 @@ const appUi = (
       browserOpen: (
         <Button variant="outline" asChild>
           <a href={location.url} target="_blank" rel="noopener noreferrer">
-            Open app
+            {location.embedded ? "Open in new tab" : "Open app"}
           </a>
         </Button>
       ),
@@ -113,20 +113,13 @@ const appUi = (
   };
 };
 
-function DeployedOpenAppAction({
-  app,
-  version,
-}: {
-  readonly app: App;
-  readonly version: NonNullable<App["activeVersion"]>;
-}) {
+function DeployedOpenAppAction({ app }: { readonly app: App }) {
   const { organization, slug, id, name } = useOrganizationRoute();
   const location = appUiLocationAtom({
     organization,
     slug,
     app: app.id,
     appSlug: app.slug,
-    version,
   });
   const result = useAtomValue(location);
   const refresh = useAtomRefresh(location);
@@ -149,20 +142,14 @@ export function AppDesktopSettings({ app }: { readonly app: App }) {
   return app.activeVersion === null ? (
     <DesktopAppSection app={app.id} uiReady={false} />
   ) : (
-    <DeployedDesktopSettings app={app} version={app.activeVersion} />
+    <DeployedDesktopSettings app={app} />
   );
 }
 
-function DeployedDesktopSettings({
-  app,
-  version,
-}: {
-  readonly app: App;
-  readonly version: NonNullable<App["activeVersion"]>;
-}) {
+function DeployedDesktopSettings({ app }: { readonly app: App }) {
   const { organization, slug } = useOrganizationRoute();
   const result = useAtomValue(
-    appUiLocationAtom({ organization, slug, app: app.id, appSlug: app.slug, version }),
+    appUiLocationAtom({ organization, slug, app: app.id, appSlug: app.slug }),
   );
   return (
     <DesktopAppSection

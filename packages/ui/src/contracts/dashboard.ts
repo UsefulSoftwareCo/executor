@@ -83,6 +83,7 @@ export interface MutationProps<Input, A, E> {
   readonly Failure: ComponentType<FailureProps<NoInfer<E>>>;
 }
 export const AppView = Schema.Literals([
+  "app",
   "overview",
   "schedules",
   "skills",

@@ -84,8 +84,7 @@ const canonical = new URL(canonicalPath, Astro.site ?? Astro.url).toString()
               client.register({ product_version: "v2", surface: "marketing",
                 environment: import.meta.env.PUBLIC_EXECUTOR_ENVIRONMENT, release: import.meta.env.PUBLIC_EXECUTOR_RELEASE,
                 executor_test: String(import.meta.env.PUBLIC_EXECUTOR_ENVIRONMENT).startsWith("test-") });
-              const domain = import.meta.env.PUBLIC_EXECUTOR_COOKIE_DOMAIN;
-              document.cookie = `${siteVisitorCookie}=${encodeURIComponent(client.get_distinct_id())}; Path=/; Max-Age=${siteVisitorDays * 86400}; SameSite=Lax${domain ? `; Domain=${domain}` : ""}${location.protocol === "https:" ? "; Secure" : ""}`;
+              document.cookie = `${siteVisitorCookie(location.origin)}=${encodeURIComponent(client.get_distinct_id())}; Path=/; Max-Age=${siteVisitorDays * 86400}; SameSite=Lax${location.protocol === "https:" ? "; Secure" : ""}`;
             },
           });
           return posthog;

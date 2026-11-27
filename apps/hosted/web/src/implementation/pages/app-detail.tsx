@@ -14,7 +14,7 @@ import {
   type RequirementLink,
 } from "@executor-js/ui/contracts/app-accounts";
 import { AppAccessSettings } from "./resource-settings.tsx";
-import { appAccessAtom } from "../../contracts/resource-access.ts";
+import { appAccessAtom, listedAppAtom } from "../../contracts/resource-access.ts";
 import {
   emptyManyRequirements,
   type AccountSummary,
@@ -25,7 +25,7 @@ import { scheduleBindings } from "../../contracts/schedules.ts";
 import { sessionAtom } from "../../contracts/auth.ts";
 import { AppDetailLoading, OverviewCardLoading } from "@executor-js/ui/dashboard/app-loading";
 import { Exit, Option, Schema } from "effect";
-import { AsyncResult } from "effect/reactivity";
+import { Atom, AsyncResult } from "effect/reactivity";
 import { HostedFailure, useDashboardAtoms } from "../components/dashboard-bindings.tsx";
 import { dashboardAtoms } from "../../contracts/dashboard-bindings.ts";
 import { useAtomSet, useAtomValue } from "@effect/atom-react";
@@ -49,7 +49,8 @@ import { RenameApp } from "@executor-js/ui/dashboard/rename-app";
 import { CopyApp } from "@executor-js/ui/dashboard/copy-app";
 import { PublishApp } from "@executor-js/ui/dashboard/publish-app";
 import { AppSettings } from "@executor-js/ui/dashboard/app-settings";
-import { AppDetailLayout } from "@executor-js/ui/dashboard/app-detail";
+import { AppScreen, NoAppScreen } from "./app-screen.tsx";
+import { AppDetailLayout, appScreenTab } from "@executor-js/ui/dashboard/app-detail";
 import {
   AppOverview,
   AppOverviewAccounts,
@@ -66,6 +67,7 @@ import {
   removeAppAtom,
   renameAppAtom,
 } from "../../contracts/apps.ts";
+import type { OrganizationReference } from "@executor-js/hosted-server/organization";
 import { type OrganizationPageReads, useOrganizationRoute } from "../components/organization.tsx";
 import { AppTools } from "./app-tools.tsx";
 import { AppSource, AppVersions } from "./app-source.tsx";
@@ -80,9 +82,38 @@ export const appDetailPageReads: OrganizationPageReads = (organization, params) 
       appLinksAtom({ organization, app }),
       userLinksAtom({ organization, app }),
       appAccessAtom({ organization, app }),
+      listedAppReads(organization)(app),
     ],
   });
 
+const listedAppReads = Atom.family((organization: OrganizationReference) =>
+  Atom.family((app: AppId) =>
+    Atom.readable((get) => {
+      const listed = get(listedAppAtom(organization)(app));
+      if (listed === undefined) return;
+      const { entry, accounts } = listed;
+      const user = Object.entries(entry.app.requirements.accounts).flatMap(([slot, requirement]) =>
+        requirement.scope === "user"
+          ? accounts.flatMap(({ account }) =>
+              entry.linkedAccounts.includes(account.id) && account.provider === requirement.provider
+                ? [{ requirement: slot, account }]
+                : [],
+            )
+          : [],
+      );
+      const requirements = requirementAccounts(entry.app, { user });
+      if (entry.access.canUse) {
+        const bindings = appBrowserBindings(organization, entry.app);
+        get(bindings.skills);
+        if (missingRequirements(requirements).length === 0) {
+          get(toolsAtom({ organization, app, version: entry.app.activeVersion ?? undefined }));
+          get(bindings.workflows);
+        }
+      }
+      if (entry.access.canManage) get(appManagement(organization).authoring(app));
+    }),
+  ),
+);
 const appWideViews: ReadonlySet<AppView> = new Set(["settings", "versions", "source", "history"]);
 
 const withSummaries = (
@@ -126,7 +157,6 @@ export function AppDetailPage({
     : Option.isSome(inventory.data)
       ? inventory.data.value.apps.find((item) => item.id === appId)
       : undefined;
-  const selectedView = view ?? (tool === undefined ? "overview" : "tools");
   const appLinks = useQuery(appLinksAtom({ organization, app: appId }));
   const userLinks = useQuery(userLinksAtom({ organization, app: appId }));
   const session = useAtomValue(sessionAtom);
@@ -135,6 +165,24 @@ export function AppDetailPage({
   const access = Option.getOrUndefined(authority.data);
   const canManage = access?.canManage === true,
     canUse = access?.canUse === true;
+  const listed = useAtomValue(listedAppAtom(organization)(appId))?.entry;
+  const screenRecord = app ?? (AsyncResult.isFailure(query.result) ? undefined : listed?.app);
+  const screenAccess =
+    access ?? (AsyncResult.isFailure(authority.result) ? undefined : listed?.access);
+  const screenTab = appScreenTab(screenRecord, screenAccess, {
+    app: AsyncResult.isFailure(query.result),
+    access: AsyncResult.isFailure(authority.result),
+  });
+  const screenApp = screenTab === "present" ? screenRecord : undefined;
+  const selectedView: AppView | undefined =
+    view ??
+    (tool !== undefined
+      ? "tools"
+      : screenTab === "present"
+        ? "app"
+        : screenTab === "pending"
+          ? undefined
+          : "overview");
   const accessPendingReason = AsyncResult.isFailure(authority.result)
     ? "App access could not be checked. Retry the access request."
     : "Checking app access…";
@@ -173,7 +221,7 @@ export function AppDetailPage({
   const pending = (
     <AppDetailLoading
       view={selectedView}
-      app={app}
+      app={screenRecord}
       selectedTool={tool}
       canEdit={access === undefined ? undefined : canManage}
     />
@@ -181,9 +229,10 @@ export function AppDetailPage({
   return (
     <AppDetailLayout
       key={appId}
-      app={app}
+      app={screenRecord}
       view={selectedView}
       canInspectSource={canManage}
+      appScreen={screenTab}
       sourceDisabledReason={sourceReason}
       back={
         <Link
@@ -222,7 +271,34 @@ export function AppDetailPage({
         )
       }
     >
-      {appWideViews.has(selectedView) || !canUse ? (
+      <div className={selectedView === "app" ? "flex min-h-0 flex-1" : "hidden"}>
+        {screenApp !== undefined ? (
+          <AppScreen app={screenApp} active={selectedView === "app"} />
+        ) : selectedView === "app" ? (
+          <QueryResult
+            result={allResults({ access: authority.result, current: query.result })}
+            Failure={HostedFailure}
+            retry={() => {
+              authority.refresh();
+              query.refresh();
+            }}
+            pending={pending}
+          >
+            {() =>
+              canUse ? (
+                <NoAppScreen />
+              ) : (
+                <p className="p-5 text-sm text-muted-foreground">
+                  This app is not shared with you. You can manage its settings.
+                </p>
+              )
+            }
+          </QueryResult>
+        ) : null}
+      </div>
+      {selectedView === undefined ? (
+        pending
+      ) : selectedView !== "app" && (appWideViews.has(selectedView) || !canUse) ? (
         <QueryResult
           result={allResults({ access: authority.result, current: query.result })}
           Failure={HostedFailure}
@@ -305,7 +381,7 @@ export function AppDetailPage({
             );
           }}
         </QueryResult>
-      ) : (
+      ) : selectedView !== "app" ? (
         <QueryResult
           result={allResults({
             access: authority.result,
@@ -460,7 +536,7 @@ export function AppDetailPage({
             );
           }}
         </QueryResult>
-      )}
+      ) : null}
     </AppDetailLayout>
   );
 }

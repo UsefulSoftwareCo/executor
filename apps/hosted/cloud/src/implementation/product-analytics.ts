@@ -53,10 +53,10 @@ const Analytics = Context.Reference<{
   defaultValue: () => ({ add: () => {} }),
 });
 
-export const recordCloudSignup = (userId: string) =>
+export const recordCloudSignup = (userId: string, origin: string) =>
   Effect.gen(function* () {
     const request = yield* HttpServerRequest.HttpServerRequest;
-    const visitor = readSiteVisitor(request.headers.cookie ?? "");
+    const visitor = readSiteVisitor(request.headers.cookie ?? "", origin);
     const analytics = yield* Analytics;
     if (visitor !== undefined)
       analytics.add({
@@ -74,7 +74,7 @@ export const recordCloudSignup = (userId: string) =>
   });
 
 export const clearSiteVisitorOnSignOut =
-  (cookieDomain?: string) => (response: HttpServerResponse.HttpServerResponse) =>
+  (origin: string) => (response: HttpServerResponse.HttpServerResponse) =>
     Effect.gen(function* () {
       const request = yield* HttpServerRequest.HttpServerRequest;
       if (
@@ -85,9 +85,9 @@ export const clearSiteVisitorOnSignOut =
       )
         return response;
       return yield* response.pipe(
-        HttpServerResponse.expireCookie(siteVisitorCookie, {
+        HttpServerResponse.expireCookie(siteVisitorCookie(origin), {
           path: "/",
-          ...(cookieDomain === undefined ? {} : { domain: cookieDomain }),
+          secure: new URL(origin).protocol === "https:",
         }),
         Effect.orDie,
       );
