@@ -1,3 +1,8 @@
+import { visibleAccountHealth, visibleAccountStatuses } from "./account-identity.ts";
+import {
+  requireRequirementAccess,
+  checkContributedAccountRemoval,
+} from "./contributed-account-policy.ts";
 import { accountOAuthRedirectUri } from "./auth.ts";
 import { audited } from "./security-audit.ts";
 import { ScheduleWakeup } from "../contracts/schedules.ts";
@@ -30,6 +35,7 @@ import {
   type OAuthClientSelection,
   type JsonObject,
   StorageError,
+  StorageHost,
 } from "@executor-js/sdk/core";
 import { connectionClient, usableOAuthClients } from "./oauth-clients.ts";
 import { Effect, Option, Redacted, Schema } from "effect";
@@ -86,11 +92,13 @@ export const getAccount = Effect.gen(function* () {
   const { revocation } = yield* executor.accounts
     .revocation({ owner, account })
     .pipe(Effect.catchTag("CredentialsError", () => new StorageError()));
+  const [status] = yield* visibleAccountStatuses([
+    { account: metadata, health: visibleHealth(health, apps) },
+  ]);
   return {
-    account: metadata,
+    ...status!,
     provider,
     apps,
-    health: visibleHealth(health, apps),
     revocation,
     canManage: true,
   };
@@ -115,7 +123,7 @@ export const checkAccount = Effect.gen(function* () {
   const health = yield* executor.accounts
     .check({ owner, account, apps: apps.map((app) => app.id) })
     .pipe(audited("credential.read", { kind: "account", id: () => account }, { purpose: "check" }));
-  return visibleHealth(health, apps);
+  return yield* visibleAccountHealth(visibleHealth(health, apps));
 });
 export const oauthSetup = (
   owner: OwnerId,
@@ -158,7 +166,9 @@ export const removeAccount = ({
   Effect.gen(function* () {
     const executor = yield* Effect.flatten(HostedExecutor);
     yield* executor.accounts.get({ owner, account });
-    const [first, ...rest] = yield* appLinkApps(yield* policyDatabase, account);
+    const sql = yield* policyDatabase;
+    yield* executor[StorageHost].transaction(checkContributedAccountRemoval(sql, account));
+    const [first, ...rest] = yield* appLinkApps(sql, account, true);
     if (first !== undefined)
       return yield* new AccountLinkedToApp({ account, apps: [first, ...rest] });
     return yield* executor.accounts
@@ -190,7 +200,7 @@ export const connectAccount = (
 ) =>
   Effect.gen(function* () {
     const executor = yield* Effect.flatten(HostedExecutor);
-    yield* requireAppAccess(input.app, input.scope === "app" ? "manage" : "use");
+    yield* requireRequirementAccess(input);
     const app = yield* executor.apps.get({ owner, app: input.app });
     const required = Object.hasOwn(app.requirements.accounts, input.requirement)
       ? app.requirements.accounts[input.requirement]

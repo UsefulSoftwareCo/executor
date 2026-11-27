@@ -147,6 +147,8 @@ export const explicitOrganizationAuth = {
           switch (context.path) {
             case "/organization/list":
               return;
+            case "/organization/leave":
+              return require(Target, context.body, true);
             case "/organization/create":
               return require(Creation, context.body);
             case "/organization/list-members":

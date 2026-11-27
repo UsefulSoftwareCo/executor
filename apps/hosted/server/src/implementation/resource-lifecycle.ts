@@ -1,3 +1,4 @@
+import { isContributed, checkContributedAccountRemoval } from "./contributed-account-policy.ts";
 import {
   AccountConnectionRefused,
   AccountConnectionTargetChanged,
@@ -543,7 +544,11 @@ export const hostedResourceLifecycle = Effect.gen(function* () {
         and p.personal_user_id = ${user} for update`;
           if (policy.length !== 1) return yield* new StorageError();
           yield* sql`select id from executor_accounts where id = ${account.id} for update`;
-          if ((yield* appLinkApps(sql, account.id)).length > 0) return yield* new StorageError();
+          yield* checkContributedAccountRemoval(sql, account.id).pipe(
+            Effect.mapError(() => new StorageError()),
+          );
+          if ((yield* appLinkApps(sql, account.id, true)).length > 0)
+            return yield* new StorageError();
           yield* sql`delete from hosted_app_account_links where account = ${account.id}`;
         }).pipe(Effect.catchTag("SqlError", () => new StorageError())),
       appRemoving: (app) =>
@@ -557,8 +562,10 @@ export const hostedResourceLifecycle = Effect.gen(function* () {
           if (user === undefined) return yield* new StorageError();
           const target = { app: input.app, requirement: input.requirement };
           const organization = yield* organizationOf(input.account.owner);
+          const contributed =
+            input.scope === "app" && (yield* isContributed(sql, input.app, input.requirement));
           const authority =
-            input.scope === "app"
+            input.scope === "app" && !contributed
               ? sql`(m.role in ('owner','admin') or a.creator_id = m."userId") is true`
               : sql`exists(${appUse(sql, { id: input.app, organization, actor: user })})`;
           const rows = yield* sql`select coalesce(c.target ->> 'scope', 'user') as scope,

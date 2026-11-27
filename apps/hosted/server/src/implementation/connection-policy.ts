@@ -1,3 +1,4 @@
+import { requireRequirementAccess } from "./contributed-account-policy.ts";
 import {
   StorageError,
   type AccountConnection,
@@ -10,7 +11,6 @@ import { ConnectionAccess } from "../contracts/resource-access.ts";
 import {
   currentResourceAuthority,
   policyDatabase,
-  requireAppAccess,
   requireAccountOwner,
 } from "./resource-policy.ts";
 
@@ -40,7 +40,7 @@ export const connectionAccess = (connection: AccountConnectionId) =>
     and creator_id = ${actor.user}`;
     const access = (yield* Schema.decodeUnknownEffect(Schema.Array(ConnectionAccess))(rows))[0];
     if (access === undefined) return yield* new OrganizationForbidden();
-    yield* requireAppAccess(access.target.app, access.target.scope === "app" ? "manage" : "use");
+    yield* requireRequirementAccess(access.target);
     return access;
   }).pipe(
     Effect.catchTags({ SqlError: () => new StorageError(), SchemaError: () => new StorageError() }),

@@ -1,3 +1,8 @@
+import {
+  recoverContributedDepartures,
+  removeContributedDeparture,
+} from "./contributed-account-departure.ts";
+export { recoverContributedDepartures };
 import { StorageError } from "@executor-js/sdk/core";
 import { Effect, Exit, Schedule, Schema } from "effect";
 import { SqlClient } from "effect/sql";
@@ -147,6 +152,12 @@ export const provision = (id: string, services: ProvisioningServices) =>
         case "domain":
           return yield* services.domain;
         case "member": {
+          if (job.id.startsWith("contributed-departure-"))
+            return yield* removeContributedDeparture({
+              id: job.id,
+              organization: job.organization_id,
+              user: job.user_id,
+            });
           const initialize = yield* OrganizationDefaults;
           const [member] = yield* managers(
             job.organization_id,
@@ -169,6 +180,7 @@ export const provisionTeam = (id: string, requireVerifiedEmail: boolean) =>
 
 export const drainProvisioning = (services: ProvisioningServices) =>
   Effect.gen(function* () {
+    yield* recoverContributedDepartures;
     const sql = yield* SqlClient.SqlClient;
     const jobs = yield* sql`select id from hosted_provisioning where
     (status = 'queued' and available_at <= now()) or (status = 'running' and updated_at < now() - interval '10 minutes')

@@ -1,3 +1,4 @@
+import { requireLinkRemovalAs, requireRequirementAccessAs } from "./contributed-account-policy.ts";
 import {
   AccountId,
   AccountNotFound,
@@ -181,13 +182,14 @@ const lockLinks = (sql: SqlClient.SqlClient, app: AppId) =>
 export const lockAppLinks = (sql: SqlClient.SqlClient, app: AppId) =>
   lockLinks(sql, app).pipe(Effect.catchTag("SqlError", () => new StorageError()));
 
+type LinkChangeAccess =
+  | { readonly access: "manage" | "use"; readonly account?: AccountId }
+  | { readonly access: "contribute"; readonly requirement: string; readonly account?: AccountId }
+  | { readonly access: "remove"; readonly requirement: string; readonly account: AccountId };
+
 export const lockedChange = <A, E, R>(
   executor: Executor,
-  input: {
-    readonly app: AppId;
-    readonly access: "manage" | "use";
-    readonly account?: AccountId | undefined;
-  },
+  input: { readonly app: AppId } & LinkChangeAccess,
   change: (sql: SqlClient.SqlClient, actor: ResourceAuthority) => Effect.Effect<A, E, R>,
 ) =>
   Effect.gen(function* () {
@@ -196,8 +198,13 @@ export const lockedChange = <A, E, R>(
       Effect.gen(function* () {
         yield* lockAppLinks(sql, input.app);
         const actor = yield* lockCurrentActor;
-        yield* requireAppAccessAs(actor, input.app, input.access);
-        if (input.account !== undefined) yield* requireAccountOwnerAs(actor, input.account);
+        if (input.access === "remove") yield* requireLinkRemovalAs(sql, actor, input);
+        else {
+          if (input.access === "contribute")
+            yield* requireRequirementAccessAs(actor, { ...input, scope: "app" });
+          else yield* requireAppAccessAs(actor, input.app, input.access);
+          if (input.account !== undefined) yield* requireAccountOwnerAs(actor, input.account);
+        }
         return yield* change(sql, actor);
       }),
     );
@@ -400,10 +407,18 @@ export const removeAppLinksOf = (
     }).pipe(Effect.catchTags(sqlFailures)),
   );
 
-export const appLinkApps = (sql: SqlClient.SqlClient, account: AccountId) =>
+export const appLinkApps = (sql: SqlClient.SqlClient, account: AccountId, normalOnly = false) =>
   Effect.gen(function* () {
-    const rows = yield* sql`select distinct app from hosted_app_account_links
-      where account = ${account} and subject is null order by app`;
+    const rows = yield* normalOnly
+      ? sql`select distinct l.app from hosted_app_account_links l
+      join executor_apps a on a.id = l.app
+      left join executor_deployments d on d.id = a.active_deployment
+      where l.account = ${account} and l.subject is null
+        and not coalesce(
+          d.requirements::jsonb -> 'accounts' -> l.requirement ->> 'scope' = 'app'
+          and d.requirements::jsonb -> 'accounts' -> l.requirement ->> 'contributed' = 'true', false)
+      order by l.app`
+      : sql`select distinct app from hosted_app_account_links where account = ${account} and subject is null order by app`;
     return (yield* Schema.decodeUnknownEffect(Schema.Array(Schema.Struct({ app: AppId })))(
       rows,
     )).map((row) => row.app);

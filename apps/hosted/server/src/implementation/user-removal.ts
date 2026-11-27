@@ -108,6 +108,10 @@ export const removeUser = Effect.gen(function* () {
         );
       yield* removeAccount({ owner, account }).pipe(
         Effect.catchTag("AccountNotFound", () => Effect.void),
+        Effect.catchTag(
+          "OrganizationForbidden",
+          () => new UserRemovalBlocked({ organizations: [organization.name] }),
+        ),
         Effect.provideService(CurrentOrganization, {
           organization: organization.id,
           role: organization.role,

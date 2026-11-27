@@ -5,7 +5,7 @@ import { makeExecutorStorage, StorageMigrationFailed } from "@executor-js/sdk/co
 import { Effect, Schema } from "effect";
 import { SqlClient } from "effect/sql";
 import * as Migrator from "effect/sql/Migrator";
-import { migrateProvisioning } from "./provisioning-schema.ts";
+import { migrateProvisioning, migrateContributedDepartures } from "./provisioning-schema.ts";
 import { migrateGroups } from "./group-schema.ts";
 import { migrateResourceAccess, removeGroupAccountConnections } from "./resource-schema.ts";
 import { migrateOAuthClientAccess } from "./oauth-client-schema.ts";
@@ -103,6 +103,7 @@ const hostedProductMigrations = migrateProductSteps("private_hosted_migrations",
   "10_group_account_connections": removeGroupAccountConnections,
   "11_tool_call_log": migrateToolCallLog,
   "12_personal_accounts": migratePersonalAccounts,
+  "13_contributed_departures": migrateContributedDepartures,
 });
 
 export const migrateHostedDatabase = (

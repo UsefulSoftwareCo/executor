@@ -1,3 +1,4 @@
+import { visibleAccountStatuses } from "./account-identity.ts";
 import { CurrentPolicy } from "../contracts/authorization.ts";
 import { permittedAppIds } from "@executor-js/authorization";
 import { Effect } from "effect";
@@ -109,7 +110,11 @@ export const resourceDirectory = (view: "available" | "managed" = "available") =
             (yield* executor.apps.list({ owner, name: "Executor" })).length > 0,
           ).pipe(Effect.provideService(SqlClient.SqlClient, yield* policyDatabase))
         : false;
-    return { apps: appEntries, accounts: accountEntries.flat(), pendingApp };
+    return {
+      apps: appEntries,
+      accounts: yield* visibleAccountStatuses(accountEntries.flat()),
+      pendingApp,
+    };
   });
 export const shareApp = (
   app: AppId,

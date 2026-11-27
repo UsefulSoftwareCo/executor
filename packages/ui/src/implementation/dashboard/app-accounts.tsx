@@ -322,6 +322,22 @@ const scoped = (app: App, scope: AccountScope): readonly RequirementEntry[] =>
     ([, requirement]) => requirement.scope === scope,
   );
 
+const editingFor = <E,>(data: ScopeAccounts<E>, requirement: AccountRequirement) =>
+  data.edit ?? (requirement.contributed ? data.contribute : undefined);
+
+function AddedBy({
+  link,
+  viewer,
+}: {
+  readonly link: RequirementLink<unknown> | undefined;
+  readonly viewer?: string | undefined;
+}) {
+  if (link?.linkedBy === undefined) return null;
+  const who =
+    link.linkedBy.id === viewer ? "you" : (link.linkedBy.name ?? "someone no longer here");
+  return <span className="block text-xs text-muted-foreground">Added by {who}</span>;
+}
+
 export interface LinkEditing<E> {
   readonly choices: (
     slot: string,
@@ -336,6 +352,8 @@ export interface LinkEditing<E> {
 export interface ScopeAccounts<E> {
   readonly links: readonly RequirementLink<AccountSummary>[];
   readonly edit?: LinkEditing<E> | undefined;
+  readonly contribute?: LinkEditing<E> | undefined;
+  readonly viewer?: string | undefined;
   readonly readOnly?: string | undefined;
   readonly accountMenu?:
     | ((
@@ -519,14 +537,16 @@ function LinkScope<E>({
     data.revalidate,
   );
   const all = Object.values(app.requirements.accounts);
-  const readOnly = data.edit === undefined;
+  const readOnly = requirements.every(
+    ([, requirement]) => editingFor(data, requirement) === undefined,
+  );
   return (
     <Checking.Provider value={checking}>
       <AccountScopeSection title={title} description={description} readOnly={readOnly}>
         {readOnly && data.readOnly !== undefined && (
           <p className="text-xs text-muted-foreground">{data.readOnly}</p>
         )}
-        <div className={cn("space-y-5", readOnly && "opacity-60")}>
+        <div className="space-y-5">
           {requirements.map(([slot, requirement]) => (
             <RequirementView
               key={slot}
@@ -541,6 +561,7 @@ function LinkScope<E>({
                   ? `${requirement.definition.name} (${slot})`
                   : requirement.definition.name
               }
+              readOnlyNote={readOnly ? undefined : data.readOnly}
               showSlot={
                 all.filter((other) => other.definition.name === requirement.definition.name)
                   .length > 1
@@ -572,6 +593,7 @@ function RequirementView<E>({
   linked,
   label,
   showSlot,
+  readOnlyNote,
   ...props
 }: ScopeProps<E> & {
   readonly slot: string;
@@ -579,10 +601,15 @@ function RequirementView<E>({
   readonly linked: readonly AccountSummary[];
   readonly label: string;
   readonly showSlot: boolean;
+  readonly readOnlyNote?: string | undefined;
 }) {
   const { data } = props;
+  const edit = editingFor(data, requirement);
   return (
-    <section aria-label={label} className="min-w-0 space-y-2.5">
+    <section
+      aria-label={label}
+      className={cn("min-w-0 space-y-2.5", edit === undefined && "opacity-60")}
+    >
       <div className="flex min-h-8 min-w-0 items-center gap-3 text-sm [&_.provider-icon]:size-14 [&_.provider-icon]:rounded-xl">
         <AppProviderIcon app={props.app} provider={requirement.definition} large />
         <div className="min-w-0">
@@ -591,15 +618,18 @@ function RequirementView<E>({
             {showSlot && `${slot} · `}
             {requirementNote(requirement, linked.length)}
           </p>
+          {edit === undefined && readOnlyNote !== undefined && (
+            <p className="text-pretty text-xs leading-4.5 text-muted-foreground">{readOnlyNote}</p>
+          )}
         </div>
       </div>
       <div className="overflow-hidden rounded-lg border">
-        {data.edit === undefined ? (
+        {edit === undefined ? (
           <ReadOnlyChoices {...props} slot={slot} requirement={requirement} linked={linked} />
         ) : (
           <EditableChoices
             {...props}
-            edit={data.edit}
+            edit={edit}
             slot={slot}
             requirement={requirement}
             linked={linked}
@@ -651,7 +681,15 @@ function ReadOnlyChoices<E>({
         <Checkbox checked disabled aria-label={accountName(account)} />
       )}
       <AccountAvatar info={account.health?.info} className="size-5" />
-      <span className="min-w-0 flex-1 break-words">{accountName(account)}</span>
+      <span className="min-w-0 flex-1 break-words">
+        {accountName(account)}
+        <AddedBy
+          link={data.links.find(
+            (link) => link.requirement === slot && link.account.id === account.id,
+          )}
+          viewer={data.viewer}
+        />
+      </span>
       <AccountStatus app={app} account={account} />
       {data.accountMenu?.(account, slot, requirement, true)}
     </li>
@@ -786,6 +824,9 @@ function ChoiceRow<E>({
   readonly Failure: ComponentType<FailureProps<E>>;
 }) {
   const { account, linked } = choice;
+  const metadata = data.links.find(
+    (link) => link.requirement === slot && link.account.id === account.id,
+  );
   const link = edit.link(slot, account.id);
   const unlink = edit.unlink(slot, account.id);
   const runLink = useAtomSet(link, { mode: "promiseExit" });
@@ -822,13 +863,16 @@ function ChoiceRow<E>({
           id={id}
           checked={linked}
           aria-label={name}
-          disabled={!ready || pending}
+          disabled={!ready || pending || (linked && metadata?.canRemove === false)}
           onCheckedChange={(checked) => void change(checked === true)}
         />
       )}
       <label htmlFor={id} className="flex min-w-0 flex-1 cursor-pointer items-center gap-2.5">
         <AccountAvatar info={account.health?.info} className="size-5" />
-        <span className="min-w-0 flex-1 break-words">{name}</span>
+        <span className="min-w-0 flex-1 break-words">
+          {name}
+          {linked && <AddedBy link={metadata} viewer={data.viewer} />}
+        </span>
       </label>
       {pending && <Spinner className="size-3.5 text-muted-foreground" />}
       <AccountStatus

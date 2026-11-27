@@ -7,6 +7,7 @@ import { GroupDatabase } from "@executor-js/hosted-server/groups";
 import { ScheduleWakeup } from "@executor-js/hosted-server";
 import {
   provision,
+  recoverContributedDepartures,
   provisionTeam,
   ProvisioningFailed,
   type ProvisioningServices,
@@ -132,6 +133,7 @@ export const dispatchProvisioning = <R>(
     const environment = yield* Cloudflare.WorkerEnvironment;
     const binding = yield* Schema.decodeUnknownEffect(NativeProvisioning)(environment.Provisioning);
     const sql = yield* Effect.flatten(GroupDatabase);
+    yield* recoverContributedDepartures.pipe(Effect.provideService(SqlClient.SqlClient, sql));
     const jobs = yield* sql`with candidates as (
       select id from hosted_provisioning where available_at <= now() and
         (status = 'queued' or (status = 'running' and updated_at < now() - interval '30 minutes'))

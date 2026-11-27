@@ -24,6 +24,8 @@ interface LinkedAccount {
 export interface RequirementLink<A> {
   readonly requirement: string;
   readonly account: A;
+  readonly linkedBy?: { readonly id: string; readonly name: string | null } | undefined;
+  readonly canRemove?: boolean | undefined;
 }
 
 export interface RequirementChoice<A> {
