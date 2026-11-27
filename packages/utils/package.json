@@ -16,6 +16,7 @@
     "./release-notes": "./src/release-notes.ts",
     "./legacy-keys": "./src/legacy-keys.ts",
     "./schema-definitions": "./src/schema-definitions.ts",
+    "./product-brand": "./src/product-brand.ts",
     "./server-identity": "./src/server-identity.ts"
   },
   "dependencies": {

@@ -26,6 +26,7 @@ import {
   RequireBrowserSession,
   Unauthorized,
 } from "../contracts/auth.ts";
+import { defaultProductBrand, type ProductBrand } from "@executor-js/utils/product-brand";
 
 export const accountOAuthRedirectUri = (
   auth: Pick<typeof SessionAuthentication.Service, "origin" | "oauthRedirectUri">,
@@ -68,12 +69,13 @@ export const authOptions = (
   settings: Pick<Effect.Success<typeof authSettings>, "url" | "oauthRedirectUri"> & {
     readonly resourceOrigins: ResourceOrigins;
     readonly issuer: string;
+    readonly brand?: ProductBrand;
   },
   ipAddressHeaders: string[],
   observers: GrantObservers = {},
 ) =>
   ({
-    appName: "Executor",
+    appName: (settings.brand ?? defaultProductBrand).name,
     baseURL: settings.url,
     basePath: "/api/auth",
     trustedOrigins: [settings.url],

@@ -1,12 +1,7 @@
 import { urlPolicyConfig, type HostEgress } from "@executor-js/utils/url-policy";
 import { Digest, SecureRandom } from "effect/crypto";
 import { makeRegistryStorage } from "@executor-js/app-registry";
-import {
-  firstPartyOAuthClients,
-  hostedApi,
-  hostedApiRevision,
-  hostedOAuthClientName,
-} from "@executor-js/hosted-server";
+import { firstPartyOAuthClients, hostedApi, hostedApiRevision } from "@executor-js/hosted-server";
 import { servesBuiltApiDocument } from "../contracts/browser.ts";
 import api from "../../.generated/executor-api-revision.json" with { type: "json" };
 import { hostedResourceLifecycle } from "@executor-js/hosted-server/resource-lifecycle";
@@ -48,6 +43,7 @@ import { missingFirstPartyGitHubClient } from "./first-party-oauth-settings.ts";
 import { cloudAccountSignIns } from "../implementation/oauth-proxy-settings.ts";
 import { cloudClientMetadata } from "./client-metadata.ts";
 import type { AppDataSupervisor } from "./app-data.ts";
+import { productBrandConfig } from "@executor-js/utils/product-brand";
 
 export const cloudEgress = Effect.gen(function* () {
   const policy = yield* urlPolicyConfig;
@@ -167,7 +163,7 @@ export const cloudExecutor = Effect.fn(function* (
         hostApi: hostedApi(resourceOrigins.api, apiRevision),
         oauth: {
           httpClient: egress.client,
-          clientName: hostedOAuthClientName,
+          clientName: (yield* productBrandConfig.pipe(Effect.orDie)).name,
           urlPolicy: egress.policy,
           ...(Option.isSome(clientMetadata)
             ? {

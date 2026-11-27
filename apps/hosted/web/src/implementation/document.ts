@@ -7,6 +7,7 @@ import { Atom } from "effect/reactivity";
 import { Option, Schema } from "effect";
 import { OrganizationSummary } from "../contracts/organization.ts";
 import { resourceOriginsAtom } from "../contracts/mcp.ts";
+import { productBrandAtom } from "@executor-js/ui/contracts/product-brand";
 
 export type HostedDocument = HostedDocumentContext & DocumentApi;
 
@@ -15,6 +16,7 @@ export const hostedServerValues = (document: HostedDocument) => [
   ...sessionInitialValues(document.session),
   Atom.initialValue(lastOrganizationAtom, document.lastOrganization),
   Atom.initialValue(resourceOriginsAtom, document.resourceOrigins),
+  Atom.initialValue(productBrandAtom, document.brand),
 ];
 
 export const requireSession = (

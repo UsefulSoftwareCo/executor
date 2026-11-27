@@ -9,6 +9,7 @@ import {
 } from "../contracts/browser.ts";
 import { Cookies, HttpServerRequest } from "effect/http";
 import type { ResourceOrigins } from "@executor-js/mcp-auth";
+import { CurrentProductBrand } from "@executor-js/utils/product-brand";
 
 export const hostedDocumentContext = (resourceOrigins: ResourceOrigins) => (api: DocumentApi) =>
   Effect.gen(function* () {
@@ -32,5 +33,6 @@ export const hostedDocumentContext = (resourceOrigins: ResourceOrigins) => (api:
       session,
       lastOrganization: readLastOrganization(saved, session),
       resourceOrigins,
+      brand: yield* CurrentProductBrand,
     } satisfies HostedDocumentContext;
   }).pipe(Effect.withSpan("dashboard.session"));

@@ -15,6 +15,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "../components/select.tsx";
+import { useProductBrand } from "../hooks/product-brand.ts";
 
 export const hasGrantSelection = (policy: GrantPolicy) =>
   policy.kind === "all" ||
@@ -35,6 +36,7 @@ export function GrantPicker<E>({
   disabled?: boolean;
   emptyAction?: ReactNode;
 }) {
+  const brand = useProductBrand();
   const approvalsId = useId();
   return (
     <div className="grant-picker flex flex-col gap-4">
@@ -174,13 +176,13 @@ export function GrantPicker<E>({
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="browser">Require approval in Executor</SelectItem>
+                    <SelectItem value="browser">Require approval in {brand.name}</SelectItem>
                     <SelectItem value="client">Allow this client to approve</SelectItem>
                   </SelectContent>
                 </Select>
                 <p>
                   {policy.approval === "browser"
-                    ? "Calls that need approval wait for you in the Executor browser."
+                    ? `Calls that need approval wait for you in the ${brand.name} browser.`
                     : "This client can answer approval requests, including through native prompts."}
                 </p>
               </div>

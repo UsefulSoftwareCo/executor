@@ -34,6 +34,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "../components/select.tsx";
+import { useProductBrand } from "../hooks/product-brand.ts";
 import { SetupHelp } from "./markdown.tsx";
 import { CredentialHosts } from "./credential-hosts.tsx";
 
@@ -255,6 +256,7 @@ function CredentialAccess({
   readonly hidden: boolean;
   readonly readable: boolean;
 }) {
+  const brand = useProductBrand();
   if (!hidden && !readable) return null;
   return (
     <div
@@ -269,8 +271,8 @@ function CredentialAccess({
           />
           {hosts.length === 0 ? (
             <span className="min-w-0">
-              Executor never sends hidden values on the app's requests. The app and your agent get a
-              placeholder.
+              {brand.name} never sends hidden values on the app's requests. The app and your agent
+              get a placeholder.
             </span>
           ) : (
             <CredentialHosts
@@ -301,6 +303,7 @@ function SignInAccess({
   readonly provider: string;
   readonly hosts?: readonly string[] | undefined;
 }) {
+  const brand = useProductBrand();
   return hosts === undefined ? (
     <p
       className="flex items-start gap-1.5 text-xs leading-relaxed text-muted-foreground"
@@ -324,7 +327,7 @@ function SignInAccess({
       />
       {hosts.length === 0 ? (
         <span className="min-w-0">
-          Executor never sends your {provider} sign-in on the app's requests.
+          {brand.name} never sends your {provider} sign-in on the app's requests.
         </span>
       ) : (
         <CredentialHosts hosts={hosts} lead={`Your ${provider} sign-in is only sent to`} />

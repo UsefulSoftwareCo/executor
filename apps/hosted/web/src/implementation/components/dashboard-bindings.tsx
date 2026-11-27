@@ -20,6 +20,7 @@ import { catalogAtom } from "../../contracts/api.ts";
 import { useOrganizationRoute } from "./organization.tsx";
 import { appError } from "../../contracts/apps.ts";
 import type { HostedError } from "../../contracts/errors.ts";
+import { useProductBrand } from "@executor-js/ui/hooks/product-brand";
 
 const catalogIcons = catalogIconsAtom(catalogAtom);
 export function useDashboardAtoms() {
@@ -51,6 +52,7 @@ const AccountLink = ({ account, children, ...props }: AccountLinkProps) => {
   );
 };
 export function HostedFailure({ cause, retry, retrying, layout }: FailureProps<HostedError>) {
+  const brand = useProductBrand();
   const error = Cause.findErrorOption(cause);
   if (Option.isSome(error) && Schema.is(AppProviderFailed)(error.value))
     return (
@@ -66,7 +68,7 @@ export function HostedFailure({ cause, retry, retrying, layout }: FailureProps<H
     return (
       <ErrorNotice
         error={error.value}
-        context="While completing this action in Executor."
+        context={`While completing this action in ${brand.name}.`}
         retry={retry}
         retrying={retrying}
         layout={layout}
@@ -76,7 +78,7 @@ export function HostedFailure({ cause, retry, retrying, layout }: FailureProps<H
     return (
       <ErrorNotice
         error={new ConnectionFailed()}
-        context="While completing this action in Executor."
+        context={`While completing this action in ${brand.name}.`}
         retry={retry}
         retrying={retrying}
         layout={layout}

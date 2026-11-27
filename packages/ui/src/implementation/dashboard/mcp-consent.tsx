@@ -19,6 +19,8 @@ import {
 } from "../components/select.tsx";
 import { Skeleton } from "../components/skeleton.tsx";
 import type { ConsentConnection } from "../../contracts/scoped-connections.ts";
+import { productWordmark } from "../../contracts/product-brand.ts";
+import { useProductBrand } from "../hooks/product-brand.ts";
 
 const row =
   "grid min-h-12 grid-cols-[7.5rem_1fr] items-center gap-x-4 py-1 max-[740px]:min-h-13 max-[740px]:py-0.5";
@@ -31,15 +33,16 @@ export function McpConsentLayout({
   readonly children: ReactNode;
   readonly description: ReactNode;
 }) {
+  const brand = useProductBrand();
   return (
     <main className="mcp-consent-page min-h-dvh py-[48px] px-[20px] max-[480px]:py-[28px] max-[480px]:px-[16px]">
       <section className="mcp-consent-form w-full max-w-sm my-0 mx-auto flex flex-col gap-7 [&_h1]:text-[28px] [&_h1]:leading-[1.2] [&_h1]:[margin:0_0_10px] max-[480px]:gap-5.5 max-[480px]:[&_h1]:text-[24px]">
         <div className="mcp-consent-brand flex items-center gap-2.25 text-[19px] [font-weight:550] tracking-[-0.04em] mb-2 [&_img]:w-6.25 [&_img]:h-6.25">
-          <img src="/favicon.png" alt="" />
-          executor
+          <img src={brand.logo} alt="" />
+          {productWordmark(brand)}
         </div>
         <header>
-          <h1 className="font-semibold tracking-[-0.035em]">Connect to Executor</h1>
+          <h1 className="font-semibold tracking-[-0.035em]">Connect to {brand.name}</h1>
           <div className="mcp-consent-intro text-muted-foreground text-[14px] leading-[1.6] [&_strong]:text-foreground [&_strong]:[font-weight:550]">
             {description}
           </div>
@@ -255,11 +258,13 @@ export function McpConsentSelect({
   );
 }
 
-const approvalOptions: readonly (ConsentOption & { readonly value: ApprovalMode })[] = [
+const approvalOptions = (
+  product: string,
+): readonly (ConsentOption & { readonly value: ApprovalMode })[] => [
   {
     value: "automatic",
     label: "Automatic",
-    detail: "Executor does not ask. Your agent's own permission prompts decide.",
+    detail: `${product} does not ask. Your agent's own permission prompts decide.`,
     icon: FlashIcon,
   },
   {
@@ -271,7 +276,7 @@ const approvalOptions: readonly (ConsentOption & { readonly value: ApprovalMode 
   {
     value: "browser",
     label: "In your browser",
-    detail: "You review the call on an Executor page.",
+    detail: `You review the call on a ${product} page.`,
     icon: BrowserIcon,
   },
   {
@@ -294,10 +299,12 @@ export function McpConsentApprovals({
   readonly onMode?: ((mode: ApprovalMode) => void) | undefined;
   readonly disabled?: boolean | undefined;
 }) {
+  const brand = useProductBrand();
+  const options = approvalOptions(brand.name);
   if (onMode === undefined)
     return (
       <McpConsentRow label="Approvals">
-        {approvalOptions.find((option) => option.value === mode)?.label}
+        {options.find((option) => option.value === mode)?.label}
       </McpConsentRow>
     );
   return (
@@ -306,9 +313,9 @@ export function McpConsentApprovals({
         id="mcp-consent-approvals"
         value={mode}
         disabled={disabled}
-        options={approvalOptions}
+        options={options}
         onChange={(value) => {
-          const chosen = approvalOptions.find((option) => option.value === value);
+          const chosen = options.find((option) => option.value === value);
           if (chosen !== undefined) onMode(chosen.value);
         }}
       />
@@ -327,13 +334,14 @@ export function McpConsentTargetRows({
   readonly onMode?: ((mode: ApprovalMode) => void) | undefined;
   readonly disabled?: boolean | undefined;
 }) {
+  const brand = useProductBrand();
   return (
     <>
       <McpConsentRow label="Access">
         {target.kind === "api"
-          ? "Executor API"
+          ? `${brand.name} API`
           : target.kind === "desktop"
-            ? "Your Executor account"
+            ? `Your ${brand.name} account`
             : target.connection === undefined
               ? "All apps"
               : "One of your connections"}
@@ -493,8 +501,8 @@ export function McpConsentSummary({
   );
 }
 
-export const desktopSignInNote =
-  "This signs the Executor desktop app in to your Executor account. Revoking this sign-in signs the desktop app out, including the windows it opened.";
+export const desktopSignInNote = (product: string) =>
+  `This signs the Executor desktop app in to your ${product} account. Revoking this sign-in signs the desktop app out, including the windows it opened.`;
 
 export function McpConsentDestination({ origin }: { readonly origin: string }) {
   return (

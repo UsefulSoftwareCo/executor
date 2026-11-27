@@ -1,6 +1,7 @@
 import { Effect, Option, Schema } from "effect";
 import { Cookies, HttpServerRequest, HttpServerResponse } from "effect/http";
 import type { DocumentApi } from "../contracts/document.ts";
+import { CurrentProductBrand } from "@executor-js/utils/product-brand";
 import { inProcessApi } from "./in-process.ts";
 
 export interface DashboardServer<Context> {
@@ -23,9 +24,25 @@ const documentHeaders = {
   "x-content-type-options": "nosniff",
 } as const;
 
-const unavailable = HttpServerResponse.html(
-  '<!doctype html><title>Unable to open Executor</title><main><h1>Unable to open Executor</h1><p>Please try again.</p><a href="">Try again</a></main>',
-).pipe(HttpServerResponse.setStatus(503), HttpServerResponse.setHeaders(documentHeaders));
+const escapeHtml = (value: string) =>
+  value
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;");
+
+export const unavailablePage = (productName: string) => {
+  const name = escapeHtml(productName);
+  return `<!doctype html><title>Unable to open ${name}</title><main><h1>Unable to open ${name}</h1><p>Please try again.</p><a href="">Try again</a></main>`;
+};
+
+const unavailable = Effect.gen(function* () {
+  const brand = yield* CurrentProductBrand;
+  return HttpServerResponse.html(unavailablePage(brand.name)).pipe(
+    HttpServerResponse.setStatus(503),
+    HttpServerResponse.setHeaders(documentHeaders),
+  );
+});
 
 export const dashboardDocument = <Context, E, R, E2, R2>(options: {
   readonly server: Effect.Effect<DashboardServer<Context & DocumentApi>, E, R>;
@@ -60,7 +77,7 @@ export const dashboardDocument = <Context, E, R, E2, R2>(options: {
     );
   }).pipe(
     Effect.withSpan("dashboard.document"),
-    Effect.catchTag("DashboardUnavailable", () => Effect.succeed(unavailable)),
+    Effect.catchTag("DashboardUnavailable", () => unavailable),
   );
 
 export const withSameSiteReload = <E, R>(
@@ -73,7 +90,8 @@ export const withSameSiteReload = <E, R>(
       request.headers["sec-fetch-mode"] !== "navigate"
     )
       return yield* document;
+    const brand = yield* CurrentProductBrand;
     return HttpServerResponse.html(
-      '<!doctype html><meta http-equiv="refresh" content="0"><title>Executor</title>',
+      `<!doctype html><meta http-equiv="refresh" content="0"><title>${escapeHtml(brand.name)}</title>`,
     ).pipe(HttpServerResponse.setHeaders(documentHeaders));
   });

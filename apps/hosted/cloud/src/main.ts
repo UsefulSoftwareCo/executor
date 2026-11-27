@@ -167,6 +167,8 @@ import { Api } from "./infrastructure/api-worker.ts";
 import { Dashboard } from "./infrastructure/dashboard-worker.ts";
 import { cloudSourceFormatter } from "./infrastructure/source-formatter.ts";
 import { cloudAuthoringReference } from "./infrastructure/authoring-reference.ts";
+import { productBrandBindings } from "./infrastructure/product-brand.ts";
+import { CurrentProductBrand, productBrandConfig } from "@executor-js/utils/product-brand";
 export { Api } from "./infrastructure/api-worker.ts";
 
 export default Api.make(
@@ -201,6 +203,7 @@ export default Api.make(
         ...(yield* removalRevocationBudgetBindings),
         ...(origin === undefined ? {} : yield* clientMetadataBinding.pipe(Effect.orDie)),
         ...(origin === undefined ? {} : yield* appCatalogBinding),
+        ...(yield* productBrandBindings),
       },
       build: workerBuild("api"),
       ...(origin === undefined ? {} : { domain: yield* customDomain(origin) }),
@@ -233,6 +236,7 @@ export default Api.make(
     };
   }),
   Effect.gen(function* () {
+    const brand = yield* CurrentProductBrand;
     const lifetime = yield* previewLifetime;
     const activity = yield* previewActivity;
     const analytics = yield* cloudAnalytics;
@@ -743,9 +747,11 @@ export default Api.make(
         ),
         lifetime.http,
         servedRequest,
+        Effect.provideService(CurrentProductBrand, brand),
       ),
     };
   }).pipe(
+    Effect.provideServiceEffect(CurrentProductBrand, productBrandConfig.pipe(Effect.orDie)),
     Effect.provide(
       Layer.mergeAll(
         PlacedScheduleCoordinatorLive.pipe(Layer.provideMerge(ScheduleCoordinatorLive)),

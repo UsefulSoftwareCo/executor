@@ -18,6 +18,7 @@ import {
   telemetryBindings,
 } from "./infrastructure/telemetry.ts";
 import { workerBuild } from "./infrastructure/worker-build.ts";
+import { productBrandBindings } from "./infrastructure/product-brand.ts";
 
 const mcpSession = Effect.gen(function* () {
   const executor = yield* cloudServingProduct(yield* appDataSupervisors);
@@ -59,6 +60,7 @@ export default McpServer.make(
         }),
         ...(yield* telemetryBindings),
         ...(yield* sentryBindings).env,
+        ...(yield* productBrandBindings),
       },
     };
   }),

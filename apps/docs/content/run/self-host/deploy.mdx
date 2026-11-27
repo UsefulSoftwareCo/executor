@@ -92,6 +92,8 @@ With `EXECUTOR_APP_UI_BASE_URL=https://apps.example.net`, Executor serves each a
 | `EXECUTOR_MCP_CLIENTS` | `512` | Maximum kept MCP client handlers in memory. Idle client handlers expire after 30 minutes (on a one-minute sweep). When full, the least-recently-used eligible idle client handler is evicted — discarded protocol sessions receive `404` and must re-initialize. Active calls and paused approvals are not evicted (`503` with `Retry-After: 1` when no eligible idle handler can be evicted). |
 | `EXECUTOR_MCP_CLIENTS_PER_USER` | `256` | Maximum kept MCP client handlers one member can hold before their own least-recently-used eligible idle handler is evicted. |
 | `EXECUTOR_ENVIRONMENT` | `self-host` | Environment label for this instance. |
+| `EXECUTOR_PRODUCT_NAME` | `Executor` | Name shown in the dashboard, sign-in, MCP consent, OAuth resource and client metadata, and MCP server name clients list. See [Your own name and logo](/docs/run/self-host/sign-in-and-sso#your-own-name-and-logo). |
+| `EXECUTOR_PRODUCT_LOGO_URL` | `/favicon.png` | Square logo URL, absolute or a path on this origin, shown with that name and as the favicon. See [Your own name and logo](/docs/run/self-host/sign-in-and-sso#your-own-name-and-logo). |
 | `EXECUTOR_CATALOG_URL` | `https://catalog.executor.sh/index.json` | Official app catalog feed; set to `off` for air-gapped instances to list only the built-in Executor app (independent of other outbound calls). |
 | `EXECUTOR_REGISTRY_URL` | `https://api.executor.sh` | Public app registry origin. |
 | `EXECUTOR_NPM_REGISTRY` | `https://registry.npmjs.org` | npm registry used for app package installs and daily update checks. |

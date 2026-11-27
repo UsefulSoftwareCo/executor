@@ -41,6 +41,7 @@ import { ObjectRequests, objectRequest } from "./served-request.ts";
 import { interactionFaults } from "./mcp-interaction-faults.ts";
 import { mcpInteractionStore } from "./mcp-interaction-store.ts";
 import { mcpSessionStore } from "./mcp-session-store.ts";
+import { CurrentProductBrand, productBrandConfig } from "@executor-js/utils/product-brand";
 
 const holdMillis = 30_000;
 
@@ -60,6 +61,7 @@ export const makeMcpSession = Effect.fn(function* ({
   const reportErrors = yield* cloudSentry;
   const analytics = yield* cloudAnalytics;
   const objectDatabase = yield* cloudObjectDatabase(cloudDatabaseConnection);
+  const brand = yield* productBrandConfig.pipe(Effect.orDie);
   return Effect.gen(function* () {
     const state = yield* Cloudflare.DurableObjectState;
     const database = yield* objectDatabase(`mcp ${state.id.toString()}`);
@@ -82,7 +84,10 @@ export const makeMcpSession = Effect.fn(function* ({
       undefined,
       mcpSessionStore(state.storage),
       mcpInteractionStore(faults.kv, () => clock.currentTimeMillisUnsafe()),
-    ).pipe(Effect.provide(HttpServer.layerServices));
+    ).pipe(
+      Effect.provideService(CurrentProductBrand, brand),
+      Effect.provide(HttpServer.layerServices),
+    );
     const hold = Effect.gen(function* () {
       if (handler.programs() === 0) return;
       const now = yield* Clock.currentTimeMillis;

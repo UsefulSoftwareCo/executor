@@ -18,10 +18,11 @@ import { LocalTime, RelativeTime, shortMoment } from "../components/local-time.t
 import { Skeleton } from "../components/skeleton.tsx";
 import { AgentIcon } from "./agent-icon.tsx";
 import { QueryView } from "./context.tsx";
+import { useProductBrand } from "../hooks/product-brand.ts";
 
 const agentName = (agent: ConnectedAgent) => agent.name?.trim() || "Unnamed MCP client";
 
-const accessLabel = (access: ConnectedAgentAccess) => {
+const accessLabel = (access: ConnectedAgentAccess, product: string) => {
   switch (access.kind) {
     case "all":
       return "Every app";
@@ -30,7 +31,7 @@ const accessLabel = (access: ConnectedAgentAccess) => {
     case "connection":
       return `Scoped connection: ${access.name}`;
     case "api":
-      return "Executor API";
+      return `${product} API`;
     case "desktop":
       return "Executor desktop sign-in";
   }
@@ -45,6 +46,7 @@ export function ConnectedAgents<E, EL extends E, ER extends E>({
   readonly revoke: Atom.AtomResultFn<GrantId, void, ER>;
   readonly Failure: ComponentType<FailureProps<E>>;
 }) {
+  const brand = useProductBrand();
   const [revoking, setRevoking] = useState<ConnectedAgent>();
   const submit = useAtomSet(revoke, { mode: "promiseExit" });
   const state = useAtomValue(revoke);
@@ -84,7 +86,7 @@ export function ConnectedAgents<E, EL extends E, ER extends E>({
             <DialogDescription>
               {revoking?.access.kind === "desktop"
                 ? "The Executor desktop app is signed out of your account, including the windows it opened. To use this server there again, sign in from the desktop app."
-                : "This agent loses access immediately. To use Executor again, it must sign in and be approved again."}
+                : `This agent loses access immediately. To use ${brand.name} again, it must sign in and be approved again.`}
             </DialogDescription>
           </DialogHeader>
           {AsyncResult.isFailure(state) && <Failure cause={state.cause} />}
@@ -121,6 +123,7 @@ function AgentRow({
   readonly agent: ConnectedAgent;
   readonly onRevoke: (agent: ConnectedAgent) => void;
 }) {
+  const brand = useProductBrand();
   return (
     <li className="flex items-center gap-3 px-1 py-3">
       <span className="inline-flex size-8 shrink-0 items-center justify-center rounded-[8px] border border-border bg-background">
@@ -129,7 +132,7 @@ function AgentRow({
       <div className="min-w-0 flex-1">
         <p className="truncate text-[13px] font-medium">{agentName(agent)}</p>
         <p className="mt-0.5 truncate text-xs text-muted-foreground">
-          {accessLabel(agent.access)}
+          {accessLabel(agent.access, brand.name)}
           {agent.lastActiveAt !== null && (
             <>
               {" · Last used "}

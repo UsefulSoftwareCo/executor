@@ -31,6 +31,7 @@ import {
 } from "./skill-editor.tsx";
 
 import { SkillWorkspace } from "./skill-workspace.tsx";
+import { useProductBrand } from "../hooks/product-brand.ts";
 
 type Skill = AppSkillBundle["skills"][number];
 
@@ -179,6 +180,7 @@ function SkillCatalog<E>({
   readonly Failure: ComponentType<FailureProps<E>>;
   readonly onCommitted: (result: Committed) => void;
 }) {
+  const brand = useProductBrand();
   const [selected, setSelected] = useState<string>();
   const [dirty, setDirty] = useState(false);
   const leave = () => !dirty || window.confirm("Discard your unsaved changes?");
@@ -191,7 +193,7 @@ function SkillCatalog<E>({
         action={
           canEdit ? (
             <CopyButton
-              code={`Add skills to my Executor app ${JSON.stringify(app.name)} (app ID: ${app.id}). Review its source and tools, then write concise instructions for its main workflows in skills/<skill-name>/SKILL.md with valid name and description frontmatter. Deploy the updated app and verify that its skills are listed.`}
+              code={`Add skills to my ${brand.name} app ${JSON.stringify(app.name)} (app ID: ${app.id}). Review its source and tools, then write concise instructions for its main workflows in skills/<skill-name>/SKILL.md with valid name and description frontmatter. Deploy the updated app and verify that its skills are listed.`}
               label="Copy prompt"
               text="Copy prompt"
               variant="default"

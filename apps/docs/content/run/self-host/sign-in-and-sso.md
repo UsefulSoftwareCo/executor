@@ -27,6 +27,12 @@ The browser opens **Connect your assistant**. Complete onboarding to open the da
 
 You'll know it worked when onboarding finishes in the dashboard and `curl -sf http://127.0.0.1:4400/api/auth/self-host/config` returns `{"setup":false,...}`.
 
+## Your own name and logo
+
+`EXECUTOR_PRODUCT_NAME` replaces Executor in page titles, sign-in, setup guides, MCP consent, OAuth resource and client metadata, and the MCP server name clients list. Setup commands name the MCP server after it in lowercase, such as `acme-tools` for `Acme Tools`.
+
+`EXECUTOR_PRODUCT_LOGO_URL` replaces the logo and favicon; serve a square image of at least 64 pixels. With another name, setup guides leave out Executor's own plugins and screenshots, and the dashboard leaves out Executor's feedback and GitHub links. The built-in app keeps the name Executor and shows your logo.
+
 ## Passwords and invitations
 
 After first-run setup, new password users need an invitation.

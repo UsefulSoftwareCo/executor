@@ -1,4 +1,6 @@
 import { LocalTime, timeOfDay } from "../components/local-time.tsx";
+import { productWordmark } from "../../contracts/product-brand.ts";
+import { useProductBrand } from "../hooks/product-brand.ts";
 import { useAtomRefresh, useAtomSet, useAtomValue } from "@effect/atom-react";
 import {
   BrowserApprovalFailed,
@@ -36,9 +38,9 @@ const defaults = (request: PendingInteraction) =>
       ],
     ),
   );
-const unreadableReply =
-  "Executor received your answer, but this page could not read its reply. If you approved, the tool may have run and made changes. Reload the page, and check before running it again.";
-const failureMessage = (cause: Cause.Cause<BrowserApprovalFailure>) => {
+const unreadableReply = (product: string) =>
+  `${product} received your answer, but this page could not read its reply. If you approved, the tool may have run and made changes. Reload the page, and check before running it again.`;
+const failureMessage = (cause: Cause.Cause<BrowserApprovalFailure>, product: string) => {
   const error = Cause.squash(cause);
   return error instanceof ToolRunApprovalRefused
     ? `${error.description} ${error.recovery.action}`
@@ -48,8 +50,8 @@ const failureMessage = (cause: Cause.Cause<BrowserApprovalFailure>) => {
           Match.when("forbidden", () => "Your account cannot review this request."),
           Match.when("invalid-answer", () => "Check the form fields and try again."),
           Match.when("unavailable", () => "This request is no longer available."),
-          Match.when("network", () => "Cannot reach Executor. Try again."),
-          Match.when("reply-unreadable", () => unreadableReply),
+          Match.when("network", () => `Cannot reach ${product}. Try again.`),
+          Match.when("reply-unreadable", () => unreadableReply(product)),
           Match.exhaustive,
         )
       : "Cannot load this request. Try again.";
@@ -65,11 +67,12 @@ const replyUnreadable = (cause: Cause.Cause<BrowserApprovalFailure>) => {
 type Outcome = "answered" | "unavailable" | "reply-unreadable";
 
 export function BrowserApprovalPage({ atoms }: { readonly atoms: BrowserApprovalAtoms }) {
+  const brand = useProductBrand();
   return (
     <main className="mx-auto flex min-h-svh w-full max-w-2xl flex-col px-5 py-12 sm:py-20">
       <div className="mb-8 flex items-center gap-2 text-lg font-semibold">
-        <img src="/favicon.png" alt="" className="size-7" />
-        executor
+        <img src={brand.logo} alt="" className="size-7" />
+        {productWordmark(brand)}
       </div>
       <BrowserApprovalCard atoms={atoms} />
     </main>
@@ -82,6 +85,7 @@ export function BrowserApprovalCard({
   readonly atoms: ReviewAtoms;
   readonly completion?: ReactNode;
 }) {
+  const { name: product } = useProductBrand();
   const view = useAtomValue(atoms.view);
   const refused = AsyncResult.isFailure(view) ? refusal(view.cause) : undefined;
   const refresh = useAtomRefresh(atoms.view);
@@ -104,7 +108,7 @@ export function BrowserApprovalCard({
             Cannot open this request
           </h1>
           <p role="alert" className="my-4 text-sm text-muted-foreground">
-            {failureMessage(view.cause)}
+            {failureMessage(view.cause, product)}
           </p>
           <Button variant="outline" onClick={refresh}>
             Try again
@@ -133,6 +137,7 @@ function ApprovalResult({
   readonly status: Outcome;
   readonly completion?: ReactNode;
 }) {
+  const { name: product } = useProductBrand();
   return (
     <>
       <h1 className="text-[22px] font-semibold tracking-[-0.035em] leading-[1.35]">
@@ -147,7 +152,7 @@ function ApprovalResult({
           ? (completion ?? "You can return to your agent.")
           : status === "unavailable"
             ? "This request has expired, was handled, or is no longer running."
-            : unreadableReply}
+            : unreadableReply(product)}
       </p>
     </>
   );
@@ -163,6 +168,7 @@ function ApprovalForm({
   readonly appName: string | undefined;
   readonly atoms: ReviewAtoms;
 }) {
+  const { name: product } = useProductBrand();
   const [values, setValues] = useState(() => defaults(request));
   const [persist, setPersist] = useState("");
   const [saved, setSaved] = useState<Outcome>();
@@ -212,7 +218,7 @@ function ApprovalForm({
     const result = await submit(response);
     if (Exit.isSuccess(result)) setSaved(result.value.status);
     else if (replyUnreadable(result.cause)) setSaved("reply-unreadable");
-    else setError(failureMessage(result.cause));
+    else setError(failureMessage(result.cause, product));
   };
   if (saved !== undefined) return <ApprovalResult status={saved} completion={completion} />;
   const tool = request.status === "approval-required" ? request.invocation.tool : request.tool.tool;

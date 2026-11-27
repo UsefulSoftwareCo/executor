@@ -4,8 +4,6 @@ export const clientMetadataDocumentPath = "/oauth/client-metadata.json";
 
 export const clientMetadataLogoPath = "/favicon.png";
 
-export const hostedOAuthClientName = "Executor";
-
 /** The document a hosted install serves. Values follow the RFC 7591 client metadata registry. */
 export interface ClientMetadataDocument {
   readonly client_id: string;

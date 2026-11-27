@@ -43,6 +43,7 @@ import {
   HostedAccountDialog,
   type AccountDialogKind,
 } from "./account-actions.tsx";
+import { useProductBrand } from "@executor-js/ui/hooks/product-brand";
 
 const featured: readonly { readonly id: string; readonly detail?: string }[] = [
   { id: "google", detail: "Gmail, Calendar, Drive, Docs and Sheets in one sign-in" },
@@ -102,6 +103,7 @@ const searchRank = (item: SetupApp, term: string) => {
 };
 
 export function AccountsSetupPage() {
+  const brand = useProductBrand();
   const { organization, slug } = useOrganizationRoute();
   const handoff = setupHandoff(parseAccountsSetupSearch(useLocation().search));
   const sequence = useSetupSequence();
@@ -132,7 +134,7 @@ export function AccountsSetupPage() {
         >
           <SetupTitle id="accounts-setup-title">Connect your accounts</SetupTitle>
           <SetupLede>
-            Your assistant uses these through Executor. Connect the tools you work in now
+            Your assistant uses these through {brand.name}. Connect the tools you work in now
             <span className="max-sm:hidden"> — you can add more any time</span>.
           </SetupLede>
           <SetupCard className="flex min-h-60 flex-1 flex-col sm:h-[620px] sm:flex-initial">
@@ -225,6 +227,7 @@ function LoadingList() {
 }
 
 function NotListed({ query }: { readonly query: string }) {
+  const brand = useProductBrand();
   return (
     <div
       role="note"
@@ -236,7 +239,7 @@ function NotListed({ query }: { readonly query: string }) {
       </p>
       <p className="mt-0.5">
         Once your assistant is connected, ask it to add{" "}
-        {query === "" ? "any app or API" : `“${query}”`} through Executor.
+        {query === "" ? "any app or API" : `“${query}”`} through {brand.name}.
       </p>
     </div>
   );

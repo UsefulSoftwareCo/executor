@@ -11,7 +11,7 @@ import { OrganizationResumeBoundary } from "@executor-js/hosted-web/organization
 import { TeamSetupBoundary, TeamSetupPending } from "../components/team-setup.tsx";
 import { useLocation } from "@tanstack/react-router";
 import { hostedPageTitle } from "@executor-js/hosted-web/contracts/navigation";
-import { DocumentTitleProvider, productTitle } from "@executor-js/ui/hooks/document-title";
+import { DocumentTitleProvider } from "@executor-js/ui/hooks/document-title";
 import { DashboardDocument } from "@executor-js/dashboard-start/shell";
 import styles from "@executor-js/hosted-web/styles?url";
 import { fontPreloads } from "@executor-js/ui/lib/fonts";
@@ -19,9 +19,11 @@ import { requireSession, restoreLastOrganization } from "@executor-js/hosted-web
 import { serverDocument } from "../document.ts";
 
 export const Route = createRootRoute({
-  head: () => ({
+  loader: () => (import.meta.env.SSR ? serverDocument().brand.name : undefined),
+  shouldReload: false,
+  head: ({ loaderData }) => ({
     links: [...fontPreloads, { rel: "stylesheet", href: styles }],
-    meta: [{ title: "Executor" }],
+    meta: [{ title: loaderData }],
   }),
   shellComponent: DashboardDocument,
   beforeLoad: async ({ location }) => {
@@ -45,17 +47,17 @@ function Root() {
   const ssoSignIn = pathname === "/login/sso";
   if (pathname === "/email/unsubscribe" || pathname === "/email/unsubscribe/")
     return (
-      <DocumentTitleProvider fallbackTitle={productTitle("Email preferences")}>
+      <DocumentTitleProvider fallbackTitle={"Email preferences"}>
         <Outlet />
       </DocumentTitleProvider>
     );
   return (
     <DocumentTitleProvider
-      fallbackTitle={productTitle(
+      fallbackTitle={
         pathname === "/create"
           ? "Create your team"
-          : hostedPageTitle(pathname, { billing: "Billing" }),
-      )}
+          : hostedPageTitle(pathname, { billing: "Billing" })
+      }
     >
       <AnalyticsIdentity />
       <ErrorReportingIdentity />

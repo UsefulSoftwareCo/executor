@@ -29,6 +29,7 @@ import {
 } from "../../contracts/mcp.ts";
 import { organizationsAtom, type OrganizationSummary } from "../../contracts/organization.ts";
 import { useResourceOrigins } from "../resource-origin.ts";
+import { useProductBrand } from "@executor-js/ui/hooks/product-brand";
 import { useGrantChoices } from "../components/grant-choices.tsx";
 
 export const deviceSearch = (search: Record<string, unknown>) => ({
@@ -123,6 +124,7 @@ function DeviceLookup({ code }: { readonly code: string }) {
 }
 
 function DeviceReview({ code, view }: { readonly code: string; readonly view: DeviceRequestView }) {
+  const brand = useProductBrand();
   const resourceOrigins = useResourceOrigins();
   const target = grantTarget(resourceOrigins, [view.resource]);
   const client = useAtomValue(mcpClientAtom(view.clientId));
@@ -156,6 +158,7 @@ function DeviceReview({ code, view }: { readonly code: string; readonly view: De
     <DeviceDecision
       code={code}
       target={target}
+      product={brand.name}
       client={client.value.client_name ?? "An application"}
       organizations={organizations.value}
       onDecided={setDecided}
@@ -166,12 +169,14 @@ function DeviceReview({ code, view }: { readonly code: string; readonly view: De
 function DeviceDecision({
   code,
   target,
+  product,
   client,
   organizations,
   onDecided,
 }: {
   readonly code: string;
   readonly target: GrantTarget;
+  readonly product: string;
   readonly client: string;
   readonly organizations: readonly OrganizationSummary[];
   readonly onDecided: (decision: "approved" | "denied") => void;
@@ -206,7 +211,7 @@ function DeviceDecision({
     <McpConsentLayout
       description={
         <p>
-          <strong>{client}</strong> on another device wants to connect to Executor.
+          <strong>{client}</strong> on another device wants to connect to {product}.
         </p>
       }
     >

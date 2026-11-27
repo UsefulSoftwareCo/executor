@@ -6,7 +6,7 @@ import { Button } from "@executor-js/ui/components/button";
 import { Input } from "@executor-js/ui/components/input";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { ArrowLeft01Icon } from "@hugeicons/core-free-icons";
-import { productTitle, useDocumentTitle } from "@executor-js/ui/hooks/document-title";
+import { useDocumentTitle } from "@executor-js/ui/hooks/document-title";
 import { Cause, Exit } from "effect";
 import { AsyncResult } from "effect/reactivity";
 import { useEffect, useState } from "react";
@@ -14,7 +14,7 @@ import { rememberSignInOrigin } from "../../contracts/sign-in-origin.ts";
 import { ssoSignInAtom } from "../../contracts/sso.ts";
 
 export function SsoSignInForm({ redirect, error: callbackError }: LoginProps) {
-  useDocumentTitle(productTitle("Sign in with SSO"));
+  useDocumentTitle("Sign in with SSO");
   useEffect(() => rememberSignInOrigin(redirect), [redirect]);
   const [email, setEmail] = useState("");
   const [error, setError] = useState<string>();

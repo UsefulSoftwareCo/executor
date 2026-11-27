@@ -3,6 +3,7 @@ import { genericOAuth } from "better-auth/plugins/generic-oauth";
 import { organization } from "better-auth/plugins/organization";
 import { Config, Effect, Option, Redacted, Schema } from "effect";
 import { FetchHttpClient, HttpClient, HttpClientResponse } from "effect/http";
+import { productBrandConfig } from "@executor-js/utils/product-brand";
 
 const httpsUrl = (message: string) =>
   Schema.String.check(
@@ -31,6 +32,7 @@ export const selfHostAuthSettings = Effect.gen(function* () {
     ...settings,
     resourceOrigins: singleResourceOrigin(settings.url),
     issuer: `${settings.url}/api/auth`,
+    brand: yield* productBrandConfig,
   };
   const discovery = yield* Config.String("SSO_DISCOVERY_URL").pipe(Config.option);
   if (Option.isNone(discovery) || discovery.value === "") return { ...base, sso: null };

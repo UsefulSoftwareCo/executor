@@ -72,6 +72,11 @@ const updateCheckTargets = {
 };
 
 export const appWorkerBudgetLimit = 2;
+export const productBrand = {
+  name: "Acme Tools",
+  logo: "/acme-tools.png",
+  server: "acme-tools",
+} as const;
 export const lazyStallTimeoutMs = 15_000;
 const mcpClientBoundEnvironment = {
   EXECUTOR_MCP_CLIENTS: "3",
@@ -8339,6 +8344,23 @@ export const scenarios = plan({
       "self-host": scheduled,
       cloud: na("Recording Executor's installed version writes the runner-owned product database."),
       local: na("Local uses its configured instance API key."),
+    },
+  },
+  productBrand: {
+    fixtures: "actors",
+    file: "product-brand.spec.ts",
+    title:
+      "a configured product name and logo replace Executor's in pages, consent, metadata and MCP",
+    serverEnvironment: {
+      EXECUTOR_PRODUCT_NAME: productBrand.name,
+      EXECUTOR_PRODUCT_LOGO_URL: productBrand.logo,
+    },
+    targets: {
+      "self-host": scheduled,
+      cloud: na(
+        "Managed local Cloud serves every scenario from one Worker, so it cannot start under another brand. Self-host runs the same shared pages, metadata and MCP server.",
+      ),
+      local: na("Local always presents Executor; it has no brand settings."),
     },
   },
   sharedAuthorization: {

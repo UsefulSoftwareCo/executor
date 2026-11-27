@@ -27,6 +27,7 @@ import {
 } from "effect";
 import { McpSchema } from "effect/ai";
 import { HttpServerResponse } from "effect/http";
+import { CurrentProductBrand, productBrandConfig } from "@executor-js/utils/product-brand";
 import { mcpClientLimits } from "./contracts/config.ts";
 
 const maxSessions = 256;
@@ -41,9 +42,12 @@ export const selfHostMcp = Effect.gen(function* () {
       Config.withDefault(defaultMcpLimits.timeoutMs),
     ),
   });
+  const brand = yield* productBrandConfig;
   const bound = yield* mcpClientLimits;
   const build = Effect.map(
-    makeHostedMcp(undefined, limits, undefined, undefined, maxSessions),
+    makeHostedMcp(undefined, limits, undefined, undefined, maxSessions).pipe(
+      Effect.provideService(CurrentProductBrand, brand),
+    ),
     (handler) => ({ ...handler, calls: new Map<string, CallState>() }),
   );
   type Handler = Effect.Success<typeof build>;

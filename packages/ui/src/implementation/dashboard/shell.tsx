@@ -9,19 +9,24 @@ import {
 } from "@hugeicons/core-free-icons";
 import { Dialog, DialogContent, DialogTitle, DialogTrigger } from "../components/dialog.tsx";
 import { useMediaQuery } from "../hooks/media-query.ts";
+import { useProductBrand } from "../hooks/product-brand.ts";
+import { isDefaultProductBrand } from "@executor-js/utils/product-brand";
 
 export const issuesUrl = "https://github.com/UsefulSoftwareCo/executor/issues";
 
-const resources = (docsUrl: string) =>
-  [
-    { label: "Docs", href: docsUrl, icon: BookOpen01Icon },
-    { label: "Feedback", href: issuesUrl, icon: Message01Icon },
-    {
-      label: "Star on GitHub",
-      href: "https://github.com/UsefulSoftwareCo/executor",
-      icon: StarIcon,
-    },
-  ] as const;
+const resources = (docsUrl: string, executor: boolean) => [
+  { label: "Docs", href: docsUrl, icon: BookOpen01Icon },
+  ...(executor
+    ? [
+        { label: "Feedback", href: issuesUrl, icon: Message01Icon },
+        {
+          label: "Star on GitHub",
+          href: "https://github.com/UsefulSoftwareCo/executor",
+          icon: StarIcon,
+        },
+      ]
+    : []),
+];
 
 const mediumViewport = "(min-width: 741px) and (max-width: 1000px)";
 
@@ -38,9 +43,10 @@ function ResourceLinks({
   readonly docsUrl: string;
   readonly support: ReactNode;
 }) {
+  const executor = isDefaultProductBrand(useProductBrand());
   return (
     <div className="sidebar-resource-links flex flex-col items-start gap-0.5 [padding:0_10px_8px] [&_a]:inline-flex [&_a]:items-center [&_a]:gap-1.5 [&_a]:text-[11px] [&_a]:min-h-6 [&_button]:inline-flex [&_button]:items-center [&_button]:gap-1.5 [&_button]:text-[11px] [&_button]:min-h-6 max-[740px]:[padding:4px_8px_8px] max-[740px]:[&_a]:min-h-10 max-[740px]:[&_a]:text-[13px] max-[740px]:[&_a]:gap-2 max-[740px]:[&_button]:min-h-10 max-[740px]:[&_button]:text-[13px] max-[740px]:[&_button]:gap-2">
-      {resources(docsUrl).map(({ label, href, icon }) => (
+      {resources(docsUrl, executor).map(({ label, href, icon }) => (
         <a key={href} href={href} target="_blank" rel="noopener noreferrer" title={label}>
           <HugeiconsIcon icon={icon} strokeWidth={2} size={13} aria-hidden />
           <span>{label}</span>
@@ -80,6 +86,7 @@ export function DashboardShell({
   readonly footer?: ReactNode;
   readonly children: ReactNode;
 }) {
+  const { logo } = useProductBrand();
   const [menuOpen, setMenuOpen] = useState(false);
   const medium = useMediaQuery(mediumViewport);
   const [mediumCollapsed, setMediumCollapsed] = useState(true);
@@ -123,7 +130,7 @@ export function DashboardShell({
             </button>
           ) : (
             <span className="flex items-center justify-center shrink-0 size-8.5">
-              <img src="/favicon.png" alt="" className="size-6" />
+              <img src={logo} alt="" className="size-6" />
             </span>
           )}
           {brand}

@@ -23,9 +23,11 @@ import {
 import { McpConnectionFailed, mcpClientAtom, mcpConsentAtom } from "../../contracts/mcp.ts";
 import { organizationsAtom, type OrganizationSummary } from "../../contracts/organization.ts";
 import { useResourceOrigins } from "../resource-origin.ts";
+import { useProductBrand } from "@executor-js/ui/hooks/product-brand";
 import { useGrantChoices } from "../components/grant-choices.tsx";
 
 export function McpAuthorizePage() {
+  const brand = useProductBrand();
   const page = usePageUrl();
   const resourceOrigins = useResourceOrigins();
   const query = page.search.slice(1),
@@ -60,6 +62,7 @@ export function McpAuthorizePage() {
       client={client.value.client_name ?? "An application"}
       destination={consentDestination(params.get("redirect_uri"))}
       organizations={organizations.value}
+      product={brand.name}
     />
   );
 }
@@ -71,6 +74,7 @@ function McpConsent({
   client,
   destination,
   organizations,
+  product,
 }: {
   readonly query: string;
   readonly target: GrantTarget;
@@ -78,6 +82,7 @@ function McpConsent({
   readonly client: string;
   readonly destination: string | undefined;
   readonly organizations: readonly OrganizationSummary[];
+  readonly product: string;
 }) {
   const consent = useAtomSet(mcpConsentAtom, { mode: "promiseExit" });
   const state = useAtomValue(mcpConsentAtom);
@@ -109,7 +114,7 @@ function McpConsent({
     <McpConsentLayout
       description={
         <p>
-          <strong>{client}</strong> wants to connect to Executor.
+          <strong>{client}</strong> wants to connect to {product}.
         </p>
       }
     >
@@ -122,7 +127,7 @@ function McpConsent({
           note={
             target.kind === "desktop" ? (
               <>
-                {desktopSignInNote}
+                {desktopSignInNote(product)}
                 {destination !== undefined && (
                   <>
                     {" "}

@@ -45,6 +45,7 @@ export const BrowserMcpToolkit = Toolkit.make(
 );
 
 export interface McpOptions {
+  readonly name?: string;
   readonly backend: McpBackend<Error>;
   readonly beforeExecute?: Effect.Effect<void, ExecutionRejected>;
   readonly browser?: BrowserDelivery;

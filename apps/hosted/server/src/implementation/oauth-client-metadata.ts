@@ -5,10 +5,9 @@ import {
   type ClientMetadataDocument,
   ClientMetadataUrlInvalid,
   clientMetadataDocumentPath,
-  clientMetadataLogoPath,
-  hostedOAuthClientName,
 } from "../contracts/oauth-client-metadata.ts";
 import { accountOAuthRedirectUri } from "./auth.ts";
+import { CurrentProductBrand, productLogoUrl } from "@executor-js/utils/product-brand";
 
 export interface ClientMetadataSetting {
   readonly url: string;
@@ -72,16 +71,17 @@ const applicationType = (callback: string) => {
 };
 
 export const clientMetadataDocument = (setting: Option.Option<ClientMetadataSetting>) =>
-  Effect.sync(() => {
+  Effect.gen(function* () {
     if (Option.isNone(setting) || !setting.value.served)
       return HttpServerResponse.empty({ status: 404 });
+    const brand = yield* CurrentProductBrand;
     const url = new URL(setting.value.url);
     const callback = setting.value.redirectUri;
     const document: ClientMetadataDocument = {
       client_id: url.href,
-      client_name: hostedOAuthClientName,
+      client_name: brand.name,
       client_uri: url.origin,
-      logo_uri: new URL(clientMetadataLogoPath, url.origin).href,
+      logo_uri: productLogoUrl(brand, url.origin),
       redirect_uris: [callback],
       grant_types: ["authorization_code", "refresh_token"],
       response_types: ["code"],

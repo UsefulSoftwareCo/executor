@@ -1,6 +1,7 @@
 import { Option, Schema } from "effect";
 import { OrganizationId } from "./organization.ts";
 import type { ResourceOrigins } from "@executor-js/mcp-auth";
+import type { ProductBrand } from "@executor-js/utils/product-brand";
 
 export const BrowserSession = Schema.NullOr(
   Schema.Struct({
@@ -45,6 +46,7 @@ export interface HostedDocumentContext {
   readonly session: BrowserSession;
   readonly lastOrganization: LastOrganization | null;
   readonly resourceOrigins: ResourceOrigins;
+  readonly brand: ProductBrand;
 }
 
 export const LastOrganization = Schema.Struct({

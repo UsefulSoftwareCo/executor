@@ -27,6 +27,7 @@ import {
 } from "../components/dropdown-menu.tsx";
 import { Textarea } from "../components/textarea.tsx";
 import { AgentSetupPrompt, newAppPrompt } from "./agent-setup.tsx";
+import { useProductBrand } from "../hooks/product-brand.ts";
 import { CustomAppForm } from "./custom-app.tsx";
 
 export type AddAppDialogProps<E> = MutationProps<CustomAppInput, DeployedApp, E> & {
@@ -216,6 +217,7 @@ function AddAppDialogs<E>({
 }
 
 function CustomAppDialog({ endpoint }: { readonly endpoint: string | undefined }) {
+  const brand = useProductBrand();
   const [description, setDescription] = useState("");
   return (
     <>
@@ -237,8 +239,8 @@ function CustomAppDialog({ endpoint }: { readonly endpoint: string | undefined }
       </label>
       <AgentSetupPrompt
         title="Send this to your agent"
-        description="Paste it into Claude Code, Codex, Cursor or any agent connected to Executor."
-        prompt={newAppPrompt(description, endpoint)}
+        description={`Paste it into Claude Code, Codex, Cursor or any agent connected to ${brand.name}.`}
+        prompt={newAppPrompt(brand.name, description, endpoint)}
       />
     </>
   );

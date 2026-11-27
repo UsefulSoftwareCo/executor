@@ -13,11 +13,13 @@ import {
 import { Skeleton } from "@executor-js/ui/components/skeleton";
 import { PageFrame, PageHeader } from "@executor-js/ui/dashboard/page";
 import { organizationSlugMaxLength } from "@executor-js/hosted-server/organization";
+import { useProductBrand } from "@executor-js/ui/hooks/product-brand";
 
 export const organizationSettingClass =
   "organization-setting border border-border rounded-[10px] bg-background shadow-none flex flex-col gap-0 p-0 [&_[data-slot='card-header']]:gap-1 [&_[data-slot='card-header']]:[padding:14px_16px_10px] [&_[data-slot='card-title']_h2]:text-[14px] [&_[data-slot='card-title']_h2]:leading-[1.4] [&_[data-slot='card-title']_h2]:font-medium [&_[data-slot='card-description']]:text-[12px] [&_[data-slot='card-description']]:leading-[1.5] [&_[data-slot='card-content']]:min-w-0 [&_[data-slot='card-content']]:[padding:0_16px_10px] [&_[data-slot='card-footer']]:justify-between [&_[data-slot='card-footer']]:gap-3 [&_[data-slot='card-footer']]:[padding:0_16px_12px] [&_[data-slot='card-footer']]:border-0 [&_[data-slot='card-footer']_>_p]:text-muted-foreground [&_[data-slot='card-footer']_>_p]:text-[11px] max-[640px]:[&_[data-slot='card-header']]:[padding:12px_12px_10px] max-[640px]:[&_[data-slot='card-content']]:[padding:0_12px_12px] max-[640px]:[&_[data-slot='card-footer']]:[padding:0_12px_10px]";
 
 export function OrganizationSettingsPending({ children }: { readonly children?: ReactNode }) {
+  const brand = useProductBrand();
   const page = usePageUrl();
   return (
     <PageFrame>
@@ -34,7 +36,7 @@ export function OrganizationSettingsPending({ children }: { readonly children?: 
             <CardTitle>
               <h2>Organization name</h2>
             </CardTitle>
-            <CardDescription>Shown across Executor.</CardDescription>
+            <CardDescription>Shown across {brand.name}.</CardDescription>
           </CardHeader>
           <CardContent>
             <div className="flex h-9 w-[min(100%,_520px)] items-center rounded-[6px] border border-input px-3 max-[740px]:min-h-11 max-[640px]:h-10">

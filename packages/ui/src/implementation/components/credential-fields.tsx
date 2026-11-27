@@ -14,6 +14,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@executor-js/ui/components/select";
+import { useProductBrand } from "../hooks/product-brand.ts";
 
 export const fieldLabel = (name: string, field: { readonly title?: string | undefined }) =>
   field.title ?? name.replace(/([A-Z])/g, " $1").replace(/^./, (s) => s.toUpperCase());
@@ -25,6 +26,7 @@ function FieldAccess({
   readonly hidden: boolean;
   readonly hosts?: readonly string[] | undefined;
 }) {
+  const brand = useProductBrand();
   return (
     <TooltipProvider delayDuration={150}>
       <Tooltip>
@@ -45,7 +47,7 @@ function FieldAccess({
         </TooltipTrigger>
         <TooltipContent className="max-w-64">
           {hidden
-            ? `The app and your agent only see a placeholder. Executor swaps in the real value on requests to ${hosts?.join(", ")}.`
+            ? `The app and your agent only see a placeholder. ${brand.name} swaps in the real value on requests to ${hosts?.join(", ")}.`
             : "The app reads this value and can send it anywhere."}
         </TooltipContent>
       </Tooltip>

@@ -66,6 +66,7 @@ import { selfHostAnalytics } from "./product-analytics.ts";
 
 import type { SourceTextFile as SourceFile } from "@executor-js/sdk/core";
 import { SelfHostRegistry, type selfHostExecutorServices } from "./executor-services.ts";
+import { CurrentProductBrand, productBrandConfig } from "@executor-js/utils/product-brand";
 import {
   selfHostUpdateCheck,
   selfHostUpdateStatus,
@@ -82,6 +83,7 @@ export const selfHostRouteMap = <DashboardE, DashboardR>(options: {
 }) =>
   Effect.gen(function* () {
     const { skills, egress, executorServices, dashboard } = options;
+    const brand = yield* productBrandConfig;
     const update = yield* selfHostUpdateCheck(
       yield* SelfHostRegistry.pipe(Effect.provide(executorServices)),
       options.updateCheckStore,
@@ -262,7 +264,7 @@ export const selfHostRouteMap = <DashboardE, DashboardR>(options: {
             return yield* observed(apps.pipe(requestTiming));
           if (addresses.ownsHost(request.headers.host)) return notFound;
           return yield* observed(product);
-        }).pipe(recordRequestRejections),
+        }).pipe(recordRequestRejections, Effect.provideService(CurrentProductBrand, brand)),
       ),
     );
     return routes;

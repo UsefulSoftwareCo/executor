@@ -1,8 +1,8 @@
 import { CopyButton } from "./code.tsx";
 
-export const newAppPrompt = (description: string, endpoint?: string) =>
+export const newAppPrompt = (product: string, description: string, endpoint?: string) =>
   [
-    "Help me build a new Executor app.",
+    `Help me build a new ${product} app.`,
     "",
     description.trim() === ""
       ? "Ask me what the app should do."
@@ -13,7 +13,7 @@ export const newAppPrompt = (description: string, endpoint?: string) =>
       ? []
       : [
           "",
-          `If you are not connected to Executor yet, connect to its MCP server at ${endpoint} first.`,
+          `If you are not connected to ${product} yet, connect to its MCP server at ${endpoint} first.`,
         ]),
   ].join("\n");
 

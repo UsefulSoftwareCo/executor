@@ -28,6 +28,7 @@ import { cloudSso, ssoVerifiedEmail } from "./sso.ts";
 import { chatGptSettings, chatGptSignIn } from "./chatgpt-sign-in.ts";
 import { cloudMemberLimit } from "./member-limit.ts";
 import { v1HandoffSessions } from "./v1-session-handoff.ts";
+import { CurrentProductBrand } from "@executor-js/utils/product-brand";
 
 const emailCodeSignInPath = "/sign-in/email-otp";
 
@@ -96,6 +97,7 @@ export const cloudAuthSettings = Effect.gen(function* () {
     hosts,
     resourceOrigins,
     issuer: hosts.issuer,
+    brand: yield* CurrentProductBrand,
     callbackOrigin,
     oauthRedirectUri,
     oauthProxy,
@@ -303,7 +305,7 @@ export const cloudAuthOptions = (
         Effect.runPromise(
           send({
             to: user.email,
-            subject: "Verify your Executor email",
+            subject: `Verify your ${settings.brand.name} email`,
             text: Redacted.make(
               `Verify your email address by opening this link:\n\n${url}\n\nIf you did not request this, ignore this email.`,
             ),
@@ -363,6 +365,7 @@ export const cloudAuthOptions = (
                 id,
                 organizationName: organization.name,
                 origin: settings.url,
+                brand: settings.brand,
               }),
             ),
           ),
@@ -381,13 +384,19 @@ export const cloudAuthOptions = (
             ctx !== undefined &&
             (await ctx.context.internalAdapter.findUserByEmail(data.email)) === null;
           await Effect.runPromise(
-            send(emailCodeMessage({ ...data, type: signUp ? "sign-up" : data.type })),
+            send(
+              emailCodeMessage({
+                ...data,
+                type: signUp ? "sign-up" : data.type,
+                brand: settings.brand,
+              }),
+            ),
           );
         },
       }),
       passkey({
         rpID: settings.hosts.passkey.rpId,
-        rpName: "Executor",
+        rpName: settings.brand.name,
         origin: settings.hosts.passkey.origin,
       }),
     ],

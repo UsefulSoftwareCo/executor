@@ -34,8 +34,9 @@ import {
   OrganizationDetailsBoundary,
 } from "../components/organization.tsx";
 import { OrganizationMembers, type MemberLimit } from "../components/organization-members.tsx";
-import { productTitle, useDocumentTitle } from "@executor-js/ui/hooks/document-title";
+import { useDocumentTitle } from "@executor-js/ui/hooks/document-title";
 import { organizationSlugMaxLength } from "@executor-js/hosted-server/organization";
+import { useProductBrand } from "@executor-js/ui/hooks/product-brand";
 
 export type { MemberLimit };
 
@@ -81,7 +82,7 @@ function OrganizationSettings({
   const changingLogo = useAtomValue(changeOrganizationLogoAtom(organization.organization));
   const pending =
     organization.checking || renaming.waiting || changingSlug.waiting || changingLogo.waiting;
-  useDocumentTitle(productTitle(`${organization.name} settings`));
+  useDocumentTitle(`${organization.name} settings`);
   return (
     <PageFrame>
       <PageHeader title={organization.name} />
@@ -205,6 +206,7 @@ function OrganizationIcon({ disabled }: { readonly disabled: boolean }) {
 }
 
 function OrganizationName({ disabled }: { readonly disabled: boolean }) {
+  const brand = useProductBrand();
   const organization = useOrganization();
   const disabledReason =
     organization.role === "member"
@@ -238,7 +240,7 @@ function OrganizationName({ disabled }: { readonly disabled: boolean }) {
           <CardTitle>
             <h2>Organization name</h2>
           </CardTitle>
-          <CardDescription>Shown across Executor.</CardDescription>
+          <CardDescription>Shown across {brand.name}.</CardDescription>
         </CardHeader>
         <CardContent>
           <Input

@@ -61,6 +61,7 @@ import { callerAccounts } from "./app-accounts.ts";
 import { resourceAuthorityForLinks } from "./resource-policy.ts";
 import { BearerHashes } from "./bearer-access.ts";
 import { hostedMcpBackend } from "./mcp.ts";
+import { CurrentProductBrand } from "@executor-js/utils/product-brand";
 import { patGrantOf } from "./mcp-oauth.ts";
 
 type HostedBackend = Effect.Success<typeof hostedMcpBackend>;
@@ -150,26 +151,29 @@ export const makeHostedMcp = (
   interactions?: McpOptions["interactions"],
   maxSessions?: McpOptions["maxSessions"],
 ) =>
-  makeMcp({
-    backend: requestBackend,
-    ...(beforeExecute === undefined ? {} : { beforeExecute }),
-    ...(sessions === undefined ? {} : { sessions }),
-    ...(interactions === undefined ? {} : { interactions }),
-    ...(maxSessions === undefined ? {} : { maxSessions }),
-    caller: requestCaller,
-    mode: requestMode,
-    instructions: executorIntro,
-    limits,
-    annotateSkillRead,
-    browser: {
-      url: (address) =>
-        Effect.flatMap(RequestApprovalUrl, (url) =>
-          url === undefined
-            ? Effect.die("Browser approval URL requires an authenticated MCP request")
-            : Effect.succeed(url(address)),
-        ),
-    },
-  }).pipe(Effect.orDie);
+  Effect.flatMap(CurrentProductBrand, (brand) =>
+    makeMcp({
+      name: brand.name,
+      backend: requestBackend,
+      ...(beforeExecute === undefined ? {} : { beforeExecute }),
+      ...(sessions === undefined ? {} : { sessions }),
+      ...(interactions === undefined ? {} : { interactions }),
+      ...(maxSessions === undefined ? {} : { maxSessions }),
+      caller: requestCaller,
+      mode: requestMode,
+      instructions: executorIntro,
+      limits,
+      annotateSkillRead,
+      browser: {
+        url: (address) =>
+          Effect.flatMap(RequestApprovalUrl, (url) =>
+            url === undefined
+              ? Effect.die("Browser approval URL requires an authenticated MCP request")
+              : Effect.succeed(url(address)),
+          ),
+      },
+    }),
+  ).pipe(Effect.orDie);
 
 export const requestedMcpOrganization = (url: URL): OrganizationReference | undefined => {
   const match = /^\/org\/([^/]+)\/mcp$/.exec(url.pathname);
@@ -476,7 +480,7 @@ export const mcpProtectedResource = Effect.gen(function* () {
     authorization_servers: [issuer],
     scopes_supported: ["mcp", "offline_access"],
     bearer_methods_supported: ["header"],
-    resource_name: "Executor",
+    resource_name: (yield* CurrentProductBrand).name,
   });
 });
 /** RFC 8414 authorization-server metadata from Better Auth. */
